@@ -111,6 +111,7 @@ double ScoreWorkflow(const WorkflowScoreAccumulator& stats) {
 
 MemoryManager::MemoryManager(std::filesystem::path storage_dir)
     : storage_dir_(std::move(storage_dir)),
+      lesson_store_(storage_dir_.empty() ? std::filesystem::path{} : storage_dir_ / "lessons.tsv"),
       workflow_store_(storage_dir_.empty() ? std::filesystem::path{} : storage_dir_ / "workflows.tsv") {
     if (!storage_dir_.empty()) {
         std::filesystem::create_directories(storage_dir_);
@@ -165,6 +166,7 @@ void MemoryManager::record_task(const TaskRequest& task, const TaskRunResult& re
     }
 
     flush_stats();
+    lesson_store_.record_failure(task, result);
     refresh_workflow_store();
 }
 
@@ -186,6 +188,14 @@ WorkflowStore& MemoryManager::workflow_store() {
 
 const WorkflowStore& MemoryManager::workflow_store() const {
     return workflow_store_;
+}
+
+LessonStore& MemoryManager::lesson_store() {
+    return lesson_store_;
+}
+
+const LessonStore& MemoryManager::lesson_store() const {
+    return lesson_store_;
 }
 
 std::vector<WorkflowCandidate> MemoryManager::workflow_candidates() const {

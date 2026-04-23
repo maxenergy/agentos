@@ -154,6 +154,7 @@ Delivered:
 - Step log
 - Skill stats
 - Agent stats
+- LessonStore
 - Workflow candidate generation
 - Workflow scoring
 - durable WorkflowStore skeleton
@@ -165,7 +166,6 @@ Delivered:
 
 Remaining:
 
-- LessonStore
 - SQLite or versioned storage migration
 
 ---

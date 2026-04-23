@@ -20,7 +20,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, cwd/timeout/output/env controls | External spec loader, `jq_transform`, resource limits |
 | Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager` | Auto multi-agent routing, WorkspaceSession, more adapters |
 | Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes | OAuth, refresh, system credential store, workspace default profiles |
-| Memory And Evolution | Partial | Task/step logs, skill/agent stats, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | LessonStore, richer condition expressions |
+| Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Lesson-driven policy/routing hints, richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
 | Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop | Daemon/service wrapper, cron, retry/backoff, missed-run policy |
 | Policy / Permissions | Implemented MVP | PermissionModel, risk parsing, unknown permission deny | Role-based permission grants, approval workflow |
@@ -33,7 +33,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 
 - `docs/ROADMAP.md` has now been synced to the current implementation state, but it must stay linked to this plan to avoid drifting again.
 - `AUTH_PRD.md` and `AUTH_DESIGN.md` describe OAuth, refresh, cloud credentials, and secure credential storage, but the current code only implements API-key env references plus Codex/Claude CLI session probing.
-- Workflow learning now has candidate/scoring output, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
+- Workflow learning now has candidate/scoring output, LessonStore, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
 - Scheduler supports manual `run-due` and foreground `tick`; there is no daemon/service wrapper, cron parser, retry policy, or missed-run semantics.
 - Multi-agent orchestration is explicit only. There is no automatic task decomposition, role assignment, WorkspaceSession, or cost-aware multi-agent router.
 - Plugin Host and external CLI spec loading are still docs-only.
@@ -73,7 +73,8 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Teach Router to prefer enabled stable workflows by trigger match and score ordering.
 - [x] Extend `workflow_run` to execute stored workflow definitions, not only built-in workflows.
 - [x] Add required-input workflow applicability checks beyond trigger task type.
-- [ ] Add `LessonStore` for repeated failure patterns and policy/routing hints.
+- [x] Add `LessonStore` for repeated failure patterns.
+- [ ] Use lessons as policy/routing hints.
 
 ### Phase E: Agent And Subagent System
 
@@ -126,7 +127,8 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Extend `workflow_run` to execute stored workflow definitions.
 - [x] Teach Router to prefer promoted workflows when applicable.
 - [x] Add richer workflow applicability conditions beyond trigger task type.
-- [ ] Add `LessonStore` skeleton.
+- [x] Add `LessonStore` skeleton.
+- [ ] Use lessons as policy/routing hints.
 
 ## Progress Log
 
@@ -140,3 +142,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Extended `workflow_run` to execute promoted WorkflowStore definitions within declared workflow permissions.
 - 2026-04-23: Taught Router to prefer enabled promoted workflows for matching task types and verified automatic workflow routing.
 - 2026-04-23: Added `required_inputs` workflow applicability checks and verified Router skips workflows when inputs are missing.
+- 2026-04-23: Added `LessonStore` backed by `runtime/memory/lessons.tsv` and verified repeated failure aggregation.

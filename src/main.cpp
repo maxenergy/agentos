@@ -597,6 +597,7 @@ void PrintMemorySummary(const MemoryManager& memory_manager) {
         << " agents=" << memory_manager.agent_stats().size()
         << " workflow_candidates=" << memory_manager.workflow_candidates().size()
         << " workflows=" << memory_manager.workflow_store().list().size()
+        << " lessons=" << memory_manager.lesson_store().list().size()
         << '\n';
 }
 
@@ -691,6 +692,21 @@ void PrintWorkflowDefinitions(const WorkflowStore& workflow_store) {
     }
 }
 
+void PrintLessons(const LessonStore& lesson_store) {
+    for (const auto& lesson : lesson_store.list()) {
+        std::cout
+            << lesson.lesson_id
+            << " enabled=" << (lesson.enabled ? "true" : "false")
+            << " task_type=" << lesson.task_type
+            << " target=" << lesson.target_name
+            << " error_code=" << lesson.error_code
+            << " occurrences=" << lesson.occurrence_count
+            << " last_task_id=" << lesson.last_task_id
+            << " summary=\"" << lesson.summary << "\""
+            << '\n';
+    }
+}
+
 void PrintUsage() {
     std::cout
         << "Usage:\n"
@@ -701,6 +717,7 @@ void PrintUsage() {
         << "  agentos memory stats\n"
         << "  agentos memory workflows\n"
         << "  agentos memory stored-workflows\n"
+        << "  agentos memory lessons\n"
         << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>] [required_inputs=a,b]\n"
         << "  agentos schedule add task=<task_type> due=now key=value ...\n"
         << "  agentos schedule list\n"
@@ -984,6 +1001,11 @@ int RunMemoryCommand(MemoryManager& memory_manager, const int argc, char* argv[]
 
     if (command == "stored-workflows") {
         PrintWorkflowDefinitions(memory_manager.workflow_store());
+        return 0;
+    }
+
+    if (command == "lessons") {
+        PrintLessons(memory_manager.lesson_store());
         return 0;
     }
 

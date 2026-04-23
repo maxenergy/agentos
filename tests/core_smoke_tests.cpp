@@ -671,6 +671,46 @@ void TestPersistentTaskAndStepLogs(const std::filesystem::path& workspace) {
     Expect(std::filesystem::exists(workspace / "memory" / "step_log.tsv"), "step_log.tsv should be written");
 }
 
+void TestLessonStoreRecordsFailuresAcrossRestart(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "lesson_store_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    {
+        TestRuntime runtime(isolated_workspace);
+        RegisterCore(runtime);
+
+        for (int index = 0; index < 2; ++index) {
+            const auto result = runtime.loop.run(agentos::TaskRequest{
+                .task_id = "lesson-failure-" + std::to_string(index),
+                .task_type = "read_file",
+                .objective = "record repeated workspace escape failure",
+                .workspace_path = isolated_workspace,
+                .inputs = {
+                    {"path", "../outside.txt"},
+                },
+            });
+            Expect(!result.success, "lesson test failure should be recorded");
+        }
+
+        const auto lessons = runtime.memory_manager.lesson_store().list();
+        Expect(lessons.size() == 1, "lesson store should aggregate repeated failures in memory");
+        if (!lessons.empty()) {
+            Expect(lessons.front().occurrence_count == 2, "lesson store should count repeated failures");
+            Expect(lessons.front().error_code == "PolicyDenied", "lesson store should preserve failure code");
+        }
+    }
+
+    agentos::MemoryManager reloaded_memory(isolated_workspace / "memory");
+    const auto reloaded_lessons = reloaded_memory.lesson_store().list();
+    Expect(reloaded_lessons.size() == 1, "lesson store should reload persisted failures");
+    if (!reloaded_lessons.empty()) {
+        Expect(reloaded_lessons.front().occurrence_count == 2, "lesson store should persist repeated failure count");
+        Expect(reloaded_lessons.front().target_name == "file_read", "lesson store should persist target name");
+    }
+    Expect(std::filesystem::exists(isolated_workspace / "memory" / "lessons.tsv"), "lessons.tsv should be written");
+}
+
 void TestWorkflowCandidatesAcrossRestart(const std::filesystem::path& workspace) {
     const auto isolated_workspace = workspace / "workflow_candidates_isolated";
     std::filesystem::remove_all(isolated_workspace);
@@ -1039,6 +1079,7 @@ int main() {
     TestDefaultAgentRoute(workspace);
     TestIdempotentExecutionCache(workspace);
     TestPersistentTaskAndStepLogs(workspace);
+    TestLessonStoreRecordsFailuresAcrossRestart(workspace);
     TestWorkflowCandidatesAcrossRestart(workspace);
     TestWorkflowStorePersistsDefinitions(workspace);
     TestSchedulerRunsDueTask(workspace);

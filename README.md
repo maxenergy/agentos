@@ -60,7 +60,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Identity / Trust：IdentityManager、远程触发身份字段、PairingManager、TrustPolicy、AllowlistStore
 - Remote Trigger Policy：远程任务默认拒绝，必须先 pairing 并具备 `task.submit`
 - Idempotent Execution：`idempotency_key` + `runtime/execution_cache.tsv`
-- Persistent Memory：TaskLog / StepLog / Skill-Agent Stats / Workflow Candidates / WorkflowStore promotion
+- Persistent Memory：TaskLog / StepLog / Skill-Agent Stats / LessonStore / Workflow Candidates / WorkflowStore promotion
 - Workflow Generator / Scoring：基于历史 Task/Step 生成候选 workflow，可带 `required_inputs` promote 到 WorkflowStore，并由 Router 自动优先执行
 - Agent Scoring：Router 可基于历史 success_rate / latency 选择 agent
 - Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` 复用 AgentLoop 执行
@@ -99,6 +99,7 @@ build\agentos.exe memory stats
 build\agentos.exe memory workflows
 build\agentos.exe memory promote-workflow write_file_workflow required_inputs=path,content
 build\agentos.exe memory stored-workflows
+build\agentos.exe memory lessons
 build\agentos.exe run workflow_run workflow=write_file_workflow path=runtime/promoted.txt content=hello
 build\agentos.exe run write_file path=runtime/auto_promoted.txt content=hello
 build\agentos.exe trust identity-add identity=phone user=local-user label=dev-phone
@@ -137,6 +138,7 @@ runtime/memory/task_log.tsv
 runtime/memory/step_log.tsv
 runtime/memory/skill_stats.tsv
 runtime/memory/agent_stats.tsv
+runtime/memory/lessons.tsv
 runtime/memory/workflow_candidates.tsv
 runtime/memory/workflows.tsv
 ```

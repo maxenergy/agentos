@@ -28,6 +28,7 @@ add_library(agentos_core
     src/core/policy/policy_engine.cpp
     src/core/audit/audit_logger.cpp
     src/core/orchestration/subagent_manager.cpp
+    src/memory/lesson_store.cpp
     src/memory/memory_manager.cpp
     src/memory/workflow_store.cpp
     src/scheduler/scheduler.cpp

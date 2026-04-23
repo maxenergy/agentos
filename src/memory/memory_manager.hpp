@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/models.hpp"
+#include "memory/lesson_store.hpp"
 #include "memory/workflow_store.hpp"
 
 #include <filesystem>
@@ -33,6 +34,8 @@ public:
     [[nodiscard]] std::vector<WorkflowCandidate> workflow_candidates() const;
     [[nodiscard]] WorkflowStore& workflow_store();
     [[nodiscard]] const WorkflowStore& workflow_store() const;
+    [[nodiscard]] LessonStore& lesson_store();
+    [[nodiscard]] const LessonStore& lesson_store() const;
     void refresh_workflow_store() const;
 
 private:
@@ -43,6 +46,7 @@ private:
     void flush_stats() const;
 
     std::filesystem::path storage_dir_;
+    LessonStore lesson_store_;
     WorkflowStore workflow_store_;
     std::vector<TaskMemoryRecord> tasks_;
     std::unordered_map<std::string, SkillStats> skill_stats_;
