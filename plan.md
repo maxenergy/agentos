@@ -17,7 +17,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | --- | --- | --- | --- |
 | Core Runtime | Mostly implemented MVP | `AgentLoop`, `Router`, `SkillRouter`, `AgentRouter`, `WorkflowRouter`, `PolicyEngine`, `AuditLogger`, registries | Failure recovery, lifecycle/session semantics |
 | Builtin Skills | Implemented MVP | `file_read`, `file_write`, `file_patch`, `http_fetch`, `workflow_run` | Schema validation, richer workflow definitions |
-| CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, cwd/timeout/output/env controls | External spec loader, `jq_transform`, resource limits |
+| CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, repo-local external spec loader, cwd/timeout/output/env controls | `jq_transform`, redaction, resource limits |
 | Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager`, automatic subagent candidate selection, `WorkspaceSession` abstraction, subagent cost/concurrency limits | Task decomposition, role assignment, more adapters |
 | Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes/import tests, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
@@ -36,7 +36,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - Workflow learning now has candidate/scoring output, LessonStore, lesson-driven routing/policy hints, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
 - Scheduler supports manual `run-due`, foreground `tick`, foreground `daemon`, run history metadata, retry/backoff, `missed_run_policy=run-once|skip`, and `every:<n>s|m|h|d` recurrence. Disabled tasks are skipped, and missed interval tasks can either run once per tick or skip stale runs and reschedule from the current scheduler time; there is no full cron parser.
 - Multi-agent orchestration supports explicit lists, automatic healthy/capability-based subagent candidate selection, `WorkspaceSession` for session-capable agents, parallel concurrency limits, and estimated-cost budget checks. There is no automatic task decomposition or role assignment.
-- Plugin Host and external CLI spec loading are still docs-only.
+- Plugin Host is still docs-only. External CLI spec loading now supports repo-local `runtime/cli_specs/*.tsv` files.
 - Persistence is TSV-based and adequate for MVP, but not yet versioned, transactional, or migration-safe.
 
 ## Next Execution Plan
@@ -90,7 +90,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 
 ### Phase F: CLI And Plugin Ecosystem
 
-- [ ] Add external CLI spec loader from a repo-local spec directory.
+- [x] Add external CLI spec loader from a repo-local spec directory.
 - [ ] Add `jq_transform` CLI skill or explicitly remove it from Roadmap MVP.
 - [ ] Add command redaction support for sensitive arguments.
 - [ ] Add process resource controls where OS support is available.
@@ -176,3 +176,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added automatic SubagentManager candidate selection by healthy capability match, historical stats, and lessons.
 - 2026-04-23: Added WorkspaceSession abstraction for opening, using, and closing session-capable agent adapters within a workspace.
 - 2026-04-23: Added SubagentManager parallel concurrency limits and estimated-cost budget checks with memory cost stats.
+- 2026-04-23: Added repo-local external CLI spec loading from `runtime/cli_specs/*.tsv` and verified dynamic skill registration.

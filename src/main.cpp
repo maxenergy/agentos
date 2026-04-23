@@ -16,6 +16,7 @@
 #include "hosts/agents/mock_planning_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
 #include "hosts/cli/cli_skill_invoker.hpp"
+#include "hosts/cli/cli_spec_loader.hpp"
 #include "memory/memory_manager.hpp"
 #include "scheduler/scheduler.hpp"
 #include "skills/builtin/file_patch_skill.hpp"
@@ -1366,6 +1367,9 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeGitStatusSpec(), runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeGitDiffSpec(), runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeCurlFetchSpec(), runtime.cli_host));
+    for (const auto& spec : LoadCliSpecsFromDirectory(workspace / "runtime" / "cli_specs")) {
+        runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(spec, runtime.cli_host));
+    }
     runtime.agent_registry.register_agent(std::make_shared<MockPlanningAgent>());
     runtime.agent_registry.register_agent(std::make_shared<CodexCliAgent>(runtime.cli_host, workspace));
     runtime.auth_manager.register_provider(std::make_shared<OpenAiAuthProviderAdapter>(

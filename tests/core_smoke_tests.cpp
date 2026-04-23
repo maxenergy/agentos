@@ -16,6 +16,8 @@
 #include "core/router/router.hpp"
 #include "hosts/agents/mock_planning_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
+#include "hosts/cli/cli_skill_invoker.hpp"
+#include "hosts/cli/cli_spec_loader.hpp"
 #include "memory/memory_manager.hpp"
 #include "memory/workflow_store.hpp"
 #include "scheduler/scheduler.hpp"
@@ -1698,6 +1700,56 @@ void TestCliHostEnvironmentAllowlist(const std::filesystem::path& workspace) {
     Expect(allowed.stdout_text.find("present=secret-env-value") != std::string::npos, "CLI env probe should receive allowlisted env var");
 }
 
+void TestExternalCliSpecLoader(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "external_cli_spec_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace / "runtime" / "cli_specs");
+
+#ifdef _WIN32
+    const auto binary = "cmd";
+    const auto args_template = "/d,/s,/c,echo external {{message}}";
+#else
+    const auto binary = "sh";
+    const auto args_template = "-c,printf '%s\\n' \"external {{message}}\"";
+#endif
+
+    {
+        std::ofstream spec_file(isolated_workspace / "runtime" / "cli_specs" / "external_echo.tsv", std::ios::binary);
+        spec_file
+            << "external_echo" << '\t'
+            << "Echo from an external CLI spec." << '\t'
+            << binary << '\t'
+            << args_template << '\t'
+            << "message" << '\t'
+            << "text" << '\t'
+            << "low" << '\t'
+            << "process.spawn" << '\t'
+            << "3000"
+            << '\n';
+    }
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    agentos::CliHost cli_host;
+    for (const auto& spec : agentos::LoadCliSpecsFromDirectory(isolated_workspace / "runtime" / "cli_specs")) {
+        runtime.skill_registry.register_skill(std::make_shared<agentos::CliSkillInvoker>(spec, cli_host));
+    }
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "external-cli-spec",
+        .task_type = "external_echo",
+        .objective = "execute loaded external cli spec",
+        .workspace_path = isolated_workspace,
+        .inputs = {
+            {"message", "hello"},
+        },
+    });
+
+    Expect(result.success, "external CLI spec should load and execute as a skill");
+    Expect(result.route_target == "external_echo", "external CLI spec should register by its configured name");
+    Expect(result.output_json.find("external hello") != std::string::npos, "external CLI spec output should include rendered argument");
+}
+
 void TestAuthApiKeySession(const std::filesystem::path& workspace) {
     SetEnvForTest("AGENTOS_TEST_QWEN_KEY", "test-secret");
 
@@ -2011,6 +2063,7 @@ int main() {
     TestWorkspaceSessionRunsAgentInSession(workspace);
     TestWorkspaceSessionRejectsUnsupportedAgent(workspace);
     TestCliHostEnvironmentAllowlist(workspace);
+    TestExternalCliSpecLoader(workspace);
     TestAuthApiKeySession(workspace);
     TestAuthRefreshSession(workspace);
     TestAuthDefaultProfileMapping(workspace);

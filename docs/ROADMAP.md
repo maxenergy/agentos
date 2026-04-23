@@ -83,6 +83,7 @@ Delivered:
 - `git_status`
 - `git_diff`
 - `curl_fetch`
+- external CLI spec loader from `runtime/cli_specs/*.tsv`
 - cwd boundary checks
 - timeout
 - stdout/stderr capture
@@ -91,7 +92,6 @@ Delivered:
 
 Remaining:
 
-- External CLI spec loader
 - `jq_transform`
 - command redaction for sensitive arguments
 - stronger OS resource limits

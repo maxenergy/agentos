@@ -66,6 +66,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Lesson Hints：重复 workflow 失败会抑制自动 workflow，重复 agent 失败会降低 agent 路由优先级，重复 PolicyDenied 会附加历史失败提示
 - Workflow Generator / Scoring：基于历史 Task/Step 生成候选 workflow，可带 `required_inputs` promote 到 WorkflowStore，并由 Router 自动优先执行
 - Agent Scoring：Router 可基于历史 success_rate / latency 选择 agent
+- External CLI Specs：`runtime/cli_specs/*.tsv` 可声明 repo-local CLI skill，并启动时动态注册
 - Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` / `schedule daemon` 复用 AgentLoop 执行，支持 retry/backoff 和 missed-run policy，并记录独立 run history
 - Subagent Orchestration：显式或自动候选 agent 的 sequential / parallel 编排，支持并发/成本限制与 WorkspaceSession 基础生命周期，复用 Policy / Audit / Memory
 - CTest smoke test：覆盖核心 loop、策略拒绝、权限模型、远程 pairing、workflow、scheduler retry/disabled/missed-run、subagent 编排、WorkspaceSession
@@ -156,6 +157,7 @@ runtime/memory/agent_stats.tsv
 runtime/memory/lessons.tsv
 runtime/memory/workflow_candidates.tsv
 runtime/memory/workflows.tsv
+runtime/cli_specs/*.tsv
 ```
 
 ## 项目结构

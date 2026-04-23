@@ -40,6 +40,7 @@ add_library(agentos_core
     src/hosts/agents/codex_cli_agent.cpp
     src/hosts/cli/cli_host.cpp
     src/hosts/cli/cli_skill_invoker.cpp
+    src/hosts/cli/cli_spec_loader.cpp
     src/skills/builtin/file_read_skill.cpp
     src/skills/builtin/file_write_skill.cpp
     src/skills/builtin/file_patch_skill.cpp

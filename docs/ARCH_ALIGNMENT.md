@@ -31,7 +31,7 @@ Skill System
 
 CLI Integration
 - CLI Host: ✅ 支持 cwd 限制、timeout、stdout/stderr 捕获、输出限流、env 白名单
-- Spec system: 🚧 代码内 CliSpec 已实现，外部 spec 文件尚未实现
+- Spec system: 🚧 代码内 CliSpec 与 runtime/cli_specs/*.tsv 外部 spec loader 已实现
 
 Agent System
 - IAgentAdapter: ✅ 已定义

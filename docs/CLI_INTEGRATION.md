@@ -188,6 +188,7 @@ public:
 - `CliSpec.env_allowlist` 已用于子进程环境白名单
 - `cwd` 参数必须解析到当前 workspace 内
 - Windows batch / cmd 启动已通过受控 `CreateProcess` 路径执行
+- `runtime/cli_specs/*.tsv` 可声明 repo-local 外部 CLI specs，并在启动时注册为 `CliSkillInvoker`
 
 ### 8.6 资源限制
 长期建议增加：
