@@ -131,6 +131,7 @@ Delivered:
 - `SecureTokenStore` env-ref MVP
 - `CredentialBroker`
 - API-key profile support
+- workspace default profile mapping
 - Codex / Claude CLI session probes
 - refresh command and adapter/store refresh path
 - `agentos auth ...` command group
@@ -141,7 +142,6 @@ Remaining:
 - OAuth refresh token exchange
 - system credential store integration
 - cloud credential modes
-- workspace default profile mapping
 
 ---
 

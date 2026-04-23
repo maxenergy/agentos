@@ -4,8 +4,9 @@
 
 namespace agentos {
 
-AuthManager::AuthManager(SessionStore& session_store)
-    : session_store_(session_store) {}
+AuthManager::AuthManager(SessionStore& session_store, AuthProfileStore* profile_store)
+    : session_store_(session_store),
+      profile_store_(profile_store) {}
 
 void AuthManager::register_provider(std::shared_ptr<IAuthProviderAdapter> adapter) {
     if (!adapter) {
@@ -101,6 +102,20 @@ void AuthManager::logout(const AuthProviderId provider, const std::string& profi
     }
 
     adapter->logout(profile_name);
+}
+
+void AuthManager::set_default_profile(const AuthProviderId provider, const std::string& profile_name) {
+    if (!profile_store_) {
+        throw std::runtime_error("ProfileStoreUnavailable");
+    }
+    profile_store_->set_default(provider, profile_name);
+}
+
+std::string AuthManager::default_profile(const AuthProviderId provider, const std::string& fallback) const {
+    if (!profile_store_) {
+        return fallback;
+    }
+    return profile_store_->default_profile(provider).value_or(fallback);
 }
 
 std::shared_ptr<IAuthProviderAdapter> AuthManager::find(const AuthProviderId provider) const {

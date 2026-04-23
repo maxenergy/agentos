@@ -1,4 +1,5 @@
 #include "auth/auth_manager.hpp"
+#include "auth/auth_profile_store.hpp"
 #include "auth/credential_broker.hpp"
 #include "auth/provider_adapters.hpp"
 #include "auth/secure_token_store.hpp"
@@ -49,6 +50,7 @@ struct Runtime {
     AgentRegistry agent_registry;
     CliHost cli_host;
     SessionStore session_store;
+    AuthProfileStore auth_profile_store;
     SecureTokenStore token_store;
     CredentialBroker credential_broker;
     AuthManager auth_manager;
@@ -67,8 +69,9 @@ struct Runtime {
 
     explicit Runtime(const std::filesystem::path& workspace)
         : session_store(workspace / "runtime" / "auth_sessions.tsv"),
+          auth_profile_store(workspace / "runtime" / "auth_profiles.tsv"),
           credential_broker(session_store, token_store),
-          auth_manager(session_store),
+          auth_manager(session_store, &auth_profile_store),
           execution_cache(workspace / "runtime" / "execution_cache.tsv"),
           identity_manager(workspace / "runtime" / "trust" / "identities.tsv"),
           allowlist_store(workspace / "runtime" / "trust" / "allowlist.tsv"),
@@ -736,6 +739,7 @@ void PrintUsage() {
         << "  agentos auth status [provider] [profile=name]\n"
         << "  agentos auth login <provider> mode=api-key api_key_env=ENV_NAME [profile=name]\n"
         << "  agentos auth login <provider> mode=cli-session [profile=name]\n"
+        << "  agentos auth default-profile <provider> profile=name\n"
         << "  agentos auth refresh <provider> [profile=name]\n"
         << "  agentos auth probe <provider>\n"
         << "  agentos run <task_type> key=value ...\n\n"
@@ -1066,17 +1070,22 @@ int RunAuthCommand(AuthManager& auth_manager, const int argc, char* argv[]) {
 
         if (command == "status") {
             const auto options = ParseOptionsFromArgs(argc, argv, 4);
-            const auto profile = options.contains("profile") ? options.at("profile") : "default";
             if (argc >= 4 && std::string(argv[3]).find('=') == std::string::npos) {
                 const auto provider = ParseAuthProviderId(argv[3]);
                 if (!provider.has_value()) {
                     std::cerr << "unknown provider: " << argv[3] << '\n';
                     return 1;
                 }
+                const auto profile = options.contains("profile")
+                    ? options.at("profile")
+                    : auth_manager.default_profile(*provider);
                 PrintAuthStatus(auth_manager.status(*provider, profile));
             } else {
-                for (const auto& status : auth_manager.status_all(profile)) {
-                    PrintAuthStatus(status);
+                for (const auto& descriptor : auth_manager.providers()) {
+                    const auto profile = options.contains("profile")
+                        ? options.at("profile")
+                        : auth_manager.default_profile(descriptor.provider);
+                    PrintAuthStatus(auth_manager.status(descriptor.provider, profile));
                 }
             }
             return 0;
@@ -1092,6 +1101,9 @@ int RunAuthCommand(AuthManager& auth_manager, const int argc, char* argv[]) {
             if (!provider.has_value()) {
                 std::cerr << "unknown provider: " << argv[3] << '\n';
                 return 1;
+            }
+            if (!options.contains("profile")) {
+                options["profile"] = auth_manager.default_profile(*provider);
             }
 
             const auto mode_text = options.contains("mode") ? options["mode"] : "api-key";
@@ -1112,14 +1124,40 @@ int RunAuthCommand(AuthManager& auth_manager, const int argc, char* argv[]) {
                 return 1;
             }
             const auto options = ParseOptionsFromArgs(argc, argv, 4);
-            const auto profile = options.contains("profile") ? options.at("profile") : "default";
             const auto provider = ParseAuthProviderId(argv[3]);
             if (!provider.has_value()) {
                 std::cerr << "unknown provider: " << argv[3] << '\n';
                 return 1;
             }
+            const auto profile = options.contains("profile")
+                ? options.at("profile")
+                : auth_manager.default_profile(*provider);
 
             PrintAuthSession(auth_manager.refresh(*provider, profile));
+            return 0;
+        }
+
+        if (command == "default-profile") {
+            if (argc < 4) {
+                std::cerr << "provider is required\n";
+                return 1;
+            }
+            const auto options = ParseOptionsFromArgs(argc, argv, 4);
+            const auto provider = ParseAuthProviderId(argv[3]);
+            if (!provider.has_value()) {
+                std::cerr << "unknown provider: " << argv[3] << '\n';
+                return 1;
+            }
+            const auto profile = options.contains("profile")
+                ? options.at("profile")
+                : (argc >= 5 && std::string(argv[4]).find('=') == std::string::npos ? std::string(argv[4]) : "");
+            if (profile.empty()) {
+                std::cerr << "profile is required\n";
+                return 1;
+            }
+
+            auth_manager.set_default_profile(*provider, profile);
+            std::cout << ToString(*provider) << " default_profile=" << profile << '\n';
             return 0;
         }
 
@@ -1150,12 +1188,14 @@ int RunAuthCommand(AuthManager& auth_manager, const int argc, char* argv[]) {
                 return 1;
             }
             const auto options = ParseOptionsFromArgs(argc, argv, 4);
-            const auto profile = options.contains("profile") ? options.at("profile") : "default";
             const auto provider = ParseAuthProviderId(argv[3]);
             if (!provider.has_value()) {
                 std::cerr << "unknown provider: " << argv[3] << '\n';
                 return 1;
             }
+            const auto profile = options.contains("profile")
+                ? options.at("profile")
+                : auth_manager.default_profile(*provider);
 
             auth_manager.logout(*provider, profile);
             std::cout << "logged out " << ToString(*provider) << " profile=" << profile << '\n';

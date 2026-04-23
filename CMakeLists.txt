@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(agentos_core
     src/auth/auth_manager.cpp
     src/auth/auth_models.cpp
+    src/auth/auth_profile_store.cpp
     src/auth/credential_broker.cpp
     src/auth/provider_adapters.cpp
     src/auth/secure_token_store.cpp

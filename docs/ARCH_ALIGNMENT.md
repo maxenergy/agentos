@@ -41,6 +41,7 @@ Agent System
 
 Auth System
 - 基础结构: ✅ AuthManager / ProviderAdapter / SessionStore / CredentialBroker
+- Profile mapping: ✅ runtime/auth_profiles.tsv provider 默认 profile 映射已实现
 - OAuth: ❌
 - CLI session: 🚧 Codex / Claude passthrough probe 与导入已实现
 

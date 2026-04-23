@@ -1,4 +1,5 @@
 #include "auth/auth_manager.hpp"
+#include "auth/auth_profile_store.hpp"
 #include "auth/credential_broker.hpp"
 #include "auth/provider_adapters.hpp"
 #include "auth/secure_token_store.hpp"
@@ -1192,6 +1193,33 @@ void TestAuthRefreshSession(const std::filesystem::path& workspace) {
     }
 }
 
+void TestAuthDefaultProfileMapping(const std::filesystem::path& workspace) {
+    SetEnvForTest("AGENTOS_TEST_QWEN_PROFILE_KEY", "profile-secret");
+
+    const auto store_path = workspace / "auth_profiles" / "defaults.tsv";
+    agentos::SessionStore session_store(workspace / "auth_profiles" / "sessions.tsv");
+    agentos::AuthProfileStore profile_store(store_path);
+    agentos::SecureTokenStore token_store;
+    agentos::AuthManager auth_manager(session_store, &profile_store);
+
+    auth_manager.register_provider(std::make_shared<agentos::QwenAuthProviderAdapter>(session_store, token_store));
+    auth_manager.set_default_profile(agentos::AuthProviderId::qwen, "team");
+    Expect(auth_manager.default_profile(agentos::AuthProviderId::qwen) == "team", "auth manager should return workspace default profile");
+
+    const auto session = auth_manager.login(
+        agentos::AuthProviderId::qwen,
+        agentos::AuthMode::api_key,
+        {
+            {"profile", auth_manager.default_profile(agentos::AuthProviderId::qwen)},
+            {"api_key_env", "AGENTOS_TEST_QWEN_PROFILE_KEY"},
+        });
+    Expect(session.profile_name == "team", "auth login should use workspace default profile when supplied by CLI layer");
+
+    agentos::AuthProfileStore reloaded_profile_store(store_path);
+    agentos::AuthManager reloaded_manager(session_store, &reloaded_profile_store);
+    Expect(reloaded_manager.default_profile(agentos::AuthProviderId::qwen) == "team", "workspace default profile should persist");
+}
+
 void TestAuthUnsupportedMode(const std::filesystem::path& workspace) {
     agentos::SessionStore session_store(workspace / "auth_unsupported" / "sessions.tsv");
     agentos::SecureTokenStore token_store;
@@ -1243,6 +1271,7 @@ int main() {
     TestCliHostEnvironmentAllowlist(workspace);
     TestAuthApiKeySession(workspace);
     TestAuthRefreshSession(workspace);
+    TestAuthDefaultProfileMapping(workspace);
     TestAuthUnsupportedMode(workspace);
 
     if (failures != 0) {
