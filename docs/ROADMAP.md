@@ -132,12 +132,13 @@ Delivered:
 - `CredentialBroker`
 - API-key profile support
 - Codex / Claude CLI session probes
+- refresh command and adapter/store refresh path
 - `agentos auth ...` command group
 
 Remaining:
 
 - OAuth PKCE flow
-- refresh flow
+- OAuth refresh token exchange
 - system credential store integration
 - cloud credential modes
 - workspace default profile mapping

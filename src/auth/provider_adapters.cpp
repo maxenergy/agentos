@@ -173,9 +173,13 @@ AuthStatus StaticAuthProviderAdapter::status(const std::string& profile_name) {
 
 AuthSession StaticAuthProviderAdapter::refresh(const AuthSession& session) {
     if (!session.refresh_supported) {
-        throw std::runtime_error("RefreshFailed");
+        throw std::runtime_error("RefreshUnsupported");
     }
-    return session;
+
+    auto refreshed = session;
+    refreshed.expires_at = LongLivedSessionExpiry();
+    refreshed.metadata["refreshed_by"] = "static-adapter";
+    return refreshed;
 }
 
 void StaticAuthProviderAdapter::logout(const std::string& profile_name) {

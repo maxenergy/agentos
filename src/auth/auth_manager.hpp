@@ -16,6 +16,7 @@ public:
     void register_provider(std::shared_ptr<IAuthProviderAdapter> adapter);
     std::vector<AuthProviderDescriptor> providers() const;
     AuthSession login(AuthProviderId provider, AuthMode mode, const std::map<std::string, std::string>& options);
+    AuthSession refresh(AuthProviderId provider, const std::string& profile_name);
     AuthStatus status(AuthProviderId provider, const std::string& profile_name);
     std::vector<AuthStatus> status_all(const std::string& profile_name);
     std::optional<AuthSession> probe(AuthProviderId provider);
@@ -30,4 +31,3 @@ private:
 };
 
 }  // namespace agentos
-

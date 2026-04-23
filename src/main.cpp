@@ -736,6 +736,7 @@ void PrintUsage() {
         << "  agentos auth status [provider] [profile=name]\n"
         << "  agentos auth login <provider> mode=api-key api_key_env=ENV_NAME [profile=name]\n"
         << "  agentos auth login <provider> mode=cli-session [profile=name]\n"
+        << "  agentos auth refresh <provider> [profile=name]\n"
         << "  agentos auth probe <provider>\n"
         << "  agentos run <task_type> key=value ...\n\n"
         << "Examples:\n"
@@ -1102,6 +1103,23 @@ int RunAuthCommand(AuthManager& auth_manager, const int argc, char* argv[]) {
 
             const auto session = auth_manager.login(*provider, *mode, options);
             PrintAuthSession(session);
+            return 0;
+        }
+
+        if (command == "refresh") {
+            if (argc < 4) {
+                std::cerr << "provider is required\n";
+                return 1;
+            }
+            const auto options = ParseOptionsFromArgs(argc, argv, 4);
+            const auto profile = options.contains("profile") ? options.at("profile") : "default";
+            const auto provider = ParseAuthProviderId(argv[3]);
+            if (!provider.has_value()) {
+                std::cerr << "unknown provider: " << argv[3] << '\n';
+                return 1;
+            }
+
+            PrintAuthSession(auth_manager.refresh(*provider, profile));
             return 0;
         }
 

@@ -47,6 +47,24 @@ AuthSession AuthManager::login(
     return adapter->login(mode, options);
 }
 
+AuthSession AuthManager::refresh(const AuthProviderId provider, const std::string& profile_name) {
+    const auto adapter = find(provider);
+    if (!adapter) {
+        throw std::runtime_error("ProviderNotRegistered");
+    }
+
+    const auto session = session_store_.find(provider, profile_name);
+    if (!session.has_value()) {
+        throw std::runtime_error("SessionNotFound");
+    }
+
+    auto refreshed = adapter->refresh(*session);
+    refreshed.profile_name = profile_name;
+    refreshed.session_id = MakeAuthSessionId(provider, refreshed.mode, profile_name);
+    session_store_.save(refreshed);
+    return refreshed;
+}
+
 AuthStatus AuthManager::status(const AuthProviderId provider, const std::string& profile_name) {
     const auto adapter = find(provider);
     if (!adapter) {
@@ -95,4 +113,3 @@ std::shared_ptr<IAuthProviderAdapter> AuthManager::find(const AuthProviderId pro
 }
 
 }  // namespace agentos
-

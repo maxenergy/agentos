@@ -123,6 +123,7 @@ build\agentos.exe auth status
 build\agentos.exe auth probe openai
 build\agentos.exe auth login openai mode=cli-session
 build\agentos.exe auth login qwen mode=api-key api_key_env=QWEN_API_KEY profile=default
+build\agentos.exe auth refresh qwen profile=default
 build\agentos.exe run http_fetch url=https://example.com allow_network=true
 build\agentos.exe run analysis target=codex_cli objective=Review_the_project_structure
 ```

@@ -1146,6 +1146,50 @@ void TestAuthApiKeySession(const std::filesystem::path& workspace) {
     const auto status = auth_manager.status(agentos::AuthProviderId::qwen, "smoke");
     Expect(status.authenticated, "api-key status should authenticate when env var is present");
     Expect(credential_broker.get_access_token(agentos::AuthProviderId::qwen, "smoke") == "test-secret", "credential broker should resolve env ref");
+
+    bool refresh_failed = false;
+    try {
+        (void)auth_manager.refresh(agentos::AuthProviderId::qwen, "smoke");
+    } catch (const std::exception&) {
+        refresh_failed = true;
+    }
+    Expect(refresh_failed, "api-key session refresh should be unsupported");
+}
+
+void TestAuthRefreshSession(const std::filesystem::path& workspace) {
+    agentos::SessionStore session_store(workspace / "auth_refresh" / "sessions.tsv");
+    agentos::SecureTokenStore token_store;
+    agentos::AuthManager auth_manager(session_store);
+
+    auth_manager.register_provider(std::make_shared<agentos::GeminiAuthProviderAdapter>(session_store, token_store));
+
+    const auto original_expiry = std::chrono::system_clock::now() - std::chrono::hours(1);
+    session_store.save(agentos::AuthSession{
+        .session_id = agentos::MakeAuthSessionId(agentos::AuthProviderId::gemini, agentos::AuthMode::browser_oauth, "smoke"),
+        .provider = agentos::AuthProviderId::gemini,
+        .mode = agentos::AuthMode::browser_oauth,
+        .profile_name = "smoke",
+        .account_label = "gemini-smoke",
+        .managed_by_agentos = true,
+        .managed_by_external_cli = false,
+        .refresh_supported = true,
+        .headless_compatible = true,
+        .access_token_ref = "test-access-token-ref",
+        .refresh_token_ref = "test-refresh-token-ref",
+        .expires_at = original_expiry,
+    });
+
+    const auto refreshed = auth_manager.refresh(agentos::AuthProviderId::gemini, "smoke");
+    Expect(refreshed.refresh_supported, "refreshed session should preserve refresh support");
+    Expect(refreshed.expires_at > original_expiry, "refresh should extend the session expiry");
+    Expect(refreshed.metadata.contains("refreshed_by"), "refresh should record adapter metadata");
+
+    agentos::SessionStore reloaded_store(workspace / "auth_refresh" / "sessions.tsv");
+    const auto reloaded = reloaded_store.find(agentos::AuthProviderId::gemini, "smoke");
+    Expect(reloaded.has_value(), "refreshed session should be persisted");
+    if (reloaded.has_value()) {
+        Expect(reloaded->metadata.contains("refreshed_by"), "refreshed metadata should persist");
+    }
 }
 
 void TestAuthUnsupportedMode(const std::filesystem::path& workspace) {
@@ -1198,6 +1242,7 @@ int main() {
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);
     TestCliHostEnvironmentAllowlist(workspace);
     TestAuthApiKeySession(workspace);
+    TestAuthRefreshSession(workspace);
     TestAuthUnsupportedMode(workspace);
 
     if (failures != 0) {

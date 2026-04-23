@@ -19,7 +19,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | Builtin Skills | Implemented MVP | `file_read`, `file_write`, `file_patch`, `http_fetch`, `workflow_run` | Schema validation, richer workflow definitions |
 | CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, cwd/timeout/output/env controls | External spec loader, `jq_transform`, resource limits |
 | Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager` | Auto multi-agent routing, WorkspaceSession, more adapters |
-| Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes | OAuth, refresh, system credential store, workspace default profiles |
+| Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes, refresh command/adapter path | OAuth token exchange, system credential store, workspace default profiles |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
 | Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop | Daemon/service wrapper, cron, retry/backoff, missed-run policy |
@@ -32,7 +32,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 ## Review Findings
 
 - `docs/ROADMAP.md` has now been synced to the current implementation state, but it must stay linked to this plan to avoid drifting again.
-- `AUTH_PRD.md` and `AUTH_DESIGN.md` describe OAuth, refresh, cloud credentials, and secure credential storage, but the current code only implements API-key env references plus Codex/Claude CLI session probing.
+- `AUTH_PRD.md` and `AUTH_DESIGN.md` describe OAuth, refresh, cloud credentials, and secure credential storage, but the current code only implements API-key env references, Codex/Claude CLI session probing, and refresh command plumbing without real OAuth exchange.
 - Workflow learning now has candidate/scoring output, LessonStore, lesson-driven routing/policy hints, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
 - Scheduler supports manual `run-due` and foreground `tick`; there is no daemon/service wrapper, cron parser, retry policy, or missed-run semantics.
 - Multi-agent orchestration is explicit only. There is no automatic task decomposition, role assignment, WorkspaceSession, or cost-aware multi-agent router.
@@ -51,7 +51,8 @@ This file is the working plan for aligning the implementation with the docs. Upd
 
 ### Phase B: Auth Completion
 
-- [ ] Add `auth refresh` command and adapter interface coverage.
+- [x] Add `auth refresh` command and adapter interface coverage.
+- [ ] Implement real OAuth refresh token exchange once OAuth sessions exist.
 - [ ] Add workspace default profile mapping.
 - [ ] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
 - [ ] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
@@ -131,7 +132,8 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Add `LessonStore` skeleton.
 - [x] Use lessons as routing hints.
 - [x] Use lessons as policy hints.
-- [ ] Add `auth refresh` command and adapter interface coverage.
+- [x] Add `auth refresh` command and adapter interface coverage.
+- [ ] Add workspace default profile mapping.
 
 ## Progress Log
 
@@ -148,3 +150,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added `LessonStore` backed by `runtime/memory/lessons.tsv` and verified repeated failure aggregation.
 - 2026-04-23: Used LessonStore as Router hints to suppress repeated workflow failures and penalize repeatedly failing agents.
 - 2026-04-23: Added LessonStore policy hints for repeated PolicyDenied results without changing hard policy decisions.
+- 2026-04-23: Added `auth refresh` command, AuthManager refresh flow, adapter coverage, and unsupported-refresh handling.
