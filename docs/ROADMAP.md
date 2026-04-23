@@ -210,6 +210,7 @@ Delivered:
 - interval tasks
 - manual `schedule run-due`
 - foreground `schedule tick` loop
+- scheduler-specific execution metadata
 
 Remaining:
 
@@ -217,7 +218,6 @@ Remaining:
 - cron grammar
 - retry/backoff
 - missed-run semantics
-- scheduler-specific execution metadata
 
 ---
 

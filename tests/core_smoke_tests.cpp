@@ -971,6 +971,17 @@ void TestSchedulerRunsDueTask(const std::filesystem::path& workspace) {
     const auto reloaded_task = reloaded.find("write-once");
     Expect(reloaded_task.has_value(), "scheduled task should reload from persisted store");
     Expect(reloaded_task->run_count == 1, "scheduled task run_count should persist");
+
+    const auto history = reloaded.run_history();
+    Expect(history.size() == 1, "scheduler execution history should persist one run record");
+    if (!history.empty()) {
+        Expect(history.front().schedule_id == "write-once", "scheduler history should preserve schedule id");
+        Expect(history.front().task_id == "write-once.run-1", "scheduler history should preserve generated task id");
+        Expect(history.front().success, "scheduler history should record success");
+        Expect(history.front().route_target == "file_write", "scheduler history should record route target");
+        Expect(history.front().run_count == 1, "scheduler history should record run count");
+    }
+    Expect(std::filesystem::exists(workspace / "scheduler" / "runs.tsv"), "scheduler runs.tsv should be written");
 }
 
 void TestSchedulerReschedulesIntervalTask(const std::filesystem::path& workspace) {

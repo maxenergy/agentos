@@ -27,6 +27,21 @@ struct SchedulerRunRecord {
     bool rescheduled = false;
 };
 
+struct SchedulerExecutionRecord {
+    std::string schedule_id;
+    std::string task_id;
+    long long started_epoch_ms = 0;
+    long long completed_epoch_ms = 0;
+    int run_count = 0;
+    bool success = false;
+    bool rescheduled = false;
+    std::string route_kind;
+    std::string route_target;
+    std::string error_code;
+    std::string error_message;
+    int duration_ms = 0;
+};
+
 class Scheduler {
 public:
     explicit Scheduler(std::filesystem::path store_path);
@@ -36,17 +51,21 @@ public:
     [[nodiscard]] std::optional<ScheduledTask> find(const std::string& schedule_id) const;
     [[nodiscard]] std::vector<ScheduledTask> list() const;
     [[nodiscard]] std::vector<ScheduledTask> due(long long now_epoch_ms) const;
+    [[nodiscard]] std::vector<SchedulerExecutionRecord> run_history() const;
     static long long NowEpochMs();
 
     std::vector<SchedulerRunRecord> run_due(AgentLoop& loop, long long now_epoch_ms = NowEpochMs());
 
     [[nodiscard]] const std::filesystem::path& store_path() const;
+    [[nodiscard]] const std::filesystem::path& history_path() const;
 
 private:
     void load();
     void flush() const;
+    void append_execution_record(const SchedulerExecutionRecord& record) const;
 
     std::filesystem::path store_path_;
+    std::filesystem::path history_path_;
     std::vector<ScheduledTask> scheduled_tasks_;
 };
 

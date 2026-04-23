@@ -604,6 +604,23 @@ bool PrintSchedulerRunRecords(const std::vector<SchedulerRunRecord>& records) {
     return all_success;
 }
 
+void PrintSchedulerHistory(const std::vector<SchedulerExecutionRecord>& records) {
+    for (const auto& record : records) {
+        std::cout
+            << record.schedule_id
+            << " task_id=" << record.task_id
+            << " run_count=" << record.run_count
+            << " success=" << (record.success ? "true" : "false")
+            << " rescheduled=" << (record.rescheduled ? "true" : "false")
+            << " route=" << record.route_kind << "->" << record.route_target
+            << " duration_ms=" << record.duration_ms;
+        if (!record.error_code.empty()) {
+            std::cout << " error_code=" << record.error_code;
+        }
+        std::cout << '\n';
+    }
+}
+
 void PrintMemorySummary(const MemoryManager& memory_manager) {
     std::cout
         << "tasks=" << memory_manager.task_log().size()
@@ -735,6 +752,7 @@ void PrintUsage() {
         << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>] [required_inputs=a,b]\n"
         << "  agentos schedule add task=<task_type> due=now key=value ...\n"
         << "  agentos schedule list\n"
+        << "  agentos schedule history\n"
         << "  agentos schedule run-due\n"
         << "  agentos schedule tick [iterations=1] [interval_ms=1000]\n"
         << "  agentos schedule remove id=<schedule_id>\n"
@@ -897,6 +915,11 @@ int RunScheduleCommand(
         for (const auto& task : scheduler.list()) {
             PrintScheduledTask(task);
         }
+        return 0;
+    }
+
+    if (command == "history") {
+        PrintSchedulerHistory(scheduler.run_history());
         return 0;
     }
 

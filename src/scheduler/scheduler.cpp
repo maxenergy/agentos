@@ -146,7 +146,8 @@ double ParseDouble(const std::string& value, const double fallback) {
 }  // namespace
 
 Scheduler::Scheduler(std::filesystem::path store_path)
-    : store_path_(std::move(store_path)) {
+    : store_path_(std::move(store_path)),
+      history_path_(store_path_.parent_path() / "runs.tsv") {
     if (!store_path_.parent_path().empty()) {
         std::filesystem::create_directories(store_path_.parent_path());
     }
@@ -198,6 +199,36 @@ std::vector<ScheduledTask> Scheduler::due(const long long now_epoch_ms) const {
     return due_tasks;
 }
 
+std::vector<SchedulerExecutionRecord> Scheduler::run_history() const {
+    std::vector<SchedulerExecutionRecord> records;
+
+    std::ifstream input(history_path_, std::ios::binary);
+    std::string line;
+    while (std::getline(input, line)) {
+        const auto parts = SplitLine(line);
+        if (parts.size() < 12) {
+            continue;
+        }
+
+        records.push_back(SchedulerExecutionRecord{
+            .schedule_id = parts[0],
+            .task_id = parts[1],
+            .started_epoch_ms = ParseLongLong(parts[2], 0),
+            .completed_epoch_ms = ParseLongLong(parts[3], 0),
+            .run_count = ParseInt(parts[4], 0),
+            .success = parts[5] == "1",
+            .rescheduled = parts[6] == "1",
+            .route_kind = parts[7],
+            .route_target = parts[8],
+            .error_code = parts[9],
+            .error_message = parts[10],
+            .duration_ms = ParseInt(parts[11], 0),
+        });
+    }
+
+    return records;
+}
+
 std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long long now_epoch_ms) {
     std::vector<SchedulerRunRecord> records;
 
@@ -212,7 +243,9 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
             task.objective = "Scheduled task " + scheduled_task.schedule_id;
         }
 
+        const auto started_epoch_ms = NowEpochMs();
         const auto result = loop.run(task);
+        const auto completed_epoch_ms = NowEpochMs();
         scheduled_task.run_count += 1;
 
         bool rescheduled = false;
@@ -229,6 +262,20 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
             .result = result,
             .rescheduled = rescheduled,
         });
+        append_execution_record(SchedulerExecutionRecord{
+            .schedule_id = scheduled_task.schedule_id,
+            .task_id = task.task_id,
+            .started_epoch_ms = started_epoch_ms,
+            .completed_epoch_ms = completed_epoch_ms,
+            .run_count = scheduled_task.run_count,
+            .success = result.success,
+            .rescheduled = rescheduled,
+            .route_kind = route_target_kind_name(result.route_kind),
+            .route_target = result.route_target,
+            .error_code = result.error_code,
+            .error_message = result.error_message,
+            .duration_ms = result.duration_ms,
+        });
     }
 
     if (!records.empty()) {
@@ -240,6 +287,10 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
 
 const std::filesystem::path& Scheduler::store_path() const {
     return store_path_;
+}
+
+const std::filesystem::path& Scheduler::history_path() const {
+    return history_path_;
 }
 
 long long Scheduler::NowEpochMs() {
@@ -323,6 +374,28 @@ void Scheduler::flush() const {
             << EncodeField(SerializeInputs(task.inputs))
             << '\n';
     }
+}
+
+void Scheduler::append_execution_record(const SchedulerExecutionRecord& record) const {
+    if (!history_path_.parent_path().empty()) {
+        std::filesystem::create_directories(history_path_.parent_path());
+    }
+
+    std::ofstream output(history_path_, std::ios::binary | std::ios::app);
+    output
+        << EncodeField(record.schedule_id) << kDelimiter
+        << EncodeField(record.task_id) << kDelimiter
+        << record.started_epoch_ms << kDelimiter
+        << record.completed_epoch_ms << kDelimiter
+        << record.run_count << kDelimiter
+        << (record.success ? "1" : "0") << kDelimiter
+        << (record.rescheduled ? "1" : "0") << kDelimiter
+        << EncodeField(record.route_kind) << kDelimiter
+        << EncodeField(record.route_target) << kDelimiter
+        << EncodeField(record.error_code) << kDelimiter
+        << EncodeField(record.error_message) << kDelimiter
+        << record.duration_ms
+        << '\n';
 }
 
 }  // namespace agentos
