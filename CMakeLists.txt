@@ -34,6 +34,7 @@ add_library(agentos_core
     src/memory/workflow_store.cpp
     src/scheduler/scheduler.cpp
     src/core/router/router.cpp
+    src/core/router/router_components.cpp
     src/core/loop/agent_loop.cpp
     src/hosts/agents/codex_cli_agent.cpp
     src/hosts/cli/cli_host.cpp

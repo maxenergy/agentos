@@ -15,7 +15,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 
 | Area | Current Status | Evidence | Remaining Gap |
 | --- | --- | --- | --- |
-| Core Runtime | Mostly implemented MVP | `AgentLoop`, `Router`, `PolicyEngine`, `AuditLogger`, registries | Failure recovery, lifecycle/session semantics, router decomposition |
+| Core Runtime | Mostly implemented MVP | `AgentLoop`, `Router`, `SkillRouter`, `AgentRouter`, `WorkflowRouter`, `PolicyEngine`, `AuditLogger`, registries | Failure recovery, lifecycle/session semantics |
 | Builtin Skills | Implemented MVP | `file_read`, `file_write`, `file_patch`, `http_fetch`, `workflow_run` | Schema validation, richer workflow definitions |
 | CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, cwd/timeout/output/env controls | External spec loader, `jq_transform`, resource limits |
 | Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager` | Auto multi-agent routing, WorkspaceSession, more adapters |
@@ -82,7 +82,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 
 ### Phase E: Agent And Subagent System
 
-- [ ] Split Router internals into SkillRouter, AgentRouter, and WorkflowRouter without changing public behavior.
+- [x] Split Router internals into SkillRouter, AgentRouter, and WorkflowRouter without changing public behavior.
 - [ ] Add automatic agent candidate selection for SubagentManager.
 - [ ] Add WorkspaceSession abstraction for multi-agent work.
 - [ ] Add cost/concurrency limits for parallel subagent execution.
@@ -172,3 +172,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added controllable Codex/Claude CLI session fixture tests for auth probe/import success and unavailable-session failure.
 - 2026-04-23: Added `schedule daemon` foreground loop as the long-running scheduler wrapper, reusing the `tick` execution path.
 - 2026-04-23: Added `missed_run_policy=run-once|skip` for interval tasks and covered skip semantics.
+- 2026-04-23: Split Router internals into SkillRouter, AgentRouter, and WorkflowRouter while preserving public selection behavior.

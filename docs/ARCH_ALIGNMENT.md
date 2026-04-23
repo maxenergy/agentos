@@ -19,7 +19,7 @@
 ```text
 Core Runtime
 - AgentLoop: ✅ 已实现基础版本
-- Router: 🚧 初版存在，支持 Skill / Agent 静态路由与健康检查
+- Router: 🚧 初版存在，内部已拆分为 SkillRouter / AgentRouter / WorkflowRouter，支持 Skill / Agent / Workflow 路由与健康检查
 - Policy: 🚧 基础版存在，支持风险等级、网络权限、工作区路径限制
 - Audit: ✅ 基础 JSONL 审计已实现
 
@@ -77,7 +77,7 @@ Execution Safety
 ### 3.1 Core Runtime（最小内核）
 
 * AgentLoop
-* Router（Skill / Agent）
+* Router（SkillRouter / AgentRouter / WorkflowRouter）
 * PolicyEngine
 * Scheduler
 * MemoryManager

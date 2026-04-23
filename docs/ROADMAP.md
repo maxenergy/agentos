@@ -39,6 +39,7 @@ Delivered:
 - `SkillRegistry`
 - `AgentRegistry`
 - `Router`
+- Router decomposition into SkillRouter / AgentRouter / WorkflowRouter
 - `PolicyEngine`
 - `PermissionModel`
 - `AuditLogger`
@@ -46,7 +47,6 @@ Delivered:
 
 Remaining:
 
-- Router decomposition into SkillRouter / AgentRouter / WorkflowRouter
 - Richer failure recovery and lifecycle semantics
 
 ---

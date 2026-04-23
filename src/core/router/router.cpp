@@ -1,198 +1,45 @@
 #include "core/router/router.hpp"
 
-#include <algorithm>
-#include <array>
-#include <cctype>
-#include <limits>
+#include "core/router/router_components.hpp"
 
 namespace agentos {
-
-namespace {
-
-constexpr int kRepeatedLessonThreshold = 2;
-
-std::string ToLower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-bool LooksLikeAgentWork(const std::string& objective) {
-    const auto lower = ToLower(objective);
-    constexpr std::array<const char*, 4> keywords = {"plan", "analyze", "design", "reason"};
-
-    return std::any_of(keywords.begin(), keywords.end(), [&](const char* keyword) {
-        return lower.find(keyword) != std::string::npos;
-    });
-}
-
-bool HealthySkillExists(const SkillRegistry& registry, const std::string& name) {
-    const auto skill = registry.find(name);
-    return skill && skill->healthy();
-}
-
-bool HealthyAgentExists(const AgentRegistry& registry, const std::string& name) {
-    const auto agent = registry.find(name);
-    return agent && agent->healthy();
-}
-
-int LessonOccurrenceCount(
-    const MemoryManager* memory_manager,
-    const std::string& task_type,
-    const std::string& target_name) {
-    if (!memory_manager) {
-        return 0;
-    }
-
-    int occurrences = 0;
-    for (const auto& lesson : memory_manager->lesson_store().list()) {
-        if (lesson.enabled && lesson.task_type == task_type && lesson.target_name == target_name) {
-            occurrences += lesson.occurrence_count;
-        }
-    }
-    return occurrences;
-}
-
-bool HasRepeatedLesson(
-    const MemoryManager* memory_manager,
-    const std::string& task_type,
-    const std::string& target_name) {
-    return LessonOccurrenceCount(memory_manager, task_type, target_name) >= kRepeatedLessonThreshold;
-}
-
-bool HasRuntimeHistory(const MemoryManager* memory_manager) {
-    return memory_manager &&
-           (!memory_manager->agent_stats().empty() ||
-            !memory_manager->lesson_store().list().empty());
-}
-
-std::shared_ptr<IAgentAdapter> BestHealthyAgent(
-    const AgentRegistry& registry,
-    const MemoryManager* memory_manager,
-    const std::string& task_type) {
-    if (!HasRuntimeHistory(memory_manager)) {
-        return registry.first_healthy();
-    }
-
-    std::shared_ptr<IAgentAdapter> best_agent;
-    double best_score = -std::numeric_limits<double>::infinity();
-
-    for (const auto& profile : registry.list_profiles()) {
-        const auto agent = registry.find(profile.agent_name);
-        if (!agent || !agent->healthy()) {
-            continue;
-        }
-
-        double score = 0.0;
-        if (const auto stats_it = memory_manager->agent_stats().find(profile.agent_name);
-            stats_it != memory_manager->agent_stats().end() && stats_it->second.total_runs > 0) {
-            const auto& stats = stats_it->second;
-            const auto success_rate = static_cast<double>(stats.success_runs) / static_cast<double>(stats.total_runs);
-            score = (success_rate * 100.0) - (stats.avg_duration_ms / 1000.0);
-        }
-        score -= static_cast<double>(LessonOccurrenceCount(memory_manager, task_type, profile.agent_name)) * 25.0;
-
-        if (!best_agent || score > best_score) {
-            best_score = score;
-            best_agent = agent;
-        }
-    }
-
-    return best_agent ? best_agent : registry.first_healthy();
-}
-
-std::optional<WorkflowDefinition> BestApplicableWorkflow(
-    const TaskRequest& task,
-    const SkillRegistry& skill_registry,
-    const MemoryManager* memory_manager) {
-    if (!memory_manager || !HealthySkillExists(skill_registry, "workflow_run")) {
-        return std::nullopt;
-    }
-    if (HasRepeatedLesson(memory_manager, task.task_type, "workflow_run")) {
-        return std::nullopt;
-    }
-
-    std::optional<WorkflowDefinition> best_workflow;
-    for (const auto& workflow : memory_manager->workflow_store().list()) {
-        if (!workflow.enabled || workflow.trigger_task_type != task.task_type || workflow.ordered_steps.empty()) {
-            continue;
-        }
-        const auto required_inputs_satisfied = std::all_of(
-            workflow.required_inputs.begin(),
-            workflow.required_inputs.end(),
-            [&](const std::string& input_name) {
-                return task.inputs.contains(input_name);
-            });
-        if (!required_inputs_satisfied) {
-            continue;
-        }
-        if (!best_workflow.has_value() ||
-            workflow.score > best_workflow->score ||
-            (workflow.score == best_workflow->score && workflow.name < best_workflow->name)) {
-            best_workflow = workflow;
-        }
-    }
-
-    return best_workflow;
-}
-
-}  // namespace
 
 RouteDecision Router::select(
     const TaskRequest& task,
     const SkillRegistry& skill_registry,
     const AgentRegistry& agent_registry,
     const MemoryManager* memory_manager) const {
+    const SkillRouter skill_router;
+    const AgentRouter agent_router;
+    const WorkflowRouter workflow_router;
+
     if (task.preferred_target.has_value()) {
-        if (HealthySkillExists(skill_registry, *task.preferred_target)) {
+        if (skill_router.healthy_skill_exists(skill_registry, *task.preferred_target)) {
             return {RouteTargetKind::skill, *task.preferred_target, "preferred target matched a registered skill"};
         }
-        if (HealthyAgentExists(agent_registry, *task.preferred_target)) {
+        if (agent_router.healthy_agent_exists(agent_registry, *task.preferred_target)) {
             return {RouteTargetKind::agent, *task.preferred_target, "preferred target matched a registered agent"};
         }
     }
 
-    if (task.task_type != "workflow_run") {
-        if (const auto workflow = BestApplicableWorkflow(task, skill_registry, memory_manager); workflow.has_value()) {
-            return {
-                RouteTargetKind::skill,
-                "workflow_run",
-                "promoted workflow matched task_type",
-                workflow->name,
-            };
-        }
+    if (const auto workflow_route = workflow_router.route_promoted_workflow(task, skill_registry, memory_manager);
+        workflow_route.found()) {
+        return workflow_route;
     }
 
-    if (task.task_type == "read_file" && HealthySkillExists(skill_registry, "file_read")) {
-        return {RouteTargetKind::skill, "file_read", "task_type maps to file_read"};
-    }
-    if (task.task_type == "write_file" && HealthySkillExists(skill_registry, "file_write")) {
-        return {RouteTargetKind::skill, "file_write", "task_type maps to file_write"};
-    }
-    if (task.task_type == "patch_file" && HealthySkillExists(skill_registry, "file_patch")) {
-        return {RouteTargetKind::skill, "file_patch", "task_type maps to file_patch"};
+    if (const auto skill_route = skill_router.route_builtin_or_named(task, skill_registry);
+        skill_route.found()) {
+        return skill_route;
     }
 
-    if (task.task_type == "analysis" || task.task_type == "delegate" || LooksLikeAgentWork(task.objective)) {
-        const auto agent = BestHealthyAgent(agent_registry, memory_manager, task.task_type);
-        if (agent) {
-            return {
-                RouteTargetKind::agent,
-                agent->profile().agent_name,
-                HasRuntimeHistory(memory_manager)
-                    ? "objective routed by agent health, historical score, and lessons"
-                    : "objective is better handled by an agent adapter",
-            };
-        }
+    if (const auto agent_work_route = agent_router.route_agent_work(task, agent_registry, memory_manager);
+        agent_work_route.found()) {
+        return agent_work_route;
     }
 
-    if (HealthySkillExists(skill_registry, task.task_type)) {
-        return {RouteTargetKind::skill, task.task_type, "task_type matched a skill name directly"};
-    }
-
-    if (HealthyAgentExists(agent_registry, task.task_type)) {
-        return {RouteTargetKind::agent, task.task_type, "task_type matched an agent name directly"};
+    if (const auto named_agent_route = agent_router.route_named_agent(task, agent_registry);
+        named_agent_route.found()) {
+        return named_agent_route;
     }
 
     return {RouteTargetKind::none, "", "no route matched the current registries"};

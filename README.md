@@ -45,7 +45,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 
 已完成最小 C++20/CMake 工程骨架：
 
-- AgentLoop / Router / PolicyEngine / PermissionModel / AuditLogger
+- AgentLoop / Router（SkillRouter / AgentRouter / WorkflowRouter）/ PolicyEngine / PermissionModel / AuditLogger
 - SkillRegistry / AgentRegistry
 - MemoryManager 基础任务记录与评分骨架
 - 内建 Skill：file_read / file_write / file_patch / http_fetch / workflow_run
