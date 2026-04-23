@@ -1026,6 +1026,78 @@ void TestSchedulerReschedulesIntervalTask(const std::filesystem::path& workspace
     Expect(after_second->run_count == 2, "recurring scheduled task should persist final run count");
 }
 
+void TestSchedulerRetriesFailedTaskWithBackoff(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "scheduler_retry_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    agentos::Scheduler scheduler(isolated_workspace / "scheduler_retry" / "tasks.tsv");
+    scheduler.save(agentos::ScheduledTask{
+        .schedule_id = "retry-write",
+        .enabled = true,
+        .next_run_epoch_ms = 1000,
+        .interval_seconds = 0,
+        .max_runs = 1,
+        .run_count = 0,
+        .max_retries = 1,
+        .retry_count = 0,
+        .retry_backoff_seconds = 60,
+        .task = agentos::TaskRequest{
+            .task_type = "write_file",
+            .objective = "scheduled retry write",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"path", "scheduled/retry.txt"},
+            },
+        },
+    });
+
+    const auto first = scheduler.run_due(runtime.loop, 1000);
+    Expect(first.size() == 1, "failed scheduled task should run once");
+    Expect(!first.front().result.success, "scheduled task missing content should fail");
+    Expect(first.front().rescheduled, "failed scheduled task should be rescheduled for retry");
+
+    const auto after_first = scheduler.find("retry-write");
+    Expect(after_first.has_value(), "retry scheduled task should remain after first failure");
+    if (after_first.has_value()) {
+        Expect(after_first->enabled, "retry scheduled task should remain enabled before retry is exhausted");
+        Expect(after_first->run_count == 1, "retry scheduled task should count failed attempt");
+        Expect(after_first->retry_count == 1, "retry scheduled task should increment retry count");
+        Expect(after_first->next_run_epoch_ms == 61000, "retry scheduled task should apply backoff");
+    }
+
+    const auto second = scheduler.run_due(runtime.loop, 61000);
+    Expect(second.size() == 1, "failed scheduled task should run retry");
+    Expect(!second.front().result.success, "scheduled retry should still fail with missing content");
+    Expect(!second.front().rescheduled, "failed scheduled task should stop after max_retries");
+
+    const auto after_second = scheduler.find("retry-write");
+    Expect(after_second.has_value(), "retry scheduled task should remain inspectable after retry exhaustion");
+    if (after_second.has_value()) {
+        Expect(!after_second->enabled, "retry scheduled task should disable after retry exhaustion");
+        Expect(after_second->run_count == 2, "retry scheduled task should persist total attempts");
+        Expect(after_second->retry_count == 1, "retry scheduled task should persist exhausted retry count");
+    }
+
+    agentos::Scheduler reloaded(isolated_workspace / "scheduler_retry" / "tasks.tsv");
+    const auto reloaded_task = reloaded.find("retry-write");
+    Expect(reloaded_task.has_value(), "retry fields should reload from persisted scheduler task");
+    if (reloaded_task.has_value()) {
+        Expect(reloaded_task->max_retries == 1, "max_retries should persist");
+        Expect(reloaded_task->retry_backoff_seconds == 60, "retry_backoff_seconds should persist");
+    }
+
+    const auto history = reloaded.run_history();
+    Expect(history.size() == 2, "scheduler retry history should record both attempts");
+    if (history.size() == 2) {
+        Expect(!history[0].success && history[0].rescheduled, "first retry history record should show reschedule");
+        Expect(!history[1].success && !history[1].rescheduled, "second retry history record should show exhaustion");
+    }
+}
+
 void TestSubagentManagerSequentialRun(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -1334,6 +1406,7 @@ int main() {
     TestWorkflowStorePersistsDefinitions(workspace);
     TestSchedulerRunsDueTask(workspace);
     TestSchedulerReschedulesIntervalTask(workspace);
+    TestSchedulerRetriesFailedTaskWithBackoff(workspace);
     TestSubagentManagerSequentialRun(workspace);
     TestSubagentManagerParallelRun(workspace);
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);

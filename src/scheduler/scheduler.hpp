@@ -18,6 +18,9 @@ struct ScheduledTask {
     int interval_seconds = 0;
     int max_runs = 1;
     int run_count = 0;
+    int max_retries = 0;
+    int retry_count = 0;
+    int retry_backoff_seconds = 0;
     TaskRequest task;
 };
 

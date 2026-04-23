@@ -249,11 +249,20 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
         scheduled_task.run_count += 1;
 
         bool rescheduled = false;
-        if (scheduled_task.interval_seconds > 0 &&
+        if (!result.success && scheduled_task.retry_count < scheduled_task.max_retries) {
+            scheduled_task.retry_count += 1;
+            const auto backoff_ms = static_cast<long long>(scheduled_task.retry_backoff_seconds) * 1000LL;
+            scheduled_task.next_run_epoch_ms = now_epoch_ms + (backoff_ms > 0 ? backoff_ms : 1000LL);
+            rescheduled = true;
+        } else if (scheduled_task.interval_seconds > 0 &&
             (scheduled_task.max_runs == 0 || scheduled_task.run_count < scheduled_task.max_runs)) {
+            scheduled_task.retry_count = 0;
             scheduled_task.next_run_epoch_ms = now_epoch_ms + (static_cast<long long>(scheduled_task.interval_seconds) * 1000LL);
             rescheduled = true;
         } else {
+            if (result.success) {
+                scheduled_task.retry_count = 0;
+            }
             scheduled_task.enabled = false;
         }
 
@@ -338,6 +347,9 @@ void Scheduler::load() {
             .interval_seconds = ParseInt(parts[3], 0),
             .max_runs = ParseInt(parts[4], 1),
             .run_count = ParseInt(parts[5], 0),
+            .max_retries = parts.size() >= 23 ? ParseInt(parts[20], 0) : 0,
+            .retry_count = parts.size() >= 23 ? ParseInt(parts[21], 0) : 0,
+            .retry_backoff_seconds = parts.size() >= 23 ? ParseInt(parts[22], 0) : 0,
             .task = std::move(task),
         });
     }
@@ -371,7 +383,10 @@ void Scheduler::flush() const {
             << task.budget_limit << kDelimiter
             << (task.allow_high_risk ? "1" : "0") << kDelimiter
             << (task.allow_network ? "1" : "0") << kDelimiter
-            << EncodeField(SerializeInputs(task.inputs))
+            << EncodeField(SerializeInputs(task.inputs)) << kDelimiter
+            << scheduled_task.max_retries << kDelimiter
+            << scheduled_task.retry_count << kDelimiter
+            << scheduled_task.retry_backoff_seconds
             << '\n';
     }
 }

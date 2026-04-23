@@ -411,6 +411,8 @@ bool IsReservedScheduleOption(const std::string& key) {
         "delay_seconds",
         "interval_seconds",
         "max_runs",
+        "max_retries",
+        "retry_backoff_seconds",
         "objective",
         "target",
         "idempotency_key",
@@ -504,6 +506,9 @@ ScheduledTask BuildScheduledTaskFromOptions(
         .interval_seconds = interval_seconds,
         .max_runs = max_runs,
         .run_count = 0,
+        .max_retries = ParseIntOption(options, "max_retries", 0),
+        .retry_count = 0,
+        .retry_backoff_seconds = ParseIntOption(options, "retry_backoff_seconds", 0),
         .task = std::move(task),
     };
 }
@@ -576,6 +581,9 @@ void PrintScheduledTask(const ScheduledTask& task) {
         << " interval_seconds=" << task.interval_seconds
         << " max_runs=" << task.max_runs
         << " run_count=" << task.run_count
+        << " max_retries=" << task.max_retries
+        << " retry_count=" << task.retry_count
+        << " retry_backoff_seconds=" << task.retry_backoff_seconds
         << " task_type=" << task.task.task_type
         << " objective=\"" << task.task.objective << "\""
         << '\n';
@@ -927,6 +935,10 @@ int RunScheduleCommand(
         auto scheduled_task = BuildScheduledTaskFromOptions(options, workspace);
         if (scheduled_task.schedule_id.empty() || scheduled_task.task.task_type.empty()) {
             std::cerr << "schedule id and task/task_type are required\n";
+            return 1;
+        }
+        if (scheduled_task.max_retries < 0 || scheduled_task.retry_backoff_seconds < 0) {
+            std::cerr << "max_retries and retry_backoff_seconds must be non-negative\n";
             return 1;
         }
 

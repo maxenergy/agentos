@@ -211,12 +211,12 @@ Delivered:
 - manual `schedule run-due`
 - foreground `schedule tick` loop
 - scheduler-specific execution metadata
+- retry/backoff fields
 
 Remaining:
 
 - daemon/service wrapper
 - cron grammar
-- retry/backoff
 - missed-run semantics
 
 ---

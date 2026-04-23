@@ -66,7 +66,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Lesson Hints：重复 workflow 失败会抑制自动 workflow，重复 agent 失败会降低 agent 路由优先级，重复 PolicyDenied 会附加历史失败提示
 - Workflow Generator / Scoring：基于历史 Task/Step 生成候选 workflow，可带 `required_inputs` promote 到 WorkflowStore，并由 Router 自动优先执行
 - Agent Scoring：Router 可基于历史 success_rate / latency 选择 agent
-- Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` 复用 AgentLoop 执行，并记录独立 run history
+- Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` 复用 AgentLoop 执行，支持 retry/backoff，并记录独立 run history
 - Subagent Orchestration：显式 agent 列表的 sequential / parallel 编排，复用 Policy / Audit / Memory
 - CTest smoke test：覆盖核心 loop、策略拒绝、权限模型、远程 pairing、workflow、scheduler、subagent 编排
 
@@ -114,6 +114,7 @@ build\agentos.exe trust block identity=phone device=device1
 build\agentos.exe trust remove identity=phone device=device1
 build\agentos.exe trust identity-remove identity=phone
 build\agentos.exe schedule add id=demo-once task=write_file due=now path=runtime/scheduled.txt content=hello
+build\agentos.exe schedule add id=demo-retry task=write_file due=now max_retries=1 retry_backoff_seconds=60 path=runtime/retry.txt
 build\agentos.exe schedule run-due
 build\agentos.exe schedule tick iterations=1 interval_ms=0
 build\agentos.exe schedule history
