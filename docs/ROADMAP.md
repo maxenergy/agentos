@@ -180,6 +180,7 @@ Delivered:
 - `TrustPolicy`
 - remote trigger identity/device fields
 - pairing-required remote task policy
+- trust mutation audit events
 - `agentos trust ...` command group
 
 Remaining:
@@ -187,7 +188,6 @@ Remaining:
 - pairing handshake UX
 - role/user-level authorization
 - device lifecycle management
-- audit events for trust mutations
 
 ---
 

@@ -27,11 +27,13 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <cstdlib>
 #include <exception>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -440,6 +442,23 @@ void TestIdentityManagerPersistsAndUpdates(const std::filesystem::path& workspac
     Expect(!reloaded.find("phone").has_value(), "identity manager should not find removed identity");
 }
 
+void TestTrustAuditEvent(const std::filesystem::path& workspace) {
+    const auto audit_path = workspace / "trust_mutation_audit.log";
+    agentos::AuditLogger audit_logger(audit_path);
+
+    audit_logger.record_trust_event("pair", "phone", "device-1", true, "peer paired");
+
+    std::ifstream input(audit_path, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    const auto audit_text = buffer.str();
+
+    Expect(audit_text.find(R"("event":"trust")") != std::string::npos, "trust audit event should be recorded");
+    Expect(audit_text.find(R"("action":"pair")") != std::string::npos, "trust audit action should be recorded");
+    Expect(audit_text.find(R"("identity_id":"phone")") != std::string::npos, "trust audit identity should be recorded");
+    Expect(audit_text.find(R"("device_id":"device-1")") != std::string::npos, "trust audit device should be recorded");
+}
+
 void TestWorkflowRun(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -826,6 +845,7 @@ int main() {
     TestPermissionModelNamespaceWildcard(workspace);
     TestPermissionModelUnknownRiskRequiresApproval(workspace);
     TestIdentityManagerPersistsAndUpdates(workspace);
+    TestTrustAuditEvent(workspace);
     TestRemoteTaskRequiresPairing(workspace);
     TestWorkflowRun(workspace);
     TestDefaultAgentRoute(workspace);

@@ -671,7 +671,12 @@ void PrintUsage() {
         << "  agentos run analysis target=mock_planner objective=Design_the_next_phase\n";
 }
 
-int RunTrustCommand(IdentityManager& identity_manager, PairingManager& pairing_manager, const int argc, char* argv[]) {
+int RunTrustCommand(
+    IdentityManager& identity_manager,
+    PairingManager& pairing_manager,
+    AuditLogger& audit_logger,
+    const int argc,
+    char* argv[]) {
     if (argc < 3) {
         PrintUsage();
         return 1;
@@ -699,6 +704,7 @@ int RunTrustCommand(IdentityManager& identity_manager, PairingManager& pairing_m
             .user_id = options.contains("user") ? options.at("user") : "remote-user",
             .label = options.contains("label") ? options.at("label") : identity_id,
         }));
+        audit_logger.record_trust_event("identity-add", identity_id, "", true, "identity saved");
         return 0;
     }
 
@@ -711,6 +717,12 @@ int RunTrustCommand(IdentityManager& identity_manager, PairingManager& pairing_m
 
         const auto removed = identity_manager.remove(identity_id);
         std::cout << (removed ? "removed " : "not_found ") << identity_id << '\n';
+        audit_logger.record_trust_event(
+            "identity-remove",
+            identity_id,
+            "",
+            removed,
+            removed ? "identity removed" : "identity not found");
         return removed ? 0 : 1;
     }
 
@@ -730,26 +742,33 @@ int RunTrustCommand(IdentityManager& identity_manager, PairingManager& pairing_m
 
     if (command == "pair") {
         const auto label = options.contains("label") ? options.at("label") : identity + ":" + device;
+        const bool identity_already_exists = identity_manager.find(identity).has_value();
         identity_manager.ensure(
             identity,
             options.contains("user") ? options.at("user") : "remote-user",
             options.contains("identity_label") ? options.at("identity_label") : identity);
+        if (!identity_already_exists) {
+            audit_logger.record_trust_event("identity-auto-create", identity, "", true, "identity created during pairing");
+        }
         const auto permissions = options.contains("permissions")
             ? SplitCommaList(options.at("permissions"))
             : std::vector<std::string>{"task.submit"};
         PrintTrustedPeer(pairing_manager.pair(identity, device, label, permissions));
+        audit_logger.record_trust_event("pair", identity, device, true, "peer paired");
         return 0;
     }
 
     if (command == "block") {
         pairing_manager.block(identity, device);
         std::cout << "blocked " << identity << " device=" << device << '\n';
+        audit_logger.record_trust_event("block", identity, device, true, "peer blocked");
         return 0;
     }
 
     if (command == "remove") {
         pairing_manager.remove(identity, device);
         std::cout << "removed " << identity << " device=" << device << '\n';
+        audit_logger.record_trust_event("remove", identity, device, true, "peer removed");
         return 0;
     }
 
@@ -1072,7 +1091,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (argc >= 2 && std::string(argv[1]) == "trust") {
-        return RunTrustCommand(runtime.identity_manager, runtime.pairing_manager, argc, argv);
+        return RunTrustCommand(runtime.identity_manager, runtime.pairing_manager, runtime.audit_logger, argc, argv);
     }
 
     if (argc >= 3 && std::string(argv[1]) == "run") {

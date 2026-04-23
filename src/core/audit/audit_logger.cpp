@@ -101,6 +101,23 @@ void AuditLogger::record_task_end(const std::string& task_id, const TaskRunResul
     }));
 }
 
+void AuditLogger::record_trust_event(
+    const std::string& action,
+    const std::string& identity_id,
+    const std::string& device_id,
+    const bool success,
+    const std::string& message) {
+    append_line(MakeJsonObject({
+        {"ts", QuoteJson(CurrentTimestamp())},
+        {"event", QuoteJson("trust")},
+        {"action", QuoteJson(action)},
+        {"identity_id", QuoteJson(identity_id)},
+        {"device_id", QuoteJson(device_id)},
+        {"success", BoolAsJson(success)},
+        {"message", QuoteJson(message)},
+    }));
+}
+
 const std::filesystem::path& AuditLogger::log_path() const {
     return log_path_;
 }

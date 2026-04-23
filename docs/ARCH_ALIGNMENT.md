@@ -59,6 +59,7 @@ Identity / Trust
 - IdentityManager: ✅ 已实现 runtime/trust/identities.tsv 身份目录
 - PairingManager: ✅ 已实现 CLI pairing / block / remove / list
 - TrustPolicy / AllowlistStore: ✅ 已实现 runtime/trust/allowlist.tsv 持久化 allowlist
+- Trust Audit: ✅ identity / pair / block / remove mutation events 已写入 audit.log
 
 Execution Safety
 - IdempotencyKey: ✅ TaskRequest / SkillCall 已支持

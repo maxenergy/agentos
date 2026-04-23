@@ -117,7 +117,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 
 - [x] Sync `docs/ROADMAP.md` with this plan.
 - [x] Link `plan.md` from `README.md`.
-- [ ] Add audit events for `trust identity-*`, `trust pair`, `trust block`, and `trust remove`.
+- [x] Add audit events for `trust identity-*`, `trust pair`, `trust block`, and `trust remove`.
 - [ ] Add `schedule tick` command.
 - [ ] Add `WorkflowStore` skeleton.
 
@@ -126,3 +126,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Reviewed current code/docs completion and created this plan.
 - 2026-04-23: Synced `docs/ROADMAP.md` to actual implementation status and linked `plan.md` from `README.md`.
 - 2026-04-23: Updated `docs/ARCHITECTURE.md` directory layout and added current implementation gaps to auth docs.
+- 2026-04-23: Added trust mutation audit events and verified `trust pair` writes audit records.
