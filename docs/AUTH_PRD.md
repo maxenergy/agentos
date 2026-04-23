@@ -233,6 +233,7 @@ Gemini 是第一阶段最适合自己实现标准 OAuth 的 provider。
 - workspace 默认 profile 映射
 - Codex CLI / Claude CLI session probe
 - `agentos auth providers/status/login/logout/refresh/probe`
+- Browser OAuth / PKCE 显式 defer，当前返回 `BrowserOAuthNotImplemented`
 
 未实现或仍需补齐：
 

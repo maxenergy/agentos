@@ -135,6 +135,7 @@ Delivered:
 - Codex / Claude CLI session probes
 - refresh command and adapter/store refresh path
 - credential store status explicitly marks env-ref-only dev fallback
+- OAuth PKCE explicitly deferred from MVP (`BrowserOAuthNotImplemented`)
 - `agentos auth ...` command group
 
 Remaining:

@@ -1225,6 +1225,42 @@ void TestAuthDefaultProfileMapping(const std::filesystem::path& workspace) {
     Expect(reloaded_manager.default_profile(agentos::AuthProviderId::qwen) == "team", "workspace default profile should persist");
 }
 
+void TestAuthStatusReloadLogoutAndMissingEnv(const std::filesystem::path& workspace) {
+    SetEnvForTest("AGENTOS_TEST_RELOAD_KEY", "reload-secret");
+
+    const auto session_path = workspace / "auth_reload" / "sessions.tsv";
+    agentos::SecureTokenStore token_store;
+    {
+        agentos::SessionStore session_store(session_path);
+        agentos::AuthManager auth_manager(session_store);
+        auth_manager.register_provider(std::make_shared<agentos::QwenAuthProviderAdapter>(session_store, token_store));
+        (void)auth_manager.login(
+            agentos::AuthProviderId::qwen,
+            agentos::AuthMode::api_key,
+            {
+                {"profile", "reload"},
+                {"api_key_env", "AGENTOS_TEST_RELOAD_KEY"},
+            });
+    }
+
+    agentos::SessionStore reloaded_session_store(session_path);
+    agentos::AuthManager reloaded_auth_manager(reloaded_session_store);
+    reloaded_auth_manager.register_provider(std::make_shared<agentos::QwenAuthProviderAdapter>(reloaded_session_store, token_store));
+
+    const auto reloaded_status = reloaded_auth_manager.status(agentos::AuthProviderId::qwen, "reload");
+    Expect(reloaded_status.authenticated, "auth status should survive SessionStore reload");
+
+    SetEnvForTest("AGENTOS_TEST_RELOAD_KEY", "");
+    const auto missing_env_status = reloaded_auth_manager.status(agentos::AuthProviderId::qwen, "reload");
+    Expect(!missing_env_status.authenticated, "auth status should fail when env ref is unavailable");
+    Expect(missing_env_status.message == "credential reference is unavailable", "missing env ref should be reported clearly");
+
+    reloaded_auth_manager.logout(agentos::AuthProviderId::qwen, "reload");
+    const auto logged_out_status = reloaded_auth_manager.status(agentos::AuthProviderId::qwen, "reload");
+    Expect(!logged_out_status.authenticated, "logout should remove the session");
+    Expect(logged_out_status.message == "no session found", "logout status should report missing session");
+}
+
 void TestAuthUnsupportedMode(const std::filesystem::path& workspace) {
     agentos::SessionStore session_store(workspace / "auth_unsupported" / "sessions.tsv");
     agentos::SecureTokenStore token_store;
@@ -1240,6 +1276,23 @@ void TestAuthUnsupportedMode(const std::filesystem::path& workspace) {
     }
 
     Expect(failed, "qwen browser oauth should be unsupported in MVP");
+}
+
+void TestAuthOAuthDeferred(const std::filesystem::path& workspace) {
+    agentos::SessionStore session_store(workspace / "auth_oauth_deferred" / "sessions.tsv");
+    agentos::SecureTokenStore token_store;
+    agentos::AuthManager auth_manager(session_store);
+
+    auth_manager.register_provider(std::make_shared<agentos::GeminiAuthProviderAdapter>(session_store, token_store));
+
+    bool deferred = false;
+    try {
+        (void)auth_manager.login(agentos::AuthProviderId::gemini, agentos::AuthMode::browser_oauth, {{"profile", "smoke"}});
+    } catch (const std::exception& error) {
+        deferred = std::string(error.what()) == "BrowserOAuthNotImplemented";
+    }
+
+    Expect(deferred, "Gemini browser OAuth should be explicitly deferred from MVP");
 }
 
 }  // namespace
@@ -1277,7 +1330,9 @@ int main() {
     TestAuthApiKeySession(workspace);
     TestAuthRefreshSession(workspace);
     TestAuthDefaultProfileMapping(workspace);
+    TestAuthStatusReloadLogoutAndMissingEnv(workspace);
     TestAuthUnsupportedMode(workspace);
+    TestAuthOAuthDeferred(workspace);
 
     if (failures != 0) {
         std::cerr << failures << " smoke test assertion(s) failed\n";

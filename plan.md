@@ -55,8 +55,9 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [ ] Implement real OAuth refresh token exchange once OAuth sessions exist.
 - [x] Add workspace default profile mapping.
 - [x] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
-- [ ] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
-- [ ] Add tests for logout, status reload, missing env refs, and CLI session import behavior.
+- [x] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
+- [x] Add tests for logout, status reload, and missing env refs.
+- [ ] Add CLI session import behavior tests with controllable CLI fixtures.
 
 ### Phase C: Scheduler Hardening
 
@@ -135,7 +136,9 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Add `auth refresh` command and adapter interface coverage.
 - [x] Add workspace default profile mapping.
 - [x] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
-- [ ] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
+- [x] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
+- [x] Add tests for logout, status reload, and missing env refs.
+- [ ] Add CLI session import behavior tests with controllable CLI fixtures.
 
 ## Progress Log
 
@@ -155,3 +158,5 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added `auth refresh` command, AuthManager refresh flow, adapter coverage, and unsupported-refresh handling.
 - 2026-04-23: Added workspace auth default profile mapping backed by `runtime/auth_profiles.tsv`.
 - 2026-04-23: Added `auth credential-store` and SecureTokenStore status to explicitly mark the env-ref-only dev fallback.
+- 2026-04-23: Explicitly deferred Browser OAuth / PKCE from MVP and covered Gemini OAuth with `BrowserOAuthNotImplemented`.
+- 2026-04-23: Added Auth tests for logout, SessionStore reload status, and missing environment credential refs.

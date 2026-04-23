@@ -364,6 +364,7 @@ agentos auth logout gemini
 - workspace default profile mapping (`runtime/auth_profiles.tsv`)
 - Codex / Claude CLI session passthrough probe
 - `auth refresh` 命令、AuthManager refresh 入口与 Adapter refresh 覆盖已接入
+- Browser OAuth / PKCE 在 MVP 中显式 defer，调用会返回 `BrowserOAuthNotImplemented`
 
 关键偏差：
 
