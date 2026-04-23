@@ -1133,6 +1133,11 @@ void TestAuthApiKeySession(const std::filesystem::path& workspace) {
 
     auth_manager.register_provider(std::make_shared<agentos::QwenAuthProviderAdapter>(session_store, token_store));
 
+    const auto token_store_status = token_store.status();
+    Expect(token_store_status.backend_name == "env-ref-only", "secure token store should report env-ref-only MVP backend");
+    Expect(!token_store_status.system_keychain_backed, "secure token store should not claim system keychain support");
+    Expect(token_store_status.dev_only, "secure token store fallback should be marked dev-only");
+
     const auto session = auth_manager.login(
         agentos::AuthProviderId::qwen,
         agentos::AuthMode::api_key,

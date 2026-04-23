@@ -360,13 +360,14 @@ agentos auth logout gemini
 - `CredentialBroker`
 - OpenAI / Anthropic / Gemini / Qwen provider adapter
 - API key env-ref 模式
+- credential store status 明确标记当前为 `env-ref-only` dev fallback，未接入系统 Keychain
 - workspace default profile mapping (`runtime/auth_profiles.tsv`)
 - Codex / Claude CLI session passthrough probe
 - `auth refresh` 命令、AuthManager refresh 入口与 Adapter refresh 覆盖已接入
 
 关键偏差：
 
-- `SecureTokenStore` 当前不是系统 Keychain，只解析 env ref，不能视为完整安全存储。
+- `SecureTokenStore` 当前不是系统 Keychain，只解析 env ref；CLI 会通过 `auth credential-store` 明确标记为 dev fallback。
 - OAuth / PKCE、真实 refresh token 交换、cloud credentials 仍是设计目标，不是当前实现。
 - workspace profile 选择已支持 provider 默认 profile 映射，但更完整的多账号策略仍需补齐。
 - CLI session passthrough 只做探测与导入，不直接读取或复制外部 CLI token。

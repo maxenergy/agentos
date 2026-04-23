@@ -42,4 +42,14 @@ bool SecureTokenStore::ref_available(const std::string& token_ref) const {
     return read_ref(token_ref).has_value();
 }
 
+SecureTokenStoreStatus SecureTokenStore::status() const {
+    return {
+        .backend_name = "env-ref-only",
+        .system_keychain_backed = false,
+        .stores_plaintext = false,
+        .dev_only = true,
+        .message = "MVP fallback only stores environment-variable references; use a real system credential store before storing managed secrets.",
+    };
+}
+
 }  // namespace agentos

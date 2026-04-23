@@ -304,6 +304,17 @@ void PrintAuthProviders(const AuthManager& auth_manager) {
     }
 }
 
+void PrintSecureTokenStoreStatus(const SecureTokenStore& token_store) {
+    const auto status = token_store.status();
+    std::cout
+        << "credential_store backend=" << status.backend_name
+        << " system_keychain_backed=" << (status.system_keychain_backed ? "true" : "false")
+        << " stores_plaintext=" << (status.stores_plaintext ? "true" : "false")
+        << " dev_only=" << (status.dev_only ? "true" : "false")
+        << " message=\"" << status.message << "\""
+        << '\n';
+}
+
 void PrintAgents(const AgentRegistry& agent_registry) {
     for (const auto& profile : agent_registry.list_profiles()) {
         const auto agent = agent_registry.find(profile.agent_name);
@@ -736,6 +747,7 @@ void PrintUsage() {
         << "  agentos trust block identity=<id> device=<id>\n"
         << "  agentos trust remove identity=<id> device=<id>\n"
         << "  agentos auth providers\n"
+        << "  agentos auth credential-store\n"
         << "  agentos auth status [provider] [profile=name]\n"
         << "  agentos auth login <provider> mode=api-key api_key_env=ENV_NAME [profile=name]\n"
         << "  agentos auth login <provider> mode=cli-session [profile=name]\n"
@@ -1055,7 +1067,7 @@ int RunMemoryCommand(MemoryManager& memory_manager, const int argc, char* argv[]
     return 1;
 }
 
-int RunAuthCommand(AuthManager& auth_manager, const int argc, char* argv[]) {
+int RunAuthCommand(AuthManager& auth_manager, const SecureTokenStore& token_store, const int argc, char* argv[]) {
     if (argc < 3) {
         PrintUsage();
         return 1;
@@ -1065,6 +1077,11 @@ int RunAuthCommand(AuthManager& auth_manager, const int argc, char* argv[]) {
     try {
         if (command == "providers") {
             PrintAuthProviders(auth_manager);
+            return 0;
+        }
+
+        if (command == "credential-store") {
+            PrintSecureTokenStoreStatus(token_store);
             return 0;
         }
 
@@ -1277,7 +1294,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (argc >= 2 && std::string(argv[1]) == "auth") {
-        return RunAuthCommand(runtime.auth_manager, argc, argv);
+        return RunAuthCommand(runtime.auth_manager, runtime.token_store, argc, argv);
     }
 
     if (argc >= 2 && std::string(argv[1]) == "memory") {

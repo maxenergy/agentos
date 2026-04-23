@@ -19,7 +19,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | Builtin Skills | Implemented MVP | `file_read`, `file_write`, `file_patch`, `http_fetch`, `workflow_run` | Schema validation, richer workflow definitions |
 | CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, cwd/timeout/output/env controls | External spec loader, `jq_transform`, resource limits |
 | Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager` | Auto multi-agent routing, WorkspaceSession, more adapters |
-| Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes, refresh command/adapter path, workspace default profile mapping | OAuth token exchange, system credential store, full multi-account strategy |
+| Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
 | Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop | Daemon/service wrapper, cron, retry/backoff, missed-run policy |
@@ -54,7 +54,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Add `auth refresh` command and adapter interface coverage.
 - [ ] Implement real OAuth refresh token exchange once OAuth sessions exist.
 - [x] Add workspace default profile mapping.
-- [ ] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
+- [x] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
 - [ ] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
 - [ ] Add tests for logout, status reload, missing env refs, and CLI session import behavior.
 
@@ -134,7 +134,8 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Use lessons as policy hints.
 - [x] Add `auth refresh` command and adapter interface coverage.
 - [x] Add workspace default profile mapping.
-- [ ] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
+- [x] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
+- [ ] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
 
 ## Progress Log
 
@@ -153,3 +154,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added LessonStore policy hints for repeated PolicyDenied results without changing hard policy decisions.
 - 2026-04-23: Added `auth refresh` command, AuthManager refresh flow, adapter coverage, and unsupported-refresh handling.
 - 2026-04-23: Added workspace auth default profile mapping backed by `runtime/auth_profiles.tsv`.
+- 2026-04-23: Added `auth credential-store` and SecureTokenStore status to explicitly mark the env-ref-only dev fallback.

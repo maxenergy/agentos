@@ -57,6 +57,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Auth Provider：OpenAI/Codex、Anthropic/Claude、Gemini、Qwen
 - CLI session passthrough：Codex CLI / Claude CLI 登录态探测与导入
 - API key profile：通过环境变量引用保存，不落明文 key
+- Credential Store：当前为 `env-ref-only` dev fallback，未接入系统 Keychain
 - Workspace auth profile：`runtime/auth_profiles.tsv` 保存 provider 默认 profile 映射
 - Identity / Trust：IdentityManager、远程触发身份字段、PairingManager、TrustPolicy、AllowlistStore
 - Remote Trigger Policy：远程任务默认拒绝，必须先 pairing 并具备 `task.submit`
@@ -120,6 +121,7 @@ build\agentos.exe schedule remove id=demo-once
 build\agentos.exe subagents run agents=mock_planner mode=sequential objective=Plan_the_next_phase
 build\agentos.exe subagents run agents=mock_planner mode=parallel objective=Parallel_plan_smoke
 build\agentos.exe auth providers
+build\agentos.exe auth credential-store
 build\agentos.exe auth status
 build\agentos.exe auth probe openai
 build\agentos.exe auth login openai mode=cli-session

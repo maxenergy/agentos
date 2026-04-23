@@ -134,6 +134,7 @@ Delivered:
 - workspace default profile mapping
 - Codex / Claude CLI session probes
 - refresh command and adapter/store refresh path
+- credential store status explicitly marks env-ref-only dev fallback
 - `agentos auth ...` command group
 
 Remaining:
