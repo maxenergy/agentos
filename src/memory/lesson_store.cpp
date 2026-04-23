@@ -87,6 +87,14 @@ std::string NonEmptyOr(const std::string& value, const std::string& fallback) {
     return value.empty() ? fallback : value;
 }
 
+std::string StripLessonHint(const std::string& value) {
+    const auto hint_position = value.find(" lesson_hint=");
+    if (hint_position == std::string::npos) {
+        return value;
+    }
+    return value.substr(0, hint_position);
+}
+
 }  // namespace
 
 LessonStore::LessonStore(std::filesystem::path store_path)
@@ -146,7 +154,7 @@ std::optional<LessonRecord> LessonStore::record_failure(const TaskRequest& task,
         .task_type = task.task_type,
         .target_name = NonEmptyOr(result.route_target, route_target_kind_name(result.route_kind)),
         .error_code = NonEmptyOr(result.error_code, "UnknownFailure"),
-        .summary = NonEmptyOr(result.error_message, result.summary),
+        .summary = StripLessonHint(NonEmptyOr(result.error_message, result.summary)),
         .occurrence_count = 0,
         .last_task_id = task.task_id,
         .enabled = true,
@@ -154,7 +162,7 @@ std::optional<LessonRecord> LessonStore::record_failure(const TaskRequest& task,
 
     lesson.occurrence_count += 1;
     lesson.last_task_id = task.task_id;
-    lesson.summary = NonEmptyOr(result.error_message, result.summary);
+    lesson.summary = StripLessonHint(NonEmptyOr(result.error_message, result.summary));
     return save(std::move(lesson));
 }
 

@@ -61,7 +61,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Remote Trigger Policy：远程任务默认拒绝，必须先 pairing 并具备 `task.submit`
 - Idempotent Execution：`idempotency_key` + `runtime/execution_cache.tsv`
 - Persistent Memory：TaskLog / StepLog / Skill-Agent Stats / LessonStore / Workflow Candidates / WorkflowStore promotion
-- Lesson Hints：重复 workflow 失败会抑制自动 workflow，重复 agent 失败会降低 agent 路由优先级
+- Lesson Hints：重复 workflow 失败会抑制自动 workflow，重复 agent 失败会降低 agent 路由优先级，重复 PolicyDenied 会附加历史失败提示
 - Workflow Generator / Scoring：基于历史 Task/Step 生成候选 workflow，可带 `required_inputs` promote 到 WorkflowStore，并由 Router 自动优先执行
 - Agent Scoring：Router 可基于历史 success_rate / latency 选择 agent
 - Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` 复用 AgentLoop 执行

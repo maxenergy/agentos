@@ -188,7 +188,7 @@ Workflow 不是简单回放，而是带有可解释结构的程序性记忆。
 - last_task_id
 - summary
 
-可通过 `agentos memory lessons` 查看。Router 当前会使用 LessonStore 作为软信号：当某个 task_type 的自动 `workflow_run` 重复失败时，后续会回退到基础 skill；当某个 agent 对同类任务重复失败时，会降低该 agent 的路由优先级。LessonStore 尚未自动影响 Policy。
+可通过 `agentos memory lessons` 查看。Router 当前会使用 LessonStore 作为软信号：当某个 task_type 的自动 `workflow_run` 重复失败时，后续会回退到基础 skill；当某个 agent 对同类任务重复失败时，会降低该 agent 的路由优先级。PolicyDenied 当前会附加已有 lesson hint，帮助解释重复失败模式，但不会改变硬性 allow/deny 规则。
 
 ---
 

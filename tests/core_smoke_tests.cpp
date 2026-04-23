@@ -676,6 +676,39 @@ void TestRouterPenalizesAgentLessons(const std::filesystem::path& workspace) {
     Expect(result.route_target == "lesson_agent_b", "router should penalize agents with repeated lessons");
 }
 
+void TestPolicyDenialIncludesLessonHint(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "policy_lesson_hint_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    runtime.memory_manager.lesson_store().save(agentos::LessonRecord{
+        .lesson_id = "read_file|file_read|PolicyDenied",
+        .task_type = "read_file",
+        .target_name = "file_read",
+        .error_code = "PolicyDenied",
+        .summary = "path escapes the active workspace",
+        .occurrence_count = 2,
+        .last_task_id = "previous-policy-denial",
+        .enabled = true,
+    });
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "policy-lesson-hint",
+        .task_type = "read_file",
+        .objective = "repeat a known policy denial",
+        .workspace_path = isolated_workspace,
+        .inputs = {
+            {"path", "../outside.txt"},
+        },
+    });
+
+    Expect(!result.success, "known policy denial should still fail");
+    Expect(result.error_code == "PolicyDenied", "known policy denial should keep policy error code");
+    Expect(result.error_message.find("lesson_hint=previous_policy_denials:2") != std::string::npos, "policy denial should include lesson hint");
+}
+
 void TestDefaultAgentRoute(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -779,6 +812,7 @@ void TestLessonStoreRecordsFailuresAcrossRestart(const std::filesystem::path& wo
     if (!reloaded_lessons.empty()) {
         Expect(reloaded_lessons.front().occurrence_count == 2, "lesson store should persist repeated failure count");
         Expect(reloaded_lessons.front().target_name == "file_read", "lesson store should persist target name");
+        Expect(reloaded_lessons.front().summary.find("lesson_hint=") == std::string::npos, "lesson summary should not persist generated lesson hints");
     }
     Expect(std::filesystem::exists(isolated_workspace / "memory" / "lessons.tsv"), "lessons.tsv should be written");
 }
@@ -1150,6 +1184,7 @@ int main() {
     TestRouterWorkflowApplicabilityRequiresInputs(workspace);
     TestRouterSkipsWorkflowAfterRepeatedLesson(workspace);
     TestRouterPenalizesAgentLessons(workspace);
+    TestPolicyDenialIncludesLessonHint(workspace);
     TestDefaultAgentRoute(workspace);
     TestIdempotentExecutionCache(workspace);
     TestPersistentTaskAndStepLogs(workspace);

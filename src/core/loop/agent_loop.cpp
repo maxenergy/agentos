@@ -1,6 +1,7 @@
 #include "core/loop/agent_loop.hpp"
 
 #include <chrono>
+#include <sstream>
 
 namespace agentos {
 
@@ -9,6 +10,43 @@ namespace {
 int ElapsedMs(const std::chrono::steady_clock::time_point started_at) {
     return static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
+}
+
+void ApplyLessonPolicyHint(
+    const MemoryManager& memory_manager,
+    const TaskRequest& task,
+    const std::string& target_name,
+    PolicyDecision& decision) {
+    if (decision.allowed) {
+        return;
+    }
+
+    int occurrences = 0;
+    std::string summary;
+    for (const auto& lesson : memory_manager.lesson_store().list()) {
+        if (lesson.enabled &&
+            lesson.task_type == task.task_type &&
+            lesson.target_name == target_name &&
+            lesson.error_code == "PolicyDenied") {
+            occurrences += lesson.occurrence_count;
+            if (summary.empty()) {
+                summary = lesson.summary;
+            }
+        }
+    }
+
+    if (occurrences <= 0) {
+        return;
+    }
+
+    std::ostringstream hint;
+    hint << decision.reason
+         << " lesson_hint=previous_policy_denials:"
+         << occurrences;
+    if (!summary.empty()) {
+        hint << " last=\"" << summary << "\"";
+    }
+    decision.reason = hint.str();
 }
 
 }  // namespace
@@ -96,7 +134,8 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
         call.arguments["workflow"] = *route.workflow_name;
     }
 
-    const auto policy = policy_engine_.evaluate_skill(task, skill->manifest(), call);
+    auto policy = policy_engine_.evaluate_skill(task, skill->manifest(), call);
+    ApplyLessonPolicyHint(memory_manager_, task, route.target_name, policy);
     audit_logger_.record_policy(task.task_id, route.target_name, policy);
     if (!policy.allowed) {
         return {
@@ -163,7 +202,8 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task, const RouteDeci
         .budget_limit = task.budget_limit,
     };
 
-    const auto policy = policy_engine_.evaluate_agent(task, agent->profile(), agent_task);
+    auto policy = policy_engine_.evaluate_agent(task, agent->profile(), agent_task);
+    ApplyLessonPolicyHint(memory_manager_, task, route.target_name, policy);
     audit_logger_.record_policy(task.task_id, route.target_name, policy);
     if (!policy.allowed) {
         return {
