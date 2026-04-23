@@ -159,12 +159,12 @@ Delivered:
 - durable WorkflowStore skeleton
 - workflow promotion command
 - stored workflow execution through `workflow_run`
+- auto workflow selection by Router
 - `agentos memory ...` command group
 
 Remaining:
 
 - LessonStore
-- auto workflow selection by Router
 - SQLite or versioned storage migration
 
 ---

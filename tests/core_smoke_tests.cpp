@@ -514,6 +514,43 @@ void TestWorkflowRunStoredDefinition(const std::filesystem::path& workspace) {
     Expect(result.output_json.find("stored") != std::string::npos, "stored workflow output should include final read content");
 }
 
+void TestRouterPrefersPromotedWorkflow(const std::filesystem::path& workspace) {
+    TestRuntime runtime(workspace);
+    RegisterCore(runtime);
+
+    runtime.memory_manager.workflow_store().save(agentos::WorkflowDefinition{
+        .name = "auto_write_file_workflow",
+        .trigger_task_type = "write_file",
+        .ordered_steps = {"file_write"},
+        .source = "promoted_candidate",
+        .enabled = true,
+        .use_count = 3,
+        .success_count = 3,
+        .success_rate = 1.0,
+        .score = 100.0,
+    });
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "router-promoted-workflow",
+        .task_type = "write_file",
+        .objective = "write through promoted workflow",
+        .workspace_path = workspace,
+        .inputs = {
+            {"path", "workflow/router_promoted.txt"},
+            {"content", "auto-promoted"},
+        },
+    });
+
+    Expect(result.success, "router should execute promoted workflow for matching task_type");
+    Expect(result.route_target == "workflow_run", "router should route matching promoted workflow through workflow_run");
+    Expect(result.output_json.find("auto_write_file_workflow") != std::string::npos, "promoted workflow output should include selected workflow name");
+
+    std::ifstream input(workspace / "workflow" / "router_promoted.txt", std::ios::binary);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    Expect(buffer.str() == "auto-promoted", "promoted workflow should perform the original write_file operation");
+}
+
 void TestDefaultAgentRoute(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -941,6 +978,7 @@ int main() {
     TestRemoteTaskRequiresPairing(workspace);
     TestWorkflowRun(workspace);
     TestWorkflowRunStoredDefinition(workspace);
+    TestRouterPrefersPromotedWorkflow(workspace);
     TestDefaultAgentRoute(workspace);
     TestIdempotentExecutionCache(workspace);
     TestPersistentTaskAndStepLogs(workspace);

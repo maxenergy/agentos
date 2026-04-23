@@ -66,6 +66,29 @@ std::shared_ptr<IAgentAdapter> BestHealthyAgent(const AgentRegistry& registry, c
     return best_agent ? best_agent : registry.first_healthy();
 }
 
+std::optional<WorkflowDefinition> BestApplicableWorkflow(
+    const TaskRequest& task,
+    const SkillRegistry& skill_registry,
+    const MemoryManager* memory_manager) {
+    if (!memory_manager || !HealthySkillExists(skill_registry, "workflow_run")) {
+        return std::nullopt;
+    }
+
+    std::optional<WorkflowDefinition> best_workflow;
+    for (const auto& workflow : memory_manager->workflow_store().list()) {
+        if (!workflow.enabled || workflow.trigger_task_type != task.task_type || workflow.ordered_steps.empty()) {
+            continue;
+        }
+        if (!best_workflow.has_value() ||
+            workflow.score > best_workflow->score ||
+            (workflow.score == best_workflow->score && workflow.name < best_workflow->name)) {
+            best_workflow = workflow;
+        }
+    }
+
+    return best_workflow;
+}
+
 }  // namespace
 
 RouteDecision Router::select(
@@ -79,6 +102,17 @@ RouteDecision Router::select(
         }
         if (HealthyAgentExists(agent_registry, *task.preferred_target)) {
             return {RouteTargetKind::agent, *task.preferred_target, "preferred target matched a registered agent"};
+        }
+    }
+
+    if (task.task_type != "workflow_run") {
+        if (const auto workflow = BestApplicableWorkflow(task, skill_registry, memory_manager); workflow.has_value()) {
+            return {
+                RouteTargetKind::skill,
+                "workflow_run",
+                "promoted workflow matched task_type",
+                workflow->name,
+            };
         }
     }
 

@@ -142,6 +142,7 @@ struct RouteDecision {
     RouteTargetKind target_kind = RouteTargetKind::none;
     std::string target_name;
     std::string rationale;
+    std::optional<std::string> workflow_name;
 
     [[nodiscard]] bool found() const {
         return target_kind != RouteTargetKind::none;

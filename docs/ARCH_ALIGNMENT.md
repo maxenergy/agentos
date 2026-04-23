@@ -47,7 +47,7 @@ Auth System
 Memory System
 - Task log: ✅ 内存版 + runtime/memory/task_log.tsv 持久化已实现
 - Step log: ✅ runtime/memory/step_log.tsv 持久化已实现
-- Workflow: 🚧 候选生成 + runtime/memory/workflow_candidates.tsv + scoring 已实现，runtime/memory/workflows.tsv 持久化 / promotion / `workflow_run` 执行已实现
+- Workflow: 🚧 候选生成 + runtime/memory/workflow_candidates.tsv + scoring 已实现，runtime/memory/workflows.tsv 持久化 / promotion / `workflow_run` 执行 / Router 自动选择已实现
 - Scoring: 🚧 Skill / Agent 基础统计已持久化，AgentRouter 已接入历史评分
 
 Scheduler
@@ -221,7 +221,8 @@ ExecutionCache: ✅ runtime/execution_cache.tsv
 
 * TaskLog / StepLog / Skill-Agent Stats 已持久化
 * Workflow 候选已可从成功历史中生成
-* WorkflowStore 持久化、promotion 与 `workflow_run` 执行持久定义已实现，但 Router 自动选择仍需后续补齐
+* WorkflowStore 持久化、promotion、`workflow_run` 执行持久定义与 Router 自动选择已实现
+* 自动选择目前基于 enabled + trigger_task_type 匹配 + score 排序，尚未引入复杂适用条件
 * LessonStore 仍需后续补齐
 
 #### 必须补充
@@ -230,7 +231,7 @@ ExecutionCache: ✅ runtime/execution_cache.tsv
 TaskLog: ✅ runtime/memory/task_log.tsv
 StepLog: ✅ runtime/memory/step_log.tsv
 LessonStore: ❌ 待实现
-WorkflowStore: 🚧 workflow_candidates.tsv 候选层 + workflows.tsv 持久化定义 / promotion / 执行已实现
+WorkflowStore: 🚧 workflow_candidates.tsv 候选层 + workflows.tsv 持久化定义 / promotion / 执行 / Router 自动选择已实现
 ```
 
 ---

@@ -52,6 +52,7 @@ void AuditLogger::record_route(const TaskRequest& task, const RouteDecision& rou
         {"task_id", QuoteJson(task.task_id)},
         {"target_kind", QuoteJson(route_target_kind_name(route.target_kind))},
         {"target_name", QuoteJson(route.target_name)},
+        {"workflow_name", QuoteJson(route.workflow_name.value_or(""))},
         {"rationale", QuoteJson(route.rationale)},
     }));
 }

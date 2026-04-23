@@ -174,7 +174,7 @@ Workflow 不是简单回放，而是带有可解释结构的程序性记忆。
 - avg_duration_ms
 - score
 
-当前可通过 `agentos memory promote-workflow <candidate_name>` 将候选固化为启用的 workflow 定义，并通过 `agentos run workflow_run workflow=<name> ...` 执行持久定义。Router 自动选择仍是后续工作。
+当前可通过 `agentos memory promote-workflow <candidate_name>` 将候选固化为启用的 workflow 定义，并通过 `agentos run workflow_run workflow=<name> ...` 执行持久定义。Router 也会在没有显式 `target` 时，对 enabled 且 `trigger_task_type` 匹配的 workflow 按 score 优先选择并路由到 `workflow_run`。
 
 ---
 

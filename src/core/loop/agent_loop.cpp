@@ -92,6 +92,9 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
         .idempotency_key = task.idempotency_key,
         .arguments = task.inputs,
     };
+    if (route.workflow_name.has_value() && !call.arguments.contains("workflow")) {
+        call.arguments["workflow"] = *route.workflow_name;
+    }
 
     const auto policy = policy_engine_.evaluate_skill(task, skill->manifest(), call);
     audit_logger_.record_policy(task.task_id, route.target_name, policy);
