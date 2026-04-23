@@ -162,6 +162,7 @@ void MemoryManager::record_task(const TaskRequest& task, const TaskRunResult& re
                 stats.failed_runs += 1;
             }
             stats.avg_duration_ms = UpdateAverage(stats.avg_duration_ms, previous_count, step.duration_ms);
+            stats.avg_cost = UpdateAverage(stats.avg_cost, previous_count, step.estimated_cost);
         }
     }
 
@@ -329,9 +330,10 @@ void MemoryManager::load_persisted_logs() {
             .target_name = parts[2],
             .success = parts[3] == "1",
             .duration_ms = std::stoi(parts[4]),
-            .summary = parts[5],
-            .error_code = parts[6],
-            .error_message = parts[7],
+            .estimated_cost = parts.size() >= 9 ? std::stod(parts[5]) : 0.0,
+            .summary = parts.size() >= 9 ? parts[6] : parts[5],
+            .error_code = parts.size() >= 9 ? parts[7] : parts[6],
+            .error_message = parts.size() >= 9 ? parts[8] : parts[7],
         });
     }
 
@@ -359,6 +361,7 @@ void MemoryManager::load_persisted_logs() {
                     stats.failed_runs += 1;
                 }
                 stats.avg_duration_ms = UpdateAverage(stats.avg_duration_ms, previous_count, step.duration_ms);
+                stats.avg_cost = UpdateAverage(stats.avg_cost, previous_count, step.estimated_cost);
             }
         }
     }
@@ -400,6 +403,7 @@ void MemoryManager::append_step_log(const TaskRequest& task, const TaskStepRecor
         << EncodeField(step.target_name) << kDelimiter
         << (step.success ? "1" : "0") << kDelimiter
         << step.duration_ms << kDelimiter
+        << step.estimated_cost << kDelimiter
         << EncodeField(step.summary) << kDelimiter
         << EncodeField(step.error_code) << kDelimiter
         << EncodeField(step.error_message)

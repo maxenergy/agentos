@@ -36,7 +36,7 @@ CLI Integration
 Agent System
 - IAgentAdapter: ✅ 已定义
 - 单一 Agent 接入: 🚧 mock_planner + codex_cli 显式 target 调用
-- Subagent Orchestration: 🚧 SubagentManager 已支持显式 sequential / parallel 编排和自动候选 agent 选择
+- Subagent Orchestration: 🚧 SubagentManager 已支持显式 sequential / parallel 编排、自动候选 agent 选择、并发限制和成本预算检查
 - 多 Agent Router: 🚧 已支持基于健康状态、capability、历史统计和 lessons 的自动候选选择，任务拆分/角色分配待实现
 - WorkspaceSession: 🚧 已支持在 workspace 内打开、使用、关闭支持 session 的 agent adapter
 
@@ -278,12 +278,13 @@ CronSupport: 🚧 every:<n>s|m|h|d 已实现，完整 cron 待实现
 * 已支持显式 agent 列表的 sequential / parallel 编排
 * 空 agents 列表会自动选择健康且 capability 匹配的候选 agent，并按历史统计与 lessons 调整排序
 * WorkspaceSession 已可管理支持 session 的 agent adapter 生命周期，并通过 run_task_in_session 执行任务
+* parallel 模式会在启动前检查 max_parallel_subagents；执行后会汇总 estimated_cost 并按 budget_limit / manager 默认上限判定
 * 仍缺少自动任务拆分、角色分配和更完整的 session health / idle timeout 管理
 
 #### 必须补充
 
 ```text
-SubagentManager: 🚧 已实现显式编排、并行执行与自动候选选择
+SubagentManager: 🚧 已实现显式编排、并行执行、自动候选选择、并发限制与成本预算检查
 AgentRouter: 🚧 基础历史评分已接入单代理选择，SubagentManager 已复用统计/lesson 进行候选排序
 WorkspaceSession: 🚧 已实现基础 open/run/close 生命周期
 ```
@@ -411,7 +412,7 @@ score: ✅ success_count / success_rate / failure_count / latency 综合评分
 ### Phase 3
 
 6. Scheduler 🚧 MVP 已实现，一次性 / interval / recurrence / retry 任务可持久化，并支持 run-due / tick / daemon 执行与 run history
-7. Subagent Manager 🚧 MVP 已实现，显式 sequential / parallel 编排、自动候选选择与 WorkspaceSession 基础生命周期可用
+7. Subagent Manager 🚧 MVP 已实现，显式 sequential / parallel 编排、自动候选选择、成本/并发限制与 WorkspaceSession 基础生命周期可用
 
 ---
 

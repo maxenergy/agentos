@@ -236,6 +236,8 @@ Delivered:
 - parallel mode
 - automatic subagent candidate selection
 - WorkspaceSession abstraction
+- parallel concurrency limits
+- estimated-cost budget checks
 - shared Policy / Audit / Memory path
 - `agentos subagents run ...`
 
@@ -243,7 +245,6 @@ Remaining:
 
 - task decomposition
 - role assignment
-- cost and concurrency limits
 
 ---
 

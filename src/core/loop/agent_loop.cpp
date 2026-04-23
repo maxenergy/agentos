@@ -223,6 +223,7 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task, const RouteDeci
         .target_name = route.target_name,
         .success = agent_result.success,
         .duration_ms = agent_result.duration_ms,
+        .estimated_cost = agent_result.estimated_cost,
         .summary = agent_result.summary,
         .error_code = agent_result.error_code,
         .error_message = agent_result.error_message,

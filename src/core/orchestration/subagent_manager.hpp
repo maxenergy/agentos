@@ -27,7 +27,9 @@ public:
         PolicyEngine& policy_engine,
         AuditLogger& audit_logger,
         MemoryManager& memory_manager,
-        std::size_t max_subagents = 4);
+        std::size_t max_subagents = 4,
+        std::size_t max_parallel_subagents = 4,
+        double max_estimated_cost = 0.0);
 
     TaskRunResult run(
         const TaskRequest& task,
@@ -43,6 +45,8 @@ private:
     AuditLogger& audit_logger_;
     MemoryManager& memory_manager_;
     std::size_t max_subagents_ = 4;
+    std::size_t max_parallel_subagents_ = 4;
+    double max_estimated_cost_ = 0.0;
 };
 
 }  // namespace agentos

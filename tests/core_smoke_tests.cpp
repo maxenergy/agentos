@@ -166,8 +166,8 @@ struct TrustedTestRuntime {
 
 class StaticTestAgent final : public agentos::IAgentAdapter {
 public:
-    StaticTestAgent(std::string name, std::string capability)
-        : name_(std::move(name)), capability_(std::move(capability)) {}
+    StaticTestAgent(std::string name, std::string capability, const double estimated_cost = 0.0)
+        : name_(std::move(name)), capability_(std::move(capability)), estimated_cost_(estimated_cost) {}
 
     agentos::AgentProfile profile() const override {
         return {
@@ -207,7 +207,7 @@ public:
             .summary = name_ + " handled " + task.objective,
             .structured_output_json = "{}",
             .duration_ms = 1,
-            .estimated_cost = 0.0,
+            .estimated_cost = estimated_cost_,
         };
     }
 
@@ -224,6 +224,7 @@ public:
 private:
     std::string name_;
     std::string capability_;
+    double estimated_cost_ = 0.0;
 };
 
 agentos::CliSpec MakeEnvironmentProbeSpec(std::vector<std::string> env_allowlist = {}) {
@@ -1442,6 +1443,77 @@ void TestSubagentManagerParallelRun(const std::filesystem::path& workspace) {
     Expect(result.output_json.find("success_count") != std::string::npos, "parallel subagent output should summarize success count");
 }
 
+void TestSubagentManagerParallelConcurrencyLimit(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_parallel_limit_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("limited_parallel_a", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("limited_parallel_b", "analysis"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager,
+        4,
+        1);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-parallel-limit",
+            .task_type = "analysis",
+            .objective = "reject too many parallel subagents",
+            .workspace_path = isolated_workspace,
+        },
+        {"limited_parallel_a", "limited_parallel_b"},
+        agentos::SubagentExecutionMode::parallel);
+
+    Expect(!result.success, "parallel subagent orchestration should enforce max_parallel_subagents");
+    Expect(result.error_code == "TooManyParallelSubagents", "parallel limit should return a clear error code");
+    Expect(result.steps.empty(), "parallel limit should reject before starting subagent work");
+}
+
+void TestSubagentManagerCostLimit(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_cost_limit_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("cost_agent_a", "analysis", 0.40));
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("cost_agent_b", "analysis", 0.35));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager,
+        4,
+        4);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-cost-limit",
+            .task_type = "analysis",
+            .objective = "enforce estimated subagent budget",
+            .workspace_path = isolated_workspace,
+            .budget_limit = 0.50,
+        },
+        {"cost_agent_a", "cost_agent_b"},
+        agentos::SubagentExecutionMode::parallel);
+
+    Expect(!result.success, "subagent orchestration should fail when estimated cost exceeds budget_limit");
+    Expect(result.error_code == "SubagentCostLimitExceeded", "cost limit should return a clear error code");
+    Expect(result.steps.size() == 2, "cost limit should report completed subagent steps");
+    Expect(result.output_json.find("\"estimated_cost\":0.75") != std::string::npos, "subagent output should include estimated total cost");
+    const auto stats = runtime.memory_manager.agent_stats();
+    Expect(stats.contains("cost_agent_a") &&
+        stats.at("cost_agent_a").avg_cost > 0.39 &&
+        stats.at("cost_agent_a").avg_cost < 0.41,
+        "memory stats should record agent estimated cost");
+}
+
 void TestSubagentManagerAutoSelectsCandidates(const std::filesystem::path& workspace) {
     const auto isolated_workspace = workspace / "subagent_auto_select_isolated";
     std::filesystem::remove_all(isolated_workspace);
@@ -1931,6 +2003,8 @@ int main() {
     TestSchedulerMissedIntervalSkipPolicy(workspace);
     TestSubagentManagerSequentialRun(workspace);
     TestSubagentManagerParallelRun(workspace);
+    TestSubagentManagerParallelConcurrencyLimit(workspace);
+    TestSubagentManagerCostLimit(workspace);
     TestSubagentManagerAutoSelectsCandidates(workspace);
     TestSubagentManagerAutoSelectionUsesLessons(workspace);
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);

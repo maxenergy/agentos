@@ -177,6 +177,7 @@ struct TaskStepRecord {
     std::string target_name;
     bool success = false;
     int duration_ms = 0;
+    double estimated_cost = 0.0;
     std::string summary;
     std::string error_code;
     std::string error_message;

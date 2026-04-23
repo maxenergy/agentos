@@ -53,11 +53,13 @@ std::string BuildSummary(const std::size_t success_count, const std::size_t tota
 std::string BuildOutputJson(
     const std::vector<std::string>& agent_names,
     const std::size_t success_count,
-    const std::size_t total_count) {
+    const std::size_t total_count,
+    const double estimated_cost) {
     return MakeJsonObject({
         {"agents", QuoteJson(JoinAgentNames(agent_names))},
         {"success_count", NumberAsJson(static_cast<int>(success_count))},
         {"total_count", NumberAsJson(static_cast<int>(total_count))},
+        {"estimated_cost", NumberAsJson(estimated_cost)},
     });
 }
 
@@ -114,12 +116,16 @@ SubagentManager::SubagentManager(
     PolicyEngine& policy_engine,
     AuditLogger& audit_logger,
     MemoryManager& memory_manager,
-    const std::size_t max_subagents)
+    const std::size_t max_subagents,
+    const std::size_t max_parallel_subagents,
+    const double max_estimated_cost)
     : agent_registry_(agent_registry),
       policy_engine_(policy_engine),
       audit_logger_(audit_logger),
       memory_manager_(memory_manager),
-      max_subagents_(max_subagents) {}
+      max_subagents_(max_subagents),
+      max_parallel_subagents_(max_parallel_subagents),
+      max_estimated_cost_(max_estimated_cost) {}
 
 TaskRunResult SubagentManager::run(
     const TaskRequest& task,
@@ -169,6 +175,18 @@ TaskRunResult SubagentManager::run(
         return result;
     }
 
+    if (mode == SubagentExecutionMode::parallel && normalized_agent_names.size() > max_parallel_subagents_) {
+        result.success = false;
+        result.summary = "Too many parallel subagents were requested.";
+        result.error_code = "TooManyParallelSubagents";
+        result.error_message = "Requested " + std::to_string(normalized_agent_names.size()) +
+                               " parallel subagents; max is " + std::to_string(max_parallel_subagents_) + ".";
+        result.duration_ms = ElapsedMs(started_at);
+        audit_logger_.record_task_end(task.task_id, result);
+        memory_manager_.record_task(task, result);
+        return result;
+    }
+
     if (mode == SubagentExecutionMode::parallel) {
         std::vector<std::future<TaskStepRecord>> futures;
         futures.reserve(normalized_agent_names.size());
@@ -188,20 +206,31 @@ TaskRunResult SubagentManager::run(
     }
 
     std::size_t success_count = 0;
+    double estimated_cost = 0.0;
     for (const auto& step : result.steps) {
         if (step.success) {
             success_count += 1;
         }
+        estimated_cost += step.estimated_cost;
         audit_logger_.record_step(task.task_id, step);
     }
 
     result.success = success_count == result.steps.size() && !result.steps.empty();
     result.summary = BuildSummary(success_count, result.steps.size());
-    result.output_json = BuildOutputJson(normalized_agent_names, success_count, result.steps.size());
+    result.output_json = BuildOutputJson(normalized_agent_names, success_count, result.steps.size(), estimated_cost);
     result.duration_ms = ElapsedMs(started_at);
+    const auto effective_cost_limit = task.budget_limit > 0.0 ? task.budget_limit : max_estimated_cost_;
+    if (effective_cost_limit > 0.0 && estimated_cost > effective_cost_limit) {
+        result.success = false;
+        result.error_code = "SubagentCostLimitExceeded";
+        result.error_message = "Estimated subagent cost " + NumberAsJson(estimated_cost) +
+                               " exceeded limit " + NumberAsJson(effective_cost_limit) + ".";
+    }
     if (!result.success) {
-        result.error_code = "SubagentFailure";
-        result.error_message = "One or more subagents failed or were denied by policy.";
+        if (result.error_code.empty()) {
+            result.error_code = "SubagentFailure";
+            result.error_message = "One or more subagents failed or were denied by policy.";
+        }
     }
 
     audit_logger_.record_task_end(task.task_id, result);
@@ -311,6 +340,7 @@ TaskStepRecord SubagentManager::run_one(const TaskRequest& task, const std::stri
         .target_name = agent_name,
         .success = agent_result.success,
         .duration_ms = agent_result.duration_ms > 0 ? agent_result.duration_ms : ElapsedMs(started_at),
+        .estimated_cost = agent_result.estimated_cost,
         .summary = agent_result.summary,
         .error_code = agent_result.error_code,
         .error_message = agent_result.error_message,
