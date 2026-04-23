@@ -1,0 +1,7 @@
+build/
+out/
+runtime/
+.vs/
+.idea/
+CMakeUserPresets.json
+

@@ -346,3 +346,27 @@ agentos auth logout gemini
 6. Claude CLI session passthrough
 7. Qwen API key
 8. 统一命令行入口
+
+---
+
+## 11. 当前实现状态与缺口
+
+已实现：
+
+- `AuthManager`
+- `AuthProviderAdapter`
+- `SessionStore`
+- `SecureTokenStore` MVP
+- `CredentialBroker`
+- OpenAI / Anthropic / Gemini / Qwen provider adapter
+- API key env-ref 模式
+- Codex / Claude CLI session passthrough probe
+
+关键偏差：
+
+- `SecureTokenStore` 当前不是系统 Keychain，只解析 env ref，不能视为完整安全存储。
+- OAuth / PKCE、refresh、cloud credentials 仍是设计目标，不是当前实现。
+- workspace profile 选择尚未实现。
+- CLI session passthrough 只做探测与导入，不直接读取或复制外部 CLI token。
+
+下一步以 `plan.md` 的 Auth Completion 阶段为准。

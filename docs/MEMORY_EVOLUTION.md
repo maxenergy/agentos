@@ -141,8 +141,24 @@ Workflow 不是简单回放，而是带有可解释结构的程序性记忆。
 
 - use_count
 - success_rate
+- failure_count
+- avg_duration_ms
 - average_time_saved
 - applicability_score
+
+当前实现已在 `runtime/memory/workflow_candidates.tsv` 中持久化：
+
+- name
+- trigger_task_type
+- ordered_steps
+- use_count
+- success_count
+- failure_count
+- success_rate
+- avg_duration_ms
+- score
+
+当前 score 为基础综合分：成功次数与成功率提高分数，失败次数与平均耗时降低分数。后续可继续加入 `average_time_saved`、用户接受率和适用条件。
 
 ---
 

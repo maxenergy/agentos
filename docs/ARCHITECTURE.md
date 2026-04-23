@@ -228,25 +228,50 @@ Skill 分为四类：
 
 ```text
 agentos/
+  CMakeLists.txt
+  README.md
+  plan.md
   src/
+    auth/
     core/
+      audit/
+      execution/
       loop/
-      router/
+      orchestration/
       policy/
       registry/
-      audit/
+      router/
+    hosts/
+      agents/
+      cli/
+      plugin/              # planned
+    memory/
+    scheduler/
     skills/
       builtin/
-      workflow/
-    hosts/
-      cli/
-      plugin/
-      agents/
-    auth/
-    memory/
-    storage/
+    trust/
     utils/
+  tests/
+  docs/
 ```
+
+---
+
+## 8.1 当前实现偏差
+
+当前实现已经新增或提前落地了若干原规划未列出的目录：
+
+- `src/auth/`：认证管理、provider adapter、session store、credential broker
+- `src/core/execution/`：idempotency execution cache
+- `src/core/orchestration/`：SubagentManager
+- `src/scheduler/`：ScheduledTask 与 Scheduler
+- `src/trust/`：IdentityManager、PairingManager、AllowlistStore、TrustPolicy
+
+仍未实现：
+
+- `src/hosts/plugin/`
+- `src/storage/` 或 SQLite 存储层
+- 独立 `workflow/` 目录与持久 WorkflowStore
 
 ---
 

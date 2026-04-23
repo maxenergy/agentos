@@ -1,130 +1,255 @@
 # AgentOS Roadmap
 
-## Phase 0：文档与接口冻结
-目标：
-- 名称确定为 AgentOS
-- 冻结 PRD / 架构 / 认证 / Skill / Agent / Memory 文档
-- 冻结核心接口
+Last synced: 2026-04-23
 
-交付物：
-- docs/*.md
-- 初版代码目录规划
+This roadmap reflects the current codebase state. The detailed execution checklist lives in [`../plan.md`](../plan.md).
 
----
+## Status Legend
 
-## Phase 1：最小内核
-目标：
-- 实现 AgentLoop
-- 实现 SkillRegistry
-- 实现 AgentRegistry
-- 实现 PolicyEngine 基础版
-- 实现 AuditLogger 基础版
-
-交付物：
-- 可编译运行的最小 C++ 工程
-- 一个 demo task 能跑通
+- ✅ Implemented MVP
+- 🚧 Partial / in progress
+- ❌ Not implemented
 
 ---
 
-## Phase 2：基础 Skill
-目标：
-- file_read
-- file_write
-- file_patch
-- http_fetch
-- workflow_run
+## Phase 0: Docs And Interface Freeze
 
-交付物：
-- 基本 Skill 执行链路
-- 输入输出 schema 骨架
+Status: ✅ Implemented MVP
 
----
+Delivered:
 
-## Phase 3：CLI Host
-目标：
-- 实现 CliHost
-- 接入常用 CLI spec
-- 完成 timeout / cwd / stdout-stderr 管理
+- Product, architecture, auth, skill, agent, memory, CLI, and coding guide docs
+- Core C++ interface model in `src/core/models.hpp`
+- Architecture alignment doc in `docs/ARCH_ALIGNMENT.md`
 
-交付物：
-- rg_search
-- git_status
-- git_diff
-- curl_fetch
-- jq_transform
+Remaining:
+
+- Keep older design docs synced with implementation status
+- Update `plan.md` after each milestone
 
 ---
 
-## Phase 4：首个二级代理
-目标：
-- 实现 IAgentAdapter
-- 接入一个代理（Codex CLI 或 Claude Code）
-- 结果标准化
-- Agent Registry / Router 骨架跑通
+## Phase 1: Minimal Core Runtime
 
-交付物：
-- 一个外部专家型代理可被系统调用
+Status: ✅ Implemented MVP
 
----
+Delivered:
 
-## Phase 5：认证子系统
-目标：
-- AuthManager
-- SessionStore
-- SecureTokenStore
-- CredentialBroker
-- Gemini OAuth 骨架
-- OpenAI/Anthropic/Qwen key 管理
-- Codex/Claude CLI session probe
+- `AgentLoop`
+- `SkillRegistry`
+- `AgentRegistry`
+- `Router`
+- `PolicyEngine`
+- `PermissionModel`
+- `AuditLogger`
+- CMake project and smoke test target
 
-交付物：
-- `agentos auth ...` 命令组
-- session 状态查看与刷新
+Remaining:
+
+- Router decomposition into SkillRouter / AgentRouter / WorkflowRouter
+- Richer failure recovery and lifecycle semantics
 
 ---
 
-## Phase 6：记忆与 Workflow
-目标：
-- Task Log
-- Step Log
-- Skill/Agent 评分
-- Workflow 候选生成
+## Phase 2: Builtin Skills
 
-交付物：
-- 基础成长闭环
-- 可复用 Workflow 雏形
+Status: ✅ Implemented MVP
 
----
+Delivered:
 
-## Phase 7：多代理路由
-目标：
-- 接入 3~4 个代理
-- 实现静态角色 + 动态评分路由
-- 支持辅助代理模式
+- `file_read`
+- `file_write`
+- `file_patch`
+- `http_fetch`
+- `workflow_run`
 
-交付物：
-- 多代理协作初版
+Remaining:
+
+- Schema validation
+- Stored workflow execution beyond built-in workflow names
+- Idempotency enforcement for side-effecting skills
 
 ---
 
-## Phase 8：演化优化
-目标：
-- Workflow 评分
-- 动态权重调整
-- 降级与灰度禁用
-- 经验 lessons 提炼
+## Phase 3: CLI Host
 
-交付物：
-- 系统从“能做”迈向“会成长”
+Status: 🚧 Partial
+
+Delivered:
+
+- `CliHost`
+- `CliSkillInvoker`
+- `rg_search`
+- `git_status`
+- `git_diff`
+- `curl_fetch`
+- cwd boundary checks
+- timeout
+- stdout/stderr capture
+- output limit
+- env allowlist
+
+Remaining:
+
+- External CLI spec loader
+- `jq_transform`
+- command redaction for sensitive arguments
+- stronger OS resource limits
 
 ---
 
-## Phase 9：生态化扩展
-目标：
-- 多语言 Plugin Host
-- 更多 CLI spec
-- 更强的审计和策略系统
-- UI / 观测面板（可选）
+## Phase 4: Secondary Agent Adapter
 
-交付物：
-- 可扩展平台雏形
+Status: 🚧 Partial
+
+Delivered:
+
+- `IAgentAdapter`
+- `mock_planner`
+- `codex_cli`
+- Agent health listing
+- Router selection by health and basic historical score
+
+Remaining:
+
+- Claude / Gemini / Qwen agent adapters
+- WorkspaceSession
+- session-aware agent execution
+- richer result normalization
+
+---
+
+## Phase 5: Auth Subsystem
+
+Status: 🚧 Partial
+
+Delivered:
+
+- `AuthManager`
+- Provider adapters
+- `SessionStore`
+- `SecureTokenStore` env-ref MVP
+- `CredentialBroker`
+- API-key profile support
+- Codex / Claude CLI session probes
+- `agentos auth ...` command group
+
+Remaining:
+
+- OAuth PKCE flow
+- refresh flow
+- system credential store integration
+- cloud credential modes
+- workspace default profile mapping
+
+---
+
+## Phase 6: Memory And Workflow Learning
+
+Status: 🚧 Partial
+
+Delivered:
+
+- Task log
+- Step log
+- Skill stats
+- Agent stats
+- Workflow candidate generation
+- Workflow scoring
+- `agentos memory ...` command group
+
+Remaining:
+
+- LessonStore
+- durable WorkflowStore
+- workflow promotion
+- auto workflow selection by Router
+- SQLite or versioned storage migration
+
+---
+
+## Phase 7: Identity, Trust, And Policy
+
+Status: ✅ Implemented MVP
+
+Delivered:
+
+- `IdentityManager`
+- `PairingManager`
+- `AllowlistStore`
+- `TrustPolicy`
+- remote trigger identity/device fields
+- pairing-required remote task policy
+- `agentos trust ...` command group
+
+Remaining:
+
+- pairing handshake UX
+- role/user-level authorization
+- device lifecycle management
+- audit events for trust mutations
+
+---
+
+## Phase 8: Scheduler
+
+Status: 🚧 Partial
+
+Delivered:
+
+- `Scheduler`
+- persisted `ScheduledTask`
+- one-shot tasks
+- interval tasks
+- manual `schedule run-due`
+
+Remaining:
+
+- background `schedule tick` / daemon mode
+- cron grammar
+- retry/backoff
+- missed-run semantics
+- scheduler-specific execution metadata
+
+---
+
+## Phase 9: Subagent Orchestration
+
+Status: 🚧 Partial
+
+Delivered:
+
+- `SubagentManager`
+- explicit agent list orchestration
+- sequential mode
+- parallel mode
+- shared Policy / Audit / Memory path
+- `agentos subagents run ...`
+
+Remaining:
+
+- automatic subagent candidate selection
+- task decomposition
+- role assignment
+- WorkspaceSession
+- cost and concurrency limits
+
+---
+
+## Phase 10: Plugin And Ecosystem
+
+Status: ❌ Not implemented
+
+Remaining:
+
+- Plugin Host
+- plugin manifest
+- stdio / JSON-RPC protocol
+- sandboxing model
+- plugin tests
+
+---
+
+## Current Priority
+
+Follow the "Immediate Next TODO" section in [`../plan.md`](../plan.md).

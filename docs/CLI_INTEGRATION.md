@@ -105,7 +105,9 @@ CLI 必须包装成 Skill，而不是让模型任意拼 shell。
   "parse_mode": "json_lines",
   "risk_level": "low",
   "permissions": ["filesystem.read", "process.spawn"],
-  "timeout_ms": 3000
+  "timeout_ms": 3000,
+  "output_limit_bytes": 1048576,
+  "env_allowlist": []
 }
 ```
 
@@ -171,13 +173,23 @@ public:
 ### 8.2 env 白名单
 只传入必要环境变量。
 
+当前实现中，`CliHost` 默认只传入进程启动必需的最小系统环境；额外变量必须通过 `CliSpec.env_allowlist` 显式声明。AI CLI 登录态探测只允许用户配置目录类变量，不透传 API key。
+
 ### 8.3 输出限流
 防止 stdout/stderr 爆量输出。
 
 ### 8.4 timeout
 每个命令都必须有 timeout。
 
-### 8.5 资源限制
+### 8.5 当前实现状态
+
+- `CliSpec.timeout_ms` 已用于强制进程超时
+- `CliSpec.output_limit_bytes` 已用于 stdout/stderr 捕获限流
+- `CliSpec.env_allowlist` 已用于子进程环境白名单
+- `cwd` 参数必须解析到当前 workspace 内
+- Windows batch / cmd 启动已通过受控 `CreateProcess` 路径执行
+
+### 8.6 资源限制
 长期建议增加：
 - CPU 限制
 - 内存限制

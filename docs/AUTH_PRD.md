@@ -216,6 +216,28 @@ Gemini 是第一阶段最适合自己实现标准 OAuth 的 provider。
 - Gemini OAuth 基础骨架
 - OpenAI API key
 - Anthropic API key
+- Qwen API key
 - Codex CLI session probe
 - Claude CLI session probe
-- Qwen API key
+
+---
+
+## 9. 当前实现状态与缺口
+
+已实现：
+
+- AuthManager / ProviderAdapter / SessionStore / SecureTokenStore / CredentialBroker
+- OpenAI / Anthropic / Gemini / Qwen provider descriptor
+- API key mode，当前以环境变量引用保存，不落明文 key
+- Codex CLI / Claude CLI session probe
+- `agentos auth providers/status/login/logout/probe`
+
+未实现或仍需补齐：
+
+- Browser OAuth / PKCE
+- Cloud ADC / cloud credentials
+- token refresh
+- 系统 Keychain / Credential Store 集成
+- workspace 默认 profile
+- 多账号 profile 的完整选择策略
+- 更完整的状态测试和失败路径测试

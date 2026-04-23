@@ -212,6 +212,15 @@ public:
 - filesystem.write
 - process.spawn
 - network.access
+- agent.invoke
+- task.submit
+
+当前实现中的 `PermissionModel` 支持：
+
+- 明确权限名
+- `*` 全通配
+- `filesystem.*` 这类 namespace wildcard
+- 未知权限默认拒绝
 
 ### 8.2 风险等级
 建议等级：
@@ -220,6 +229,8 @@ public:
 - medium
 - high
 - critical
+
+当前实现会把未知风险等级视为需要 `allow_high_risk=true` 的高风险请求。
 
 ### 8.3 工作区限制
 涉及文件或命令的 Skill 默认应受 workspace 限制。

@@ -209,6 +209,25 @@ AgentRouter 负责根据任务特征选择最合适代理。
 
 ---
 
+### 6.4 当前实现状态
+
+当前代码已具备以下 MVP：
+
+- AgentRegistry 可注册并列出多个 `IAgentAdapter`
+- Router 可基于健康状态与历史评分选择单一默认 agent
+- SubagentManager 支持显式 agent 列表的 `sequential` / `parallel` 编排
+- SubagentManager 复用 `PolicyEngine`、`AuditLogger`、`MemoryManager`
+- CLI 已支持 `agentos subagents run agents=<agent[,agent]> mode=<sequential|parallel>`
+
+仍待补充：
+
+- 自动多代理候选选择
+- 任务拆分与角色分配
+- WorkspaceSession
+- 更完整的成本、并发与失败重试控制
+
+---
+
 ## 7. 结果归一化
 
 不同代理输出格式差异很大，因此 Agent Adapter 必须做结果标准化。
