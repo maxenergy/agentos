@@ -37,6 +37,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -388,6 +389,46 @@ double ParseDoubleOption(const std::map<std::string, std::string>& options, cons
     }
 }
 
+int ParseRecurrenceIntervalSeconds(const std::map<std::string, std::string>& options) {
+    if (options.contains("interval_seconds")) {
+        return ParseIntOption(options, "interval_seconds", 0);
+    }
+    if (!options.contains("recurrence")) {
+        return 0;
+    }
+
+    const auto recurrence = options.at("recurrence");
+    constexpr std::string_view prefix = "every:";
+    if (recurrence.rfind(std::string(prefix), 0) != 0 || recurrence.size() <= prefix.size() + 1) {
+        return -1;
+    }
+
+    const auto suffix = recurrence.back();
+    const auto value_text = recurrence.substr(prefix.size(), recurrence.size() - prefix.size() - 1);
+    int value = 0;
+    try {
+        value = std::stoi(value_text);
+    } catch (const std::exception&) {
+        return -1;
+    }
+    if (value <= 0) {
+        return -1;
+    }
+
+    switch (suffix) {
+    case 's':
+        return value;
+    case 'm':
+        return value * 60;
+    case 'h':
+        return value * 60 * 60;
+    case 'd':
+        return value * 24 * 60 * 60;
+    default:
+        return -1;
+    }
+}
+
 long long ParseDueEpochMs(const std::map<std::string, std::string>& options) {
     const auto now = Scheduler::NowEpochMs();
     if (options.contains("delay_seconds")) {
@@ -409,6 +450,7 @@ bool IsReservedScheduleOption(const std::string& key) {
         "task_type",
         "due",
         "delay_seconds",
+        "recurrence",
         "interval_seconds",
         "max_runs",
         "max_retries",
@@ -465,7 +507,7 @@ ScheduledTask BuildScheduledTaskFromOptions(
     const auto task_type = options.contains("task_type")
         ? options.at("task_type")
         : (options.contains("task") ? options.at("task") : "");
-    const auto interval_seconds = ParseIntOption(options, "interval_seconds", 0);
+    const auto interval_seconds = ParseRecurrenceIntervalSeconds(options);
     const auto max_runs = options.contains("max_runs")
         ? ParseIntOption(options, "max_runs", interval_seconds > 0 ? 0 : 1)
         : (interval_seconds > 0 ? 0 : 1);
@@ -758,7 +800,7 @@ void PrintUsage() {
         << "  agentos memory stored-workflows\n"
         << "  agentos memory lessons\n"
         << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>] [required_inputs=a,b]\n"
-        << "  agentos schedule add task=<task_type> due=now key=value ...\n"
+        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m] key=value ...\n"
         << "  agentos schedule list\n"
         << "  agentos schedule history\n"
         << "  agentos schedule run-due\n"
@@ -935,6 +977,10 @@ int RunScheduleCommand(
         auto scheduled_task = BuildScheduledTaskFromOptions(options, workspace);
         if (scheduled_task.schedule_id.empty() || scheduled_task.task.task_type.empty()) {
             std::cerr << "schedule id and task/task_type are required\n";
+            return 1;
+        }
+        if (scheduled_task.interval_seconds < 0) {
+            std::cerr << "recurrence must use every:<n>s, every:<n>m, every:<n>h, or every:<n>d\n";
             return 1;
         }
         if (scheduled_task.max_retries < 0 || scheduled_task.retry_backoff_seconds < 0) {

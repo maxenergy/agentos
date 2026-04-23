@@ -114,6 +114,7 @@ build\agentos.exe trust block identity=phone device=device1
 build\agentos.exe trust remove identity=phone device=device1
 build\agentos.exe trust identity-remove identity=phone
 build\agentos.exe schedule add id=demo-once task=write_file due=now path=runtime/scheduled.txt content=hello
+build\agentos.exe schedule add id=demo-every task=write_file due=now recurrence=every:5m path=runtime/every.txt content=hello
 build\agentos.exe schedule add id=demo-retry task=write_file due=now max_retries=1 retry_backoff_seconds=60 path=runtime/retry.txt
 build\agentos.exe schedule run-due
 build\agentos.exe schedule tick iterations=1 interval_ms=0

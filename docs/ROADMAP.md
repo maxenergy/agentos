@@ -212,11 +212,12 @@ Delivered:
 - foreground `schedule tick` loop
 - scheduler-specific execution metadata
 - retry/backoff fields
+- small recurrence grammar (`every:<n>s|m|h|d`)
 
 Remaining:
 
 - daemon/service wrapper
-- cron grammar
+- full cron grammar
 - missed-run semantics
 
 ---
