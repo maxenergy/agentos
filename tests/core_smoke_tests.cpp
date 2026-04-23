@@ -515,7 +515,11 @@ void TestWorkflowRunStoredDefinition(const std::filesystem::path& workspace) {
 }
 
 void TestRouterPrefersPromotedWorkflow(const std::filesystem::path& workspace) {
-    TestRuntime runtime(workspace);
+    const auto isolated_workspace = workspace / "router_promoted_workflow_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
     RegisterCore(runtime);
 
     runtime.memory_manager.workflow_store().save(agentos::WorkflowDefinition{
@@ -534,7 +538,7 @@ void TestRouterPrefersPromotedWorkflow(const std::filesystem::path& workspace) {
         .task_id = "router-promoted-workflow",
         .task_type = "write_file",
         .objective = "write through promoted workflow",
-        .workspace_path = workspace,
+        .workspace_path = isolated_workspace,
         .inputs = {
             {"path", "workflow/router_promoted.txt"},
             {"content", "auto-promoted"},
@@ -545,10 +549,59 @@ void TestRouterPrefersPromotedWorkflow(const std::filesystem::path& workspace) {
     Expect(result.route_target == "workflow_run", "router should route matching promoted workflow through workflow_run");
     Expect(result.output_json.find("auto_write_file_workflow") != std::string::npos, "promoted workflow output should include selected workflow name");
 
-    std::ifstream input(workspace / "workflow" / "router_promoted.txt", std::ios::binary);
+    std::ifstream input(isolated_workspace / "workflow" / "router_promoted.txt", std::ios::binary);
     std::ostringstream buffer;
     buffer << input.rdbuf();
     Expect(buffer.str() == "auto-promoted", "promoted workflow should perform the original write_file operation");
+}
+
+void TestRouterWorkflowApplicabilityRequiresInputs(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "router_workflow_applicability_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    runtime.memory_manager.workflow_store().save(agentos::WorkflowDefinition{
+        .name = "requires_find_write_workflow",
+        .trigger_task_type = "write_file",
+        .ordered_steps = {"file_write"},
+        .required_inputs = {"path", "content", "find"},
+        .source = "promoted_candidate",
+        .enabled = true,
+        .score = 100.0,
+    });
+
+    const auto missing_input_result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "workflow-applicability-skip",
+        .task_type = "write_file",
+        .objective = "write without optional workflow input",
+        .workspace_path = isolated_workspace,
+        .inputs = {
+            {"path", "workflow/applicability_skip.txt"},
+            {"content", "direct"},
+        },
+    });
+
+    Expect(missing_input_result.success, "direct write should still succeed when workflow applicability is not satisfied");
+    Expect(missing_input_result.route_target == "file_write", "router should skip workflow when required inputs are missing");
+
+    const auto matching_input_result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "workflow-applicability-match",
+        .task_type = "write_file",
+        .objective = "write with all workflow inputs",
+        .workspace_path = isolated_workspace,
+        .inputs = {
+            {"path", "workflow/applicability_match.txt"},
+            {"content", "workflow"},
+            {"find", "unused"},
+        },
+    });
+
+    Expect(matching_input_result.success, "workflow write should succeed when required inputs are present");
+    Expect(matching_input_result.route_target == "workflow_run", "router should select workflow when required inputs are present");
+    Expect(matching_input_result.output_json.find("requires_find_write_workflow") != std::string::npos, "selected workflow should be visible in output");
 }
 
 void TestDefaultAgentRoute(const std::filesystem::path& workspace) {
@@ -677,7 +730,7 @@ void TestWorkflowStorePersistsDefinitions(const std::filesystem::path& workspace
     std::filesystem::create_directories(isolated_workspace);
     const auto store_path = isolated_workspace / "memory" / "workflows.tsv";
 
-    const auto candidate_definition = agentos::WorkflowStore::FromCandidate(agentos::WorkflowCandidate{
+    auto candidate_definition = agentos::WorkflowStore::FromCandidate(agentos::WorkflowCandidate{
         .name = "write_file_workflow",
         .trigger_task_type = "write_file",
         .ordered_steps = {"file_write", "file_read"},
@@ -688,6 +741,7 @@ void TestWorkflowStorePersistsDefinitions(const std::filesystem::path& workspace
         .avg_duration_ms = 12.5,
         .score = 123.0,
     });
+    candidate_definition.required_inputs = {"path", "content"};
 
     {
         agentos::WorkflowStore store(store_path);
@@ -702,6 +756,7 @@ void TestWorkflowStorePersistsDefinitions(const std::filesystem::path& workspace
             Expect(found->enabled, "workflow store should preserve enabled flag");
             Expect(found->ordered_steps.size() == 2, "workflow store should preserve ordered steps");
             Expect(found->ordered_steps.front() == "file_write", "workflow store should preserve first step");
+            Expect(found->required_inputs.size() == 2, "workflow store should preserve required inputs");
         }
     }
 
@@ -712,6 +767,7 @@ void TestWorkflowStorePersistsDefinitions(const std::filesystem::path& workspace
         Expect(reloaded_definition->success_count == 2, "workflow store should preserve success count");
         Expect(reloaded_definition->failure_count == 1, "workflow store should preserve failure count");
         Expect(reloaded_definition->score == 123.0, "workflow store should preserve score");
+        Expect(reloaded_definition->required_inputs.size() == 2, "workflow store should reload required inputs");
     }
     Expect(std::filesystem::exists(store_path), "workflows.tsv should be written");
 
@@ -979,6 +1035,7 @@ int main() {
     TestWorkflowRun(workspace);
     TestWorkflowRunStoredDefinition(workspace);
     TestRouterPrefersPromotedWorkflow(workspace);
+    TestRouterWorkflowApplicabilityRequiresInputs(workspace);
     TestDefaultAgentRoute(workspace);
     TestIdempotentExecutionCache(workspace);
     TestPersistentTaskAndStepLogs(workspace);

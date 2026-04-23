@@ -664,6 +664,16 @@ void PrintWorkflowDefinition(const WorkflowDefinition& workflow) {
         << " failure_count=" << workflow.failure_count
         << " success_rate=" << workflow.success_rate
         << " avg_duration_ms=" << workflow.avg_duration_ms
+        << " required_inputs=";
+
+    for (std::size_t index = 0; index < workflow.required_inputs.size(); ++index) {
+        if (index != 0) {
+            std::cout << ',';
+        }
+        std::cout << workflow.required_inputs[index];
+    }
+
+    std::cout
         << " steps=";
 
     for (std::size_t index = 0; index < workflow.ordered_steps.size(); ++index) {
@@ -691,7 +701,7 @@ void PrintUsage() {
         << "  agentos memory stats\n"
         << "  agentos memory workflows\n"
         << "  agentos memory stored-workflows\n"
-        << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>]\n"
+        << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>] [required_inputs=a,b]\n"
         << "  agentos schedule add task=<task_type> due=now key=value ...\n"
         << "  agentos schedule list\n"
         << "  agentos schedule run-due\n"
@@ -1001,6 +1011,9 @@ int RunMemoryCommand(MemoryManager& memory_manager, const int argc, char* argv[]
         auto workflow = WorkflowStore::FromCandidate(*it);
         workflow.source = "promoted_candidate";
         workflow.enabled = !options.contains("enabled") || options.at("enabled") != "false";
+        if (options.contains("required_inputs")) {
+            workflow.required_inputs = SplitCommaList(options.at("required_inputs"));
+        }
         if (options.contains("workflow")) {
             workflow.name = options.at("workflow");
         } else if (options.contains("workflow_name")) {

@@ -13,6 +13,7 @@ struct WorkflowDefinition {
     std::string name;
     std::string trigger_task_type;
     std::vector<std::string> ordered_steps;
+    std::vector<std::string> required_inputs;
     std::string source = "manual";
     bool enabled = true;
     int use_count = 0;

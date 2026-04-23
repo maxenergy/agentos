@@ -222,7 +222,7 @@ ExecutionCache: ✅ runtime/execution_cache.tsv
 * TaskLog / StepLog / Skill-Agent Stats 已持久化
 * Workflow 候选已可从成功历史中生成
 * WorkflowStore 持久化、promotion、`workflow_run` 执行持久定义与 Router 自动选择已实现
-* 自动选择目前基于 enabled + trigger_task_type 匹配 + score 排序，尚未引入复杂适用条件
+* 自动选择目前基于 enabled + trigger_task_type + required_inputs 匹配 + score 排序，尚未引入复杂条件表达式
 * LessonStore 仍需后续补齐
 
 #### 必须补充
@@ -231,7 +231,7 @@ ExecutionCache: ✅ runtime/execution_cache.tsv
 TaskLog: ✅ runtime/memory/task_log.tsv
 StepLog: ✅ runtime/memory/step_log.tsv
 LessonStore: ❌ 待实现
-WorkflowStore: 🚧 workflow_candidates.tsv 候选层 + workflows.tsv 持久化定义 / promotion / 执行 / Router 自动选择已实现
+WorkflowStore: 🚧 workflow_candidates.tsv 候选层 + workflows.tsv 持久化定义 / promotion / required_inputs / 执行 / Router 自动选择已实现
 ```
 
 ---

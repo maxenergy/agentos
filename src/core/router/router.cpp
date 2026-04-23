@@ -79,6 +79,15 @@ std::optional<WorkflowDefinition> BestApplicableWorkflow(
         if (!workflow.enabled || workflow.trigger_task_type != task.task_type || workflow.ordered_steps.empty()) {
             continue;
         }
+        const auto required_inputs_satisfied = std::all_of(
+            workflow.required_inputs.begin(),
+            workflow.required_inputs.end(),
+            [&](const std::string& input_name) {
+                return task.inputs.contains(input_name);
+            });
+        if (!required_inputs_satisfied) {
+            continue;
+        }
         if (!best_workflow.has_value() ||
             workflow.score > best_workflow->score ||
             (workflow.score == best_workflow->score && workflow.name < best_workflow->name)) {

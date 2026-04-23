@@ -160,6 +160,7 @@ Delivered:
 - workflow promotion command
 - stored workflow execution through `workflow_run`
 - auto workflow selection by Router
+- `required_inputs` workflow applicability checks
 - `agentos memory ...` command group
 
 Remaining:

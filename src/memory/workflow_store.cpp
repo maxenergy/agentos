@@ -77,19 +77,19 @@ std::vector<std::string> SplitLine(const std::string& line) {
     return parts;
 }
 
-std::string SerializeSteps(const std::vector<std::string>& steps) {
+std::string SerializeList(const std::vector<std::string>& values) {
     std::ostringstream output;
-    for (std::size_t index = 0; index < steps.size(); ++index) {
+    for (std::size_t index = 0; index < values.size(); ++index) {
         if (index != 0) {
             output << kStepDelimiter;
         }
-        output << EncodePercentField(steps[index], true);
+        output << EncodePercentField(values[index], true);
     }
     return output.str();
 }
 
-std::vector<std::string> ParseSteps(const std::string& value) {
-    std::vector<std::string> steps;
+std::vector<std::string> ParseList(const std::string& value) {
+    std::vector<std::string> values;
     std::size_t start = 0;
 
     while (start <= value.size()) {
@@ -98,7 +98,7 @@ std::vector<std::string> ParseSteps(const std::string& value) {
             ? value.substr(start)
             : value.substr(start, delimiter - start);
         if (!item.empty()) {
-            steps.push_back(DecodePercentField(item));
+            values.push_back(DecodePercentField(item));
         }
 
         if (delimiter == std::string::npos) {
@@ -107,7 +107,7 @@ std::vector<std::string> ParseSteps(const std::string& value) {
         start = delimiter + 1;
     }
 
-    return steps;
+    return values;
 }
 
 int ParseInt(const std::string& value, const int fallback = 0) {
@@ -179,6 +179,7 @@ WorkflowDefinition WorkflowStore::FromCandidate(const WorkflowCandidate& candida
         .name = candidate.name,
         .trigger_task_type = candidate.trigger_task_type,
         .ordered_steps = candidate.ordered_steps,
+        .required_inputs = {},
         .source = "candidate",
         .enabled = false,
         .use_count = candidate.use_count,
@@ -207,7 +208,8 @@ void WorkflowStore::load() {
         workflows_.push_back(WorkflowDefinition{
             .name = parts[0],
             .trigger_task_type = parts[2],
-            .ordered_steps = ParseSteps(parts[3]),
+            .ordered_steps = ParseList(parts[3]),
+            .required_inputs = parts.size() >= 12 ? ParseList(parts[11]) : std::vector<std::string>{},
             .source = parts[4],
             .enabled = parts[1] == "1",
             .use_count = ParseInt(parts[5]),
@@ -235,14 +237,15 @@ void WorkflowStore::flush() const {
             << EncodePercentField(workflow.name) << kDelimiter
             << (workflow.enabled ? "1" : "0") << kDelimiter
             << EncodePercentField(workflow.trigger_task_type) << kDelimiter
-            << EncodePercentField(SerializeSteps(workflow.ordered_steps)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.ordered_steps)) << kDelimiter
             << EncodePercentField(workflow.source) << kDelimiter
             << workflow.use_count << kDelimiter
             << workflow.success_count << kDelimiter
             << workflow.failure_count << kDelimiter
             << workflow.success_rate << kDelimiter
             << workflow.avg_duration_ms << kDelimiter
-            << workflow.score
+            << workflow.score << kDelimiter
+            << EncodePercentField(SerializeList(workflow.required_inputs))
             << '\n';
     }
 }
