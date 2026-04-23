@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <future>
+#include <limits>
 #include <sstream>
 #include <unordered_set>
 
@@ -60,6 +61,35 @@ std::string BuildOutputJson(
     });
 }
 
+int LessonOccurrenceCount(
+    const MemoryManager& memory_manager,
+    const std::string& task_type,
+    const std::string& target_name) {
+    int occurrences = 0;
+    for (const auto& lesson : memory_manager.lesson_store().list()) {
+        if (lesson.enabled && lesson.task_type == task_type && lesson.target_name == target_name) {
+            occurrences += lesson.occurrence_count;
+        }
+    }
+    return occurrences;
+}
+
+bool HasCapabilityForTask(const AgentProfile& profile, const std::string& task_type) {
+    return std::any_of(profile.capabilities.begin(), profile.capabilities.end(), [&](const AgentCapability& capability) {
+        return capability.name == task_type;
+    });
+}
+
+int CapabilityScoreForTask(const AgentProfile& profile, const std::string& task_type) {
+    int score = 0;
+    for (const auto& capability : profile.capabilities) {
+        if (capability.name == task_type) {
+            score = std::max(score, capability.score);
+        }
+    }
+    return score;
+}
+
 }  // namespace
 
 std::string ToString(const SubagentExecutionMode mode) {
@@ -96,13 +126,17 @@ TaskRunResult SubagentManager::run(
     const std::vector<std::string>& agent_names,
     const SubagentExecutionMode mode) {
     const auto started_at = std::chrono::steady_clock::now();
-    const auto normalized_agent_names = NormalizeAgentNames(agent_names);
+    const bool automatic_selection = agent_names.empty();
+    const auto normalized_agent_names = automatic_selection
+        ? select_agent_candidates(task)
+        : NormalizeAgentNames(agent_names);
 
     audit_logger_.record_task_start(task);
     audit_logger_.record_route(task, RouteDecision{
         .target_kind = RouteTargetKind::agent,
         .target_name = "subagents",
-        .rationale = "explicit subagent orchestration in " + ToString(mode) + " mode",
+        .rationale = std::string(automatic_selection ? "automatic" : "explicit") +
+            " subagent orchestration in " + ToString(mode) + " mode",
     });
 
     TaskRunResult result{
@@ -114,7 +148,9 @@ TaskRunResult SubagentManager::run(
         result.success = false;
         result.summary = "No subagents were selected.";
         result.error_code = "SubagentRouteNotFound";
-        result.error_message = "agents=<name[,name]> is required for subagent orchestration.";
+        result.error_message = automatic_selection
+            ? "no healthy agent candidates matched subagent orchestration."
+            : "agents=<name[,name]> is required for explicit subagent orchestration.";
         result.duration_ms = ElapsedMs(started_at);
         audit_logger_.record_task_end(task.task_id, result);
         memory_manager_.record_task(task, result);
@@ -171,6 +207,64 @@ TaskRunResult SubagentManager::run(
     audit_logger_.record_task_end(task.task_id, result);
     memory_manager_.record_task(task, result);
     return result;
+}
+
+std::vector<std::string> SubagentManager::select_agent_candidates(const TaskRequest& task) const {
+    struct Candidate {
+        std::string name;
+        bool capability_matched = false;
+        double score = -std::numeric_limits<double>::infinity();
+    };
+
+    std::vector<Candidate> candidates;
+    for (const auto& profile : agent_registry_.list_profiles()) {
+        const auto agent = agent_registry_.find(profile.agent_name);
+        if (!agent || !agent->healthy()) {
+            continue;
+        }
+
+        const bool capability_matched = HasCapabilityForTask(profile, task.task_type);
+        double score = static_cast<double>(CapabilityScoreForTask(profile, task.task_type));
+        if (const auto stats_it = memory_manager_.agent_stats().find(profile.agent_name);
+            stats_it != memory_manager_.agent_stats().end() && stats_it->second.total_runs > 0) {
+            const auto& stats = stats_it->second;
+            const auto success_rate = static_cast<double>(stats.success_runs) / static_cast<double>(stats.total_runs);
+            score += (success_rate * 100.0) - (stats.avg_duration_ms / 1000.0);
+        }
+        score -= static_cast<double>(LessonOccurrenceCount(memory_manager_, task.task_type, profile.agent_name)) * 25.0;
+
+        candidates.push_back(Candidate{
+            .name = profile.agent_name,
+            .capability_matched = capability_matched,
+            .score = score,
+        });
+    }
+
+    const bool has_capability_match = std::any_of(candidates.begin(), candidates.end(), [](const Candidate& candidate) {
+        return candidate.capability_matched;
+    });
+    if (has_capability_match) {
+        candidates.erase(std::remove_if(candidates.begin(), candidates.end(), [](const Candidate& candidate) {
+            return !candidate.capability_matched;
+        }), candidates.end());
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
+        if (left.score != right.score) {
+            return left.score > right.score;
+        }
+        return left.name < right.name;
+    });
+
+    std::vector<std::string> selected;
+    selected.reserve(std::min(max_subagents_, candidates.size()));
+    for (const auto& candidate : candidates) {
+        if (selected.size() >= max_subagents_) {
+            break;
+        }
+        selected.push_back(candidate.name);
+    }
+    return selected;
 }
 
 TaskStepRecord SubagentManager::run_one(const TaskRequest& task, const std::string& agent_name) const {

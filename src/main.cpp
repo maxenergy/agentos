@@ -841,7 +841,7 @@ void PrintUsage() {
         << "  agentos schedule tick [iterations=1] [interval_ms=1000]\n"
         << "  agentos schedule daemon [iterations=0] [interval_ms=1000]\n"
         << "  agentos schedule remove id=<schedule_id>\n"
-        << "  agentos subagents run agents=<agent[,agent]> [mode=sequential|parallel] objective=text\n"
+        << "  agentos subagents run [agents=<agent[,agent]>] [mode=sequential|parallel] objective=text\n"
         << "  agentos trust identity-add identity=<id> [user=<user>] [label=name]\n"
         << "  agentos trust identities\n"
         << "  agentos trust identity-remove identity=<id>\n"

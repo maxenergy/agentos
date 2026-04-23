@@ -1441,6 +1441,78 @@ void TestSubagentManagerParallelRun(const std::filesystem::path& workspace) {
     Expect(result.output_json.find("success_count") != std::string::npos, "parallel subagent output should summarize success count");
 }
 
+void TestSubagentManagerAutoSelectsCandidates(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_select_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("auto_analysis_a", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("auto_review_b", "review"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-select",
+            .task_type = "analysis",
+            .objective = "auto-select matching subagent candidates",
+            .workspace_path = isolated_workspace,
+        },
+        {},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(result.success, "automatic subagent selection should succeed when a matching healthy agent exists");
+    Expect(result.steps.size() == 1, "automatic subagent selection should prefer capability-matching candidates");
+    Expect(result.steps.front().target_name == "auto_analysis_a", "automatic subagent selection should choose matching capability");
+    Expect(result.output_json.find("auto_analysis_a") != std::string::npos, "automatic subagent output should include selected agent");
+}
+
+void TestSubagentManagerAutoSelectionUsesLessons(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_lesson_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("auto_lesson_a", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("auto_lesson_b", "analysis"));
+    runtime.memory_manager.lesson_store().save(agentos::LessonRecord{
+        .lesson_id = "analysis|auto_lesson_a|AgentFailed",
+        .task_type = "analysis",
+        .target_name = "auto_lesson_a",
+        .error_code = "AgentFailed",
+        .summary = "auto-selected agent failed repeatedly",
+        .occurrence_count = 2,
+        .last_task_id = "previous-auto-subagent-failure",
+        .enabled = true,
+    });
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-lesson",
+            .task_type = "analysis",
+            .objective = "auto-select with lesson penalty",
+            .workspace_path = isolated_workspace,
+        },
+        {},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(result.success, "automatic subagent selection should still succeed with lesson penalties");
+    Expect(result.steps.size() == 2, "automatic subagent selection should keep all matching candidates within limit");
+    Expect(result.steps.front().target_name == "auto_lesson_b", "automatic subagent selection should rank lesson-penalized agents later");
+    Expect(result.steps[1].target_name == "auto_lesson_a", "lesson-penalized candidate should remain available after healthier candidate");
+}
+
 void TestSubagentManagerPolicyDeniesRemoteWithoutPairing(const std::filesystem::path& workspace) {
     TrustedTestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -1797,6 +1869,8 @@ int main() {
     TestSchedulerMissedIntervalSkipPolicy(workspace);
     TestSubagentManagerSequentialRun(workspace);
     TestSubagentManagerParallelRun(workspace);
+    TestSubagentManagerAutoSelectsCandidates(workspace);
+    TestSubagentManagerAutoSelectionUsesLessons(workspace);
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);
     TestCliHostEnvironmentAllowlist(workspace);
     TestAuthApiKeySession(workspace);

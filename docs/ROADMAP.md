@@ -234,12 +234,12 @@ Delivered:
 - explicit agent list orchestration
 - sequential mode
 - parallel mode
+- automatic subagent candidate selection
 - shared Policy / Audit / Memory path
 - `agentos subagents run ...`
 
 Remaining:
 
-- automatic subagent candidate selection
 - task decomposition
 - role assignment
 - WorkspaceSession

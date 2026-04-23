@@ -36,8 +36,8 @@ CLI Integration
 Agent System
 - IAgentAdapter: ✅ 已定义
 - 单一 Agent 接入: 🚧 mock_planner + codex_cli 显式 target 调用
-- Subagent Orchestration: 🚧 SubagentManager 已支持显式 sequential / parallel 编排
-- 多 Agent Router: 🚧 仍以显式 agent 列表为主，自动多代理路由待实现
+- Subagent Orchestration: 🚧 SubagentManager 已支持显式 sequential / parallel 编排和自动候选 agent 选择
+- 多 Agent Router: 🚧 已支持基于健康状态、capability、历史统计和 lessons 的自动候选选择，任务拆分/角色分配待实现
 
 Auth System
 - 基础结构: ✅ AuthManager / ProviderAdapter / SessionStore / CredentialBroker
@@ -275,13 +275,14 @@ CronSupport: 🚧 every:<n>s|m|h|d 已实现，完整 cron 待实现
 #### 问题
 
 * 已支持显式 agent 列表的 sequential / parallel 编排
+* 空 agents 列表会自动选择健康且 capability 匹配的候选 agent，并按历史统计与 lessons 调整排序
 * 仍缺少自动任务拆分、角色分配和 workspace session 管理
 
 #### 必须补充
 
 ```text
-SubagentManager: 🚧 已实现显式编排与并行执行
-AgentRouter: 🚧 基础历史评分已接入单代理选择，自动多代理候选选择待实现
+SubagentManager: 🚧 已实现显式编排、并行执行与自动候选选择
+AgentRouter: 🚧 基础历史评分已接入单代理选择，SubagentManager 已复用统计/lesson 进行候选排序
 WorkspaceSession: ❌ 待实现
 ```
 
@@ -408,7 +409,7 @@ score: ✅ success_count / success_rate / failure_count / latency 综合评分
 ### Phase 3
 
 6. Scheduler 🚧 MVP 已实现，一次性 / interval / recurrence / retry 任务可持久化，并支持 run-due / tick / daemon 执行与 run history
-7. Subagent Manager 🚧 MVP 已实现，显式 sequential / parallel 编排可用
+7. Subagent Manager 🚧 MVP 已实现，显式 sequential / parallel 编排与自动候选选择可用
 
 ---
 

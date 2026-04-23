@@ -35,6 +35,7 @@ public:
         SubagentExecutionMode mode = SubagentExecutionMode::sequential);
 
 private:
+    std::vector<std::string> select_agent_candidates(const TaskRequest& task) const;
     TaskStepRecord run_one(const TaskRequest& task, const std::string& agent_name) const;
 
     AgentRegistry& agent_registry_;
