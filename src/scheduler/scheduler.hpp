@@ -21,6 +21,7 @@ struct ScheduledTask {
     int max_retries = 0;
     int retry_count = 0;
     int retry_backoff_seconds = 0;
+    std::string missed_run_policy = "run-once";
     TaskRequest task;
 };
 

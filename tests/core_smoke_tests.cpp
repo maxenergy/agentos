@@ -1332,6 +1332,58 @@ void TestSchedulerMissedIntervalRunsOnceFromCurrentTime(const std::filesystem::p
     }
 }
 
+void TestSchedulerMissedIntervalSkipPolicy(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "scheduler_missed_skip_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    const auto store_path = isolated_workspace / "scheduler_missed_skip" / "tasks.tsv";
+    agentos::Scheduler scheduler(store_path);
+    scheduler.save(agentos::ScheduledTask{
+        .schedule_id = "skip-missed-interval",
+        .enabled = true,
+        .next_run_epoch_ms = 1000,
+        .interval_seconds = 60,
+        .max_runs = 0,
+        .run_count = 0,
+        .missed_run_policy = "skip",
+        .task = agentos::TaskRequest{
+            .task_type = "write_file",
+            .objective = "skip missed interval write",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"path", "scheduled/skipped.txt"},
+                {"content", "skipped"},
+            },
+        },
+    });
+
+    const auto records = scheduler.run_due(runtime.loop, 181000);
+    Expect(records.empty(), "missed interval skip policy should not execute a stale run");
+    Expect(!std::filesystem::exists(isolated_workspace / "scheduled" / "skipped.txt"), "missed interval skip policy should not create a file");
+    Expect(scheduler.run_history().empty(), "missed interval skip policy should not write execution history");
+
+    const auto stored = scheduler.find("skip-missed-interval");
+    Expect(stored.has_value(), "missed interval skip policy task should remain scheduled");
+    if (stored.has_value()) {
+        Expect(stored->enabled, "missed interval skip policy task should remain enabled");
+        Expect(stored->run_count == 0, "missed interval skip policy should not increment run_count");
+        Expect(stored->next_run_epoch_ms == 241000, "missed interval skip policy should reschedule from current scheduler time");
+        Expect(stored->missed_run_policy == "skip", "missed interval skip policy should remain configured");
+    }
+
+    agentos::Scheduler reloaded(store_path);
+    const auto reloaded_task = reloaded.find("skip-missed-interval");
+    Expect(reloaded_task.has_value(), "missed interval skip policy task should reload from persisted store");
+    if (reloaded_task.has_value()) {
+        Expect(reloaded_task->missed_run_policy == "skip", "missed interval skip policy should persist");
+        Expect(reloaded_task->next_run_epoch_ms == 241000, "missed interval skip policy reschedule should persist");
+    }
+}
+
 void TestSubagentManagerSequentialRun(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -1742,6 +1794,7 @@ int main() {
     TestSchedulerRetriesFailedTaskWithBackoff(workspace);
     TestSchedulerSkipsDisabledTask(workspace);
     TestSchedulerMissedIntervalRunsOnceFromCurrentTime(workspace);
+    TestSchedulerMissedIntervalSkipPolicy(workspace);
     TestSubagentManagerSequentialRun(workspace);
     TestSubagentManagerParallelRun(workspace);
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);

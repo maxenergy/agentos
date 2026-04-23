@@ -22,7 +22,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes/import tests, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
-| Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop, foreground `daemon` loop, run history metadata, retry/backoff, small recurrence grammar, disabled/missed-run coverage | Full cron, configurable missed-run policy |
+| Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop, foreground `daemon` loop, run history metadata, retry/backoff, small recurrence grammar, `missed_run_policy`, disabled/missed-run coverage | Full cron grammar |
 | Policy / Permissions | Implemented MVP | PermissionModel, risk parsing, unknown permission deny | Role-based permission grants, approval workflow |
 | Plugin Host | Not implemented | Docs only | JSON-RPC/stdio plugin runtime, plugin manifest, sandboxing |
 | Storage | Prototype | TSV files under `runtime/` | SQLite or versioned storage, migration, locking |
@@ -34,7 +34,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - `docs/ROADMAP.md` has now been synced to the current implementation state, but it must stay linked to this plan to avoid drifting again.
 - `AUTH_PRD.md` and `AUTH_DESIGN.md` describe OAuth, refresh, cloud credentials, and secure credential storage, but the current code only implements API-key env references, Codex/Claude CLI session probing, and refresh command plumbing without real OAuth exchange.
 - Workflow learning now has candidate/scoring output, LessonStore, lesson-driven routing/policy hints, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
-- Scheduler supports manual `run-due`, foreground `tick`, foreground `daemon`, run history metadata, retry/backoff, and `every:<n>s|m|h|d` recurrence. Disabled tasks are skipped, and missed interval tasks currently run once per tick and reschedule from the current scheduler time; there is no full cron parser or configurable catch-up policy.
+- Scheduler supports manual `run-due`, foreground `tick`, foreground `daemon`, run history metadata, retry/backoff, `missed_run_policy=run-once|skip`, and `every:<n>s|m|h|d` recurrence. Disabled tasks are skipped, and missed interval tasks can either run once per tick or skip stale runs and reschedule from the current scheduler time; there is no full cron parser.
 - Multi-agent orchestration is explicit only. There is no automatic task decomposition, role assignment, WorkspaceSession, or cost-aware multi-agent router.
 - Plugin Host and external CLI spec loading are still docs-only.
 - Persistence is TSV-based and adequate for MVP, but not yet versioned, transactional, or migration-safe.
@@ -67,6 +67,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Add retry/backoff fields to `ScheduledTask`.
 - [x] Record scheduler execution metadata separately from task execution logs.
 - [x] Add tests for missed tasks, disabled tasks, failed tasks, and recurring task persistence.
+- [x] Add configurable missed-run policy for interval tasks.
 
 ### Phase D: Workflow Evolution
 
@@ -170,3 +171,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added scheduler regression coverage for disabled tasks and missed interval tasks.
 - 2026-04-23: Added controllable Codex/Claude CLI session fixture tests for auth probe/import success and unavailable-session failure.
 - 2026-04-23: Added `schedule daemon` foreground loop as the long-running scheduler wrapper, reusing the `tick` execution path.
+- 2026-04-23: Added `missed_run_policy=run-once|skip` for interval tasks and covered skip semantics.

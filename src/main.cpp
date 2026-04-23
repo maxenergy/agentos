@@ -389,6 +389,10 @@ double ParseDoubleOption(const std::map<std::string, std::string>& options, cons
     }
 }
 
+bool IsValidMissedRunPolicy(const std::string& value) {
+    return value == "run-once" || value == "skip";
+}
+
 int ParseRecurrenceIntervalSeconds(const std::map<std::string, std::string>& options) {
     if (options.contains("interval_seconds")) {
         return ParseIntOption(options, "interval_seconds", 0);
@@ -455,6 +459,7 @@ bool IsReservedScheduleOption(const std::string& key) {
         "max_runs",
         "max_retries",
         "retry_backoff_seconds",
+        "missed_run_policy",
         "objective",
         "target",
         "idempotency_key",
@@ -551,6 +556,7 @@ ScheduledTask BuildScheduledTaskFromOptions(
         .max_retries = ParseIntOption(options, "max_retries", 0),
         .retry_count = 0,
         .retry_backoff_seconds = ParseIntOption(options, "retry_backoff_seconds", 0),
+        .missed_run_policy = options.contains("missed_run_policy") ? options.at("missed_run_policy") : "run-once",
         .task = std::move(task),
     };
 }
@@ -626,6 +632,7 @@ void PrintScheduledTask(const ScheduledTask& task) {
         << " max_retries=" << task.max_retries
         << " retry_count=" << task.retry_count
         << " retry_backoff_seconds=" << task.retry_backoff_seconds
+        << " missed_run_policy=" << task.missed_run_policy
         << " task_type=" << task.task.task_type
         << " objective=\"" << task.task.objective << "\""
         << '\n';
@@ -827,7 +834,7 @@ void PrintUsage() {
         << "  agentos memory stored-workflows\n"
         << "  agentos memory lessons\n"
         << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>] [required_inputs=a,b]\n"
-        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m] key=value ...\n"
+        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m] [missed_run_policy=run-once|skip] key=value ...\n"
         << "  agentos schedule list\n"
         << "  agentos schedule history\n"
         << "  agentos schedule run-due\n"
@@ -1014,6 +1021,10 @@ int RunScheduleCommand(
         }
         if (scheduled_task.max_retries < 0 || scheduled_task.retry_backoff_seconds < 0) {
             std::cerr << "max_retries and retry_backoff_seconds must be non-negative\n";
+            return 1;
+        }
+        if (!IsValidMissedRunPolicy(scheduled_task.missed_run_policy)) {
+            std::cerr << "missed_run_policy must be run-once or skip\n";
             return 1;
         }
 

@@ -143,6 +143,22 @@ double ParseDouble(const std::string& value, const double fallback) {
     }
 }
 
+std::string NormalizeMissedRunPolicy(const std::string& value) {
+    if (value == "skip") {
+        return "skip";
+    }
+    return "run-once";
+}
+
+bool ShouldSkipMissedIntervalRun(const ScheduledTask& scheduled_task, const long long now_epoch_ms) {
+    if (scheduled_task.missed_run_policy != "skip" || scheduled_task.interval_seconds <= 0) {
+        return false;
+    }
+
+    const auto interval_ms = static_cast<long long>(scheduled_task.interval_seconds) * 1000LL;
+    return now_epoch_ms >= scheduled_task.next_run_epoch_ms + interval_ms;
+}
+
 }  // namespace
 
 Scheduler::Scheduler(std::filesystem::path store_path)
@@ -156,6 +172,7 @@ Scheduler::Scheduler(std::filesystem::path store_path)
 
 ScheduledTask Scheduler::save(ScheduledTask scheduled_task) {
     remove(scheduled_task.schedule_id);
+    scheduled_task.missed_run_policy = NormalizeMissedRunPolicy(scheduled_task.missed_run_policy);
     scheduled_tasks_.push_back(std::move(scheduled_task));
     flush();
     return scheduled_tasks_.back();
@@ -231,9 +248,17 @@ std::vector<SchedulerExecutionRecord> Scheduler::run_history() const {
 
 std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long long now_epoch_ms) {
     std::vector<SchedulerRunRecord> records;
+    bool changed = false;
 
     for (auto& scheduled_task : scheduled_tasks_) {
         if (!scheduled_task.enabled || scheduled_task.next_run_epoch_ms > now_epoch_ms) {
+            continue;
+        }
+
+        if (ShouldSkipMissedIntervalRun(scheduled_task, now_epoch_ms)) {
+            scheduled_task.next_run_epoch_ms =
+                now_epoch_ms + (static_cast<long long>(scheduled_task.interval_seconds) * 1000LL);
+            changed = true;
             continue;
         }
 
@@ -287,7 +312,7 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
         });
     }
 
-    if (!records.empty()) {
+    if (!records.empty() || changed) {
         flush();
     }
 
@@ -350,6 +375,7 @@ void Scheduler::load() {
             .max_retries = parts.size() >= 23 ? ParseInt(parts[20], 0) : 0,
             .retry_count = parts.size() >= 23 ? ParseInt(parts[21], 0) : 0,
             .retry_backoff_seconds = parts.size() >= 23 ? ParseInt(parts[22], 0) : 0,
+            .missed_run_policy = parts.size() >= 24 ? NormalizeMissedRunPolicy(parts[23]) : "run-once",
             .task = std::move(task),
         });
     }
@@ -386,7 +412,8 @@ void Scheduler::flush() const {
             << EncodeField(SerializeInputs(task.inputs)) << kDelimiter
             << scheduled_task.max_retries << kDelimiter
             << scheduled_task.retry_count << kDelimiter
-            << scheduled_task.retry_backoff_seconds
+            << scheduled_task.retry_backoff_seconds << kDelimiter
+            << EncodeField(NormalizeMissedRunPolicy(scheduled_task.missed_run_policy))
             << '\n';
     }
 }

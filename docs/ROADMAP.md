@@ -215,12 +215,12 @@ Delivered:
 - scheduler-specific execution metadata
 - retry/backoff fields
 - small recurrence grammar (`every:<n>s|m|h|d`)
+- configurable missed-run policy (`run-once` or `skip`)
 - disabled-task and missed-interval regression coverage
 
 Remaining:
 
 - full cron grammar
-- configurable missed-run catch-up policy
 
 ---
 
