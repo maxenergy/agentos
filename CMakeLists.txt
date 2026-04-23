@@ -29,6 +29,7 @@ add_library(agentos_core
     src/core/audit/audit_logger.cpp
     src/core/orchestration/subagent_manager.cpp
     src/memory/memory_manager.cpp
+    src/memory/workflow_store.cpp
     src/scheduler/scheduler.cpp
     src/core/router/router.cpp
     src/core/loop/agent_loop.cpp

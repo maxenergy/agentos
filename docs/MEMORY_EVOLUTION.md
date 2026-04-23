@@ -160,6 +160,22 @@ Workflow 不是简单回放，而是带有可解释结构的程序性记忆。
 
 当前 score 为基础综合分：成功次数与成功率提高分数，失败次数与平均耗时降低分数。后续可继续加入 `average_time_saved`、用户接受率和适用条件。
 
+当前实现也提供独立的 `runtime/memory/workflows.tsv` WorkflowStore 骨架，用于持久化稳定 workflow 定义：
+
+- name
+- enabled
+- trigger_task_type
+- ordered_steps
+- source
+- use_count
+- success_count
+- failure_count
+- success_rate
+- avg_duration_ms
+- score
+
+当前可通过 `agentos memory promote-workflow <candidate_name>` 将候选固化为启用的 workflow 定义，并通过 `agentos run workflow_run workflow=<name> ...` 执行持久定义。Router 自动选择仍是后续工作。
+
 ---
 
 ## 6. 演化机制

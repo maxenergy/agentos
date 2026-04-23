@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/models.hpp"
+#include "memory/workflow_store.hpp"
 
 #include <filesystem>
 #include <unordered_map>
@@ -30,6 +31,8 @@ public:
     [[nodiscard]] const std::unordered_map<std::string, SkillStats>& skill_stats() const;
     [[nodiscard]] const std::unordered_map<std::string, AgentRuntimeStats>& agent_stats() const;
     [[nodiscard]] std::vector<WorkflowCandidate> workflow_candidates() const;
+    [[nodiscard]] WorkflowStore& workflow_store();
+    [[nodiscard]] const WorkflowStore& workflow_store() const;
     void refresh_workflow_store() const;
 
 private:
@@ -40,6 +43,7 @@ private:
     void flush_stats() const;
 
     std::filesystem::path storage_dir_;
+    WorkflowStore workflow_store_;
     std::vector<TaskMemoryRecord> tasks_;
     std::unordered_map<std::string, SkillStats> skill_stats_;
     std::unordered_map<std::string, AgentRuntimeStats> agent_stats_;

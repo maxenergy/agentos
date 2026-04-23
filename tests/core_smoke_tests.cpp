@@ -15,6 +15,7 @@
 #include "hosts/agents/mock_planning_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
 #include "memory/memory_manager.hpp"
+#include "memory/workflow_store.hpp"
 #include "scheduler/scheduler.hpp"
 #include "skills/builtin/file_patch_skill.hpp"
 #include "skills/builtin/file_read_skill.hpp"
@@ -202,7 +203,8 @@ void RegisterCore(TestRuntime& runtime) {
     runtime.skill_registry.register_skill(std::make_shared<agentos::FileReadSkill>());
     runtime.skill_registry.register_skill(std::make_shared<agentos::FileWriteSkill>());
     runtime.skill_registry.register_skill(std::make_shared<agentos::FilePatchSkill>());
-    runtime.skill_registry.register_skill(std::make_shared<agentos::WorkflowRunSkill>(runtime.skill_registry));
+    runtime.skill_registry.register_skill(std::make_shared<agentos::WorkflowRunSkill>(
+        runtime.skill_registry, &runtime.memory_manager.workflow_store()));
     runtime.agent_registry.register_agent(std::make_shared<agentos::MockPlanningAgent>());
 }
 
@@ -210,7 +212,8 @@ void RegisterCore(TrustedTestRuntime& runtime) {
     runtime.skill_registry.register_skill(std::make_shared<agentos::FileReadSkill>());
     runtime.skill_registry.register_skill(std::make_shared<agentos::FileWriteSkill>());
     runtime.skill_registry.register_skill(std::make_shared<agentos::FilePatchSkill>());
-    runtime.skill_registry.register_skill(std::make_shared<agentos::WorkflowRunSkill>(runtime.skill_registry));
+    runtime.skill_registry.register_skill(std::make_shared<agentos::WorkflowRunSkill>(
+        runtime.skill_registry, &runtime.memory_manager.workflow_store()));
     runtime.agent_registry.register_agent(std::make_shared<agentos::MockPlanningAgent>());
 }
 
@@ -481,6 +484,36 @@ void TestWorkflowRun(const std::filesystem::path& workspace) {
     Expect(result.output_json.find("done") != std::string::npos, "workflow final output should contain patched content");
 }
 
+void TestWorkflowRunStoredDefinition(const std::filesystem::path& workspace) {
+    TestRuntime runtime(workspace);
+    RegisterCore(runtime);
+
+    runtime.memory_manager.workflow_store().save(agentos::WorkflowDefinition{
+        .name = "stored_write_read",
+        .trigger_task_type = "workflow_run",
+        .ordered_steps = {"file_write", "file_read"},
+        .source = "test",
+        .enabled = true,
+    });
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "stored-workflow",
+        .task_type = "workflow_run",
+        .objective = "run stored write/read workflow",
+        .workspace_path = workspace,
+        .inputs = {
+            {"workflow", "stored_write_read"},
+            {"path", "workflow/stored_result.txt"},
+            {"content", "stored"},
+        },
+    });
+
+    Expect(result.success, "workflow_run should execute stored workflow definition");
+    Expect(result.output_json.find("stored_write_read") != std::string::npos, "stored workflow output should include workflow name");
+    Expect(result.output_json.find("file_write,file_read") != std::string::npos, "stored workflow output should include ordered steps");
+    Expect(result.output_json.find("stored") != std::string::npos, "stored workflow output should include final read content");
+}
+
 void TestDefaultAgentRoute(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -599,6 +632,65 @@ void TestWorkflowCandidatesAcrossRestart(const std::filesystem::path& workspace)
         Expect(workflow->score > 0.0, "workflow scoring should produce a positive candidate score for mostly successful workflows");
     }
     Expect(std::filesystem::exists(isolated_workspace / "memory" / "workflow_candidates.tsv"), "workflow_candidates.tsv should be written");
+}
+
+void TestWorkflowStorePersistsDefinitions(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "workflow_store_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto store_path = isolated_workspace / "memory" / "workflows.tsv";
+
+    const auto candidate_definition = agentos::WorkflowStore::FromCandidate(agentos::WorkflowCandidate{
+        .name = "write_file_workflow",
+        .trigger_task_type = "write_file",
+        .ordered_steps = {"file_write", "file_read"},
+        .use_count = 3,
+        .success_count = 2,
+        .failure_count = 1,
+        .success_rate = 0.66,
+        .avg_duration_ms = 12.5,
+        .score = 123.0,
+    });
+
+    {
+        agentos::WorkflowStore store(store_path);
+        auto saved = candidate_definition;
+        saved.enabled = true;
+        store.save(saved);
+
+        const auto found = store.find("write_file_workflow");
+        Expect(found.has_value(), "workflow store should find saved workflow definition");
+        if (found.has_value()) {
+            Expect(found->source == "candidate", "workflow store should preserve source");
+            Expect(found->enabled, "workflow store should preserve enabled flag");
+            Expect(found->ordered_steps.size() == 2, "workflow store should preserve ordered steps");
+            Expect(found->ordered_steps.front() == "file_write", "workflow store should preserve first step");
+        }
+    }
+
+    agentos::WorkflowStore reloaded(store_path);
+    const auto reloaded_definition = reloaded.find("write_file_workflow");
+    Expect(reloaded_definition.has_value(), "workflow store should reload persisted workflow definition");
+    if (reloaded_definition.has_value()) {
+        Expect(reloaded_definition->success_count == 2, "workflow store should preserve success count");
+        Expect(reloaded_definition->failure_count == 1, "workflow store should preserve failure count");
+        Expect(reloaded_definition->score == 123.0, "workflow store should preserve score");
+    }
+    Expect(std::filesystem::exists(store_path), "workflows.tsv should be written");
+
+    reloaded.save(agentos::WorkflowDefinition{
+        .name = "write_file_workflow",
+        .trigger_task_type = "write_file",
+        .ordered_steps = {"file_write"},
+        .source = "manual",
+        .enabled = false,
+    });
+    Expect(reloaded.list().size() == 1, "workflow store should replace existing workflow by name");
+    const auto updated = reloaded.find("write_file_workflow");
+    Expect(updated.has_value() && !updated->enabled && updated->source == "manual", "workflow store should persist replacement fields");
+
+    Expect(reloaded.remove("write_file_workflow"), "workflow store should remove workflow definition");
+    Expect(!reloaded.find("write_file_workflow").has_value(), "workflow store should not find removed workflow");
 }
 
 void TestSchedulerRunsDueTask(const std::filesystem::path& workspace) {
@@ -848,10 +940,12 @@ int main() {
     TestTrustAuditEvent(workspace);
     TestRemoteTaskRequiresPairing(workspace);
     TestWorkflowRun(workspace);
+    TestWorkflowRunStoredDefinition(workspace);
     TestDefaultAgentRoute(workspace);
     TestIdempotentExecutionCache(workspace);
     TestPersistentTaskAndStepLogs(workspace);
     TestWorkflowCandidatesAcrossRestart(workspace);
+    TestWorkflowStorePersistsDefinitions(workspace);
     TestSchedulerRunsDueTask(workspace);
     TestSchedulerReschedulesIntervalTask(workspace);
     TestSubagentManagerSequentialRun(workspace);

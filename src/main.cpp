@@ -36,6 +36,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -566,12 +567,36 @@ void PrintScheduledTask(const ScheduledTask& task) {
         << '\n';
 }
 
+bool PrintSchedulerRunRecords(const std::vector<SchedulerRunRecord>& records) {
+    if (records.empty()) {
+        std::cout << "no due scheduled tasks\n";
+        return true;
+    }
+
+    bool all_success = true;
+    for (const auto& record : records) {
+        all_success = all_success && record.result.success;
+        std::cout
+            << record.schedule_id
+            << " success=" << (record.result.success ? "true" : "false")
+            << " rescheduled=" << (record.rescheduled ? "true" : "false")
+            << " route=" << route_target_kind_name(record.result.route_kind) << "->" << record.result.route_target
+            << " summary=\"" << record.result.summary << "\"";
+        if (!record.result.error_code.empty()) {
+            std::cout << " error_code=" << record.result.error_code;
+        }
+        std::cout << '\n';
+    }
+    return all_success;
+}
+
 void PrintMemorySummary(const MemoryManager& memory_manager) {
     std::cout
         << "tasks=" << memory_manager.task_log().size()
         << " skills=" << memory_manager.skill_stats().size()
         << " agents=" << memory_manager.agent_stats().size()
         << " workflow_candidates=" << memory_manager.workflow_candidates().size()
+        << " workflows=" << memory_manager.workflow_store().list().size()
         << '\n';
 }
 
@@ -627,6 +652,35 @@ void PrintWorkflowCandidates(const MemoryManager& memory_manager) {
     }
 }
 
+void PrintWorkflowDefinition(const WorkflowDefinition& workflow) {
+    std::cout
+        << workflow.name
+        << " enabled=" << (workflow.enabled ? "true" : "false")
+        << " trigger=" << workflow.trigger_task_type
+        << " source=" << workflow.source
+        << " score=" << workflow.score
+        << " use_count=" << workflow.use_count
+        << " success_count=" << workflow.success_count
+        << " failure_count=" << workflow.failure_count
+        << " success_rate=" << workflow.success_rate
+        << " avg_duration_ms=" << workflow.avg_duration_ms
+        << " steps=";
+
+    for (std::size_t index = 0; index < workflow.ordered_steps.size(); ++index) {
+        if (index != 0) {
+            std::cout << ',';
+        }
+        std::cout << workflow.ordered_steps[index];
+    }
+    std::cout << '\n';
+}
+
+void PrintWorkflowDefinitions(const WorkflowStore& workflow_store) {
+    for (const auto& workflow : workflow_store.list()) {
+        PrintWorkflowDefinition(workflow);
+    }
+}
+
 void PrintUsage() {
     std::cout
         << "Usage:\n"
@@ -636,9 +690,12 @@ void PrintUsage() {
         << "  agentos memory summary\n"
         << "  agentos memory stats\n"
         << "  agentos memory workflows\n"
+        << "  agentos memory stored-workflows\n"
+        << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>]\n"
         << "  agentos schedule add task=<task_type> due=now key=value ...\n"
         << "  agentos schedule list\n"
         << "  agentos schedule run-due\n"
+        << "  agentos schedule tick [iterations=1] [interval_ms=1000]\n"
         << "  agentos schedule remove id=<schedule_id>\n"
         << "  agentos subagents run agents=<agent[,agent]> [mode=sequential|parallel] objective=text\n"
         << "  agentos trust identity-add identity=<id> [user=<user>] [label=name]\n"
@@ -658,8 +715,10 @@ void PrintUsage() {
         << "  agentos run read_file path=README.md\n"
         << "  agentos run write_file path=runtime/note.txt content=hello\n"
         << "  agentos run write_file path=runtime/note.txt content=hello idempotency_key=demo-write-1\n"
+        << "  agentos memory promote-workflow write_file_workflow\n"
         << "  agentos schedule add id=demo-once task=write_file due=now path=runtime/scheduled.txt content=hello\n"
         << "  agentos schedule run-due\n"
+        << "  agentos schedule tick iterations=1 interval_ms=0\n"
         << "  agentos subagents run agents=mock_planner mode=sequential objective=Plan_the_next_phase\n"
         << "  agentos trust identity-add identity=phone user=local-user label=dev-phone\n"
         << "  agentos trust pair identity=phone device=device1 label=dev-phone permissions=task.submit\n"
@@ -825,24 +884,34 @@ int RunScheduleCommand(
     if (command == "run-due") {
         const auto now = ParseLongLongOption(options, "now_epoch_ms", Scheduler::NowEpochMs());
         const auto records = scheduler.run_due(loop, now);
-        if (records.empty()) {
-            std::cout << "no due scheduled tasks\n";
-            return 0;
+        return PrintSchedulerRunRecords(records) ? 0 : 1;
+    }
+
+    if (command == "tick") {
+        const auto iterations = ParseIntOption(options, "iterations", 1);
+        const auto interval_ms = ParseIntOption(options, "interval_ms", 1000);
+        if (iterations < 0 || interval_ms < 0) {
+            std::cerr << "iterations and interval_ms must be non-negative\n";
+            return 1;
         }
 
         bool all_success = true;
-        for (const auto& record : records) {
-            all_success = all_success && record.result.success;
+        int iteration = 0;
+        while (iterations == 0 || iteration < iterations) {
+            ++iteration;
+            const auto now = Scheduler::NowEpochMs();
             std::cout
-                << record.schedule_id
-                << " success=" << (record.result.success ? "true" : "false")
-                << " rescheduled=" << (record.rescheduled ? "true" : "false")
-                << " route=" << route_target_kind_name(record.result.route_kind) << "->" << record.result.route_target
-                << " summary=\"" << record.result.summary << "\"";
-            if (!record.result.error_code.empty()) {
-                std::cout << " error_code=" << record.result.error_code;
+                << "tick iteration=" << iteration
+                << " now_epoch_ms=" << now
+                << '\n';
+            all_success = PrintSchedulerRunRecords(scheduler.run_due(loop, now)) && all_success;
+
+            if (iterations != 0 && iteration >= iterations) {
+                break;
             }
-            std::cout << '\n';
+            if (interval_ms > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+            }
         }
         return all_success ? 0 : 1;
     }
@@ -900,6 +969,45 @@ int RunMemoryCommand(MemoryManager& memory_manager, const int argc, char* argv[]
 
     if (command == "workflows") {
         PrintWorkflowCandidates(memory_manager);
+        return 0;
+    }
+
+    if (command == "stored-workflows") {
+        PrintWorkflowDefinitions(memory_manager.workflow_store());
+        return 0;
+    }
+
+    if (command == "promote-workflow") {
+        const auto options = ParseOptionsFromArgs(argc, argv, 3);
+        const auto candidate_name = options.contains("name")
+            ? options.at("name")
+            : (options.contains("candidate")
+                ? options.at("candidate")
+                : (argc >= 4 && std::string(argv[3]).find('=') == std::string::npos ? std::string(argv[3]) : ""));
+        if (candidate_name.empty()) {
+            std::cerr << "workflow candidate name is required\n";
+            return 1;
+        }
+
+        const auto candidates = memory_manager.workflow_candidates();
+        const auto it = std::find_if(candidates.begin(), candidates.end(), [&](const WorkflowCandidate& candidate) {
+            return candidate.name == candidate_name;
+        });
+        if (it == candidates.end()) {
+            std::cerr << "workflow candidate not found: " << candidate_name << '\n';
+            return 1;
+        }
+
+        auto workflow = WorkflowStore::FromCandidate(*it);
+        workflow.source = "promoted_candidate";
+        workflow.enabled = !options.contains("enabled") || options.at("enabled") != "false";
+        if (options.contains("workflow")) {
+            workflow.name = options.at("workflow");
+        } else if (options.contains("workflow_name")) {
+            workflow.name = options.at("workflow_name");
+        }
+
+        PrintWorkflowDefinition(memory_manager.workflow_store().save(std::move(workflow)));
         return 0;
     }
 
@@ -1023,7 +1131,8 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<FileWriteSkill>());
     runtime.skill_registry.register_skill(std::make_shared<FilePatchSkill>());
     runtime.skill_registry.register_skill(std::make_shared<HttpFetchSkill>(runtime.cli_host));
-    runtime.skill_registry.register_skill(std::make_shared<WorkflowRunSkill>(runtime.skill_registry));
+    runtime.skill_registry.register_skill(std::make_shared<WorkflowRunSkill>(
+        runtime.skill_registry, &runtime.memory_manager.workflow_store()));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeRgSearchSpec(), runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeGitStatusSpec(), runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeGitDiffSpec(), runtime.cli_host));

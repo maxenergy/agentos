@@ -60,10 +60,10 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Identity / Trust：IdentityManager、远程触发身份字段、PairingManager、TrustPolicy、AllowlistStore
 - Remote Trigger Policy：远程任务默认拒绝，必须先 pairing 并具备 `task.submit`
 - Idempotent Execution：`idempotency_key` + `runtime/execution_cache.tsv`
-- Persistent Memory：TaskLog / StepLog / Skill-Agent Stats / Workflow Candidates
-- Workflow Generator / Scoring：基于历史 Task/Step 生成候选 workflow，并计算成功率、失败数、耗时与综合评分
+- Persistent Memory：TaskLog / StepLog / Skill-Agent Stats / Workflow Candidates / WorkflowStore promotion
+- Workflow Generator / Scoring：基于历史 Task/Step 生成候选 workflow，并可 promote 到 WorkflowStore 后由 `workflow_run` 执行
 - Agent Scoring：Router 可基于历史 success_rate / latency 选择 agent
-- Scheduler：一次性 / interval 任务持久化，`schedule run-due` 复用 AgentLoop 执行
+- Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` 复用 AgentLoop 执行
 - Subagent Orchestration：显式 agent 列表的 sequential / parallel 编排，复用 Policy / Audit / Memory
 - CTest smoke test：覆盖核心 loop、策略拒绝、权限模型、远程 pairing、workflow、scheduler、subagent 编排
 
@@ -97,6 +97,9 @@ build\agentos.exe agents
 build\agentos.exe memory summary
 build\agentos.exe memory stats
 build\agentos.exe memory workflows
+build\agentos.exe memory promote-workflow write_file_workflow
+build\agentos.exe memory stored-workflows
+build\agentos.exe run workflow_run workflow=write_file_workflow path=runtime/promoted.txt content=hello
 build\agentos.exe trust identity-add identity=phone user=local-user label=dev-phone
 build\agentos.exe trust identities
 build\agentos.exe trust pair identity=phone device=device1 label=dev-phone permissions=task.submit
@@ -107,6 +110,7 @@ build\agentos.exe trust remove identity=phone device=device1
 build\agentos.exe trust identity-remove identity=phone
 build\agentos.exe schedule add id=demo-once task=write_file due=now path=runtime/scheduled.txt content=hello
 build\agentos.exe schedule run-due
+build\agentos.exe schedule tick iterations=1 interval_ms=0
 build\agentos.exe schedule list
 build\agentos.exe schedule remove id=demo-once
 build\agentos.exe subagents run agents=mock_planner mode=sequential objective=Plan_the_next_phase
@@ -133,6 +137,7 @@ runtime/memory/step_log.tsv
 runtime/memory/skill_stats.tsv
 runtime/memory/agent_stats.tsv
 runtime/memory/workflow_candidates.tsv
+runtime/memory/workflows.tsv
 ```
 
 ## 项目结构

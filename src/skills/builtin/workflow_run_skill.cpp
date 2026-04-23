@@ -2,20 +2,22 @@
 
 #include "utils/json_utils.hpp"
 
+#include <algorithm>
 #include <sstream>
 
 namespace agentos {
 
-WorkflowRunSkill::WorkflowRunSkill(const SkillRegistry& skill_registry)
-    : skill_registry_(skill_registry) {}
+WorkflowRunSkill::WorkflowRunSkill(const SkillRegistry& skill_registry, const WorkflowStore* workflow_store)
+    : skill_registry_(skill_registry),
+      workflow_store_(workflow_store) {}
 
 SkillManifest WorkflowRunSkill::manifest() const {
     return {
         .name = "workflow_run",
         .version = "0.1.0",
-        .description = "Run a small built-in workflow through registered skills.",
+        .description = "Run a built-in or promoted workflow through registered skills.",
         .capabilities = {"workflow", "skill_composition"},
-        .input_schema_json = R"({"type":"object","required":["workflow","path"]})",
+        .input_schema_json = R"({"type":"object","required":["workflow"]})",
         .output_schema_json = R"({"type":"object","required":["workflow","steps"]})",
         .risk_level = "medium",
         .permissions = {"filesystem.read", "filesystem.write"},
@@ -31,6 +33,20 @@ SkillResult WorkflowRunSkill::execute(const SkillCall& call) {
         return RunWritePatchRead(call);
     }
 
+    if (workflow_store_ != nullptr) {
+        const auto stored_workflow = workflow_store_->find(workflow);
+        if (stored_workflow.has_value()) {
+            if (!stored_workflow->enabled) {
+                return {
+                    .success = false,
+                    .error_code = "WorkflowDisabled",
+                    .error_message = "workflow is disabled: " + workflow,
+                };
+            }
+            return RunStoredWorkflow(*stored_workflow, call);
+        }
+    }
+
     return {
         .success = false,
         .error_code = "WorkflowNotFound",
@@ -39,7 +55,8 @@ SkillResult WorkflowRunSkill::execute(const SkillCall& call) {
 }
 
 bool WorkflowRunSkill::healthy() const {
-    return skill_registry_.find("file_write") && skill_registry_.find("file_patch") && skill_registry_.find("file_read");
+    return (skill_registry_.find("file_write") && skill_registry_.find("file_patch") && skill_registry_.find("file_read")) ||
+           (workflow_store_ != nullptr && !workflow_store_->list().empty());
 }
 
 SkillResult WorkflowRunSkill::RunWritePatchRead(const SkillCall& call) const {
@@ -97,5 +114,102 @@ SkillResult WorkflowRunSkill::RunWritePatchRead(const SkillCall& call) const {
     };
 }
 
-}  // namespace agentos
+SkillResult WorkflowRunSkill::RunStoredWorkflow(const WorkflowDefinition& workflow, const SkillCall& call) const {
+    if (workflow.ordered_steps.empty()) {
+        return {
+            .success = false,
+            .error_code = "InvalidWorkflowDefinition",
+            .error_message = "stored workflow has no steps: " + workflow.name,
+        };
+    }
 
+    std::vector<std::string> completed_steps;
+    completed_steps.reserve(workflow.ordered_steps.size());
+    std::string final_output;
+    int duration_ms = 0;
+
+    for (const auto& step_name : workflow.ordered_steps) {
+        if (step_name == "workflow_run") {
+            return {
+                .success = false,
+                .error_code = "RecursiveWorkflowStep",
+                .error_message = "stored workflow cannot call workflow_run recursively",
+                .duration_ms = duration_ms,
+            };
+        }
+
+        const auto step = skill_registry_.find(step_name);
+        if (!step) {
+            return {
+                .success = false,
+                .error_code = "WorkflowDependencyMissing",
+                .error_message = "stored workflow requires missing skill: " + step_name,
+                .duration_ms = duration_ms,
+            };
+        }
+
+        const auto manifest = step->manifest();
+        if (!StoredStepIsInPolicyScope(manifest)) {
+            return {
+                .success = false,
+                .error_code = "WorkflowPermissionOutOfScope",
+                .error_message = "stored workflow step is outside workflow_run policy scope: " + step_name,
+                .duration_ms = duration_ms,
+            };
+        }
+
+        SkillCall step_call = call;
+        step_call.call_id = call.call_id + "." + step_name;
+        step_call.skill_name = step_name;
+
+        const auto step_result = step->execute(step_call);
+        duration_ms += step_result.duration_ms;
+        if (!step_result.success) {
+            return {
+                .success = false,
+                .error_code = step_result.error_code.empty() ? "WorkflowStepFailed" : step_result.error_code,
+                .error_message = "stored workflow step failed: " + step_name + " " + step_result.error_message,
+                .duration_ms = duration_ms,
+            };
+        }
+
+        completed_steps.push_back(step_name);
+        final_output = step_result.json_output;
+    }
+
+    std::ostringstream steps;
+    for (std::size_t index = 0; index < completed_steps.size(); ++index) {
+        if (index != 0) {
+            steps << ',';
+        }
+        steps << completed_steps[index];
+    }
+
+    return {
+        .success = true,
+        .json_output = MakeJsonObject({
+            {"workflow", QuoteJson(workflow.name)},
+            {"source", QuoteJson(workflow.source)},
+            {"steps", QuoteJson(steps.str())},
+            {"final_output", QuoteJson(final_output)},
+        }),
+        .duration_ms = duration_ms,
+    };
+}
+
+bool WorkflowRunSkill::StoredStepIsInPolicyScope(const SkillManifest& manifest) const {
+    if (manifest.risk_level != "low" && manifest.risk_level != "medium") {
+        return false;
+    }
+
+    const auto workflow_manifest = this->manifest();
+    for (const auto& permission : manifest.permissions) {
+        if (std::find(workflow_manifest.permissions.begin(), workflow_manifest.permissions.end(), permission) ==
+            workflow_manifest.permissions.end()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace agentos

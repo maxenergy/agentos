@@ -47,12 +47,12 @@ Auth System
 Memory System
 - Task log: ✅ 内存版 + runtime/memory/task_log.tsv 持久化已实现
 - Step log: ✅ runtime/memory/step_log.tsv 持久化已实现
-- Workflow: ✅ 候选生成 + runtime/memory/workflow_candidates.tsv + scoring 已实现
+- Workflow: 🚧 候选生成 + runtime/memory/workflow_candidates.tsv + scoring 已实现，runtime/memory/workflows.tsv 持久化 / promotion / `workflow_run` 执行已实现
 - Scoring: 🚧 Skill / Agent 基础统计已持久化，AgentRouter 已接入历史评分
 
 Scheduler
 - ScheduledTask: ✅ 已实现 runtime/scheduler/tasks.tsv 持久化
-- Scheduler: 🚧 支持一次性任务、interval 任务、手动 run-due
+- Scheduler: 🚧 支持一次性任务、interval 任务、手动 run-due 与前台 tick loop
 - CronSupport: ❌ 尚未实现 cron 表达式
 
 Identity / Trust
@@ -221,7 +221,8 @@ ExecutionCache: ✅ runtime/execution_cache.tsv
 
 * TaskLog / StepLog / Skill-Agent Stats 已持久化
 * Workflow 候选已可从成功历史中生成
-* LessonStore 与更强 WorkflowStore 仍需后续补齐
+* WorkflowStore 持久化、promotion 与 `workflow_run` 执行持久定义已实现，但 Router 自动选择仍需后续补齐
+* LessonStore 仍需后续补齐
 
 #### 必须补充
 
@@ -229,7 +230,7 @@ ExecutionCache: ✅ runtime/execution_cache.tsv
 TaskLog: ✅ runtime/memory/task_log.tsv
 StepLog: ✅ runtime/memory/step_log.tsv
 LessonStore: ❌ 待实现
-WorkflowStore: 🚧 workflow_candidates.tsv 已实现候选层与基础评分
+WorkflowStore: 🚧 workflow_candidates.tsv 候选层 + workflows.tsv 持久化定义 / promotion / 执行已实现
 ```
 
 ---
@@ -242,13 +243,13 @@ WorkflowStore: 🚧 workflow_candidates.tsv 已实现候选层与基础评分
 
 #### 问题
 
-* AgentOS 已可记录并手动触发到期任务
-* 仍缺少后台常驻 tick loop、cron 表达式和失败重试策略
+* AgentOS 已可记录、手动触发到期任务，并可用前台 tick loop 周期执行
+* 仍缺少 daemon/service wrapper、cron 表达式和失败重试策略
 
 #### 必须补充
 
 ```text
-Scheduler: 🚧 已实现 add/list/remove/run-due
+Scheduler: 🚧 已实现 add/list/remove/run-due/tick
 ScheduledTask: ✅ 已实现 runtime/scheduler/tasks.tsv
 CronSupport: ❌ 待实现
 ```
@@ -396,7 +397,7 @@ score: ✅ success_count / success_rate / failure_count / latency 综合评分
 
 ### Phase 3
 
-6. Scheduler 🚧 MVP 已实现，一次性 / interval 任务可持久化并手动 run-due
+6. Scheduler 🚧 MVP 已实现，一次性 / interval 任务可持久化，并支持 run-due / tick 执行
 7. Subagent Manager 🚧 MVP 已实现，显式 sequential / parallel 编排可用
 
 ---

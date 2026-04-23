@@ -156,13 +156,14 @@ Delivered:
 - Agent stats
 - Workflow candidate generation
 - Workflow scoring
+- durable WorkflowStore skeleton
+- workflow promotion command
+- stored workflow execution through `workflow_run`
 - `agentos memory ...` command group
 
 Remaining:
 
 - LessonStore
-- durable WorkflowStore
-- workflow promotion
 - auto workflow selection by Router
 - SQLite or versioned storage migration
 
@@ -202,10 +203,11 @@ Delivered:
 - one-shot tasks
 - interval tasks
 - manual `schedule run-due`
+- foreground `schedule tick` loop
 
 Remaining:
 
-- background `schedule tick` / daemon mode
+- daemon/service wrapper
 - cron grammar
 - retry/backoff
 - missed-run semantics

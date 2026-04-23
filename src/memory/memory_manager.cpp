@@ -110,7 +110,8 @@ double ScoreWorkflow(const WorkflowScoreAccumulator& stats) {
 }  // namespace
 
 MemoryManager::MemoryManager(std::filesystem::path storage_dir)
-    : storage_dir_(std::move(storage_dir)) {
+    : storage_dir_(std::move(storage_dir)),
+      workflow_store_(storage_dir_.empty() ? std::filesystem::path{} : storage_dir_ / "workflows.tsv") {
     if (!storage_dir_.empty()) {
         std::filesystem::create_directories(storage_dir_);
         load_persisted_logs();
@@ -177,6 +178,14 @@ const std::unordered_map<std::string, SkillStats>& MemoryManager::skill_stats() 
 
 const std::unordered_map<std::string, AgentRuntimeStats>& MemoryManager::agent_stats() const {
     return agent_stats_;
+}
+
+WorkflowStore& MemoryManager::workflow_store() {
+    return workflow_store_;
+}
+
+const WorkflowStore& MemoryManager::workflow_store() const {
+    return workflow_store_;
 }
 
 std::vector<WorkflowCandidate> MemoryManager::workflow_candidates() const {
