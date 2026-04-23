@@ -654,6 +654,33 @@ bool PrintSchedulerRunRecords(const std::vector<SchedulerRunRecord>& records) {
     return all_success;
 }
 
+bool RunSchedulerLoop(
+    Scheduler& scheduler,
+    AgentLoop& loop,
+    const std::string& label,
+    const int iterations,
+    const int interval_ms) {
+    bool all_success = true;
+    int iteration = 0;
+    while (iterations == 0 || iteration < iterations) {
+        ++iteration;
+        const auto now = Scheduler::NowEpochMs();
+        std::cout
+            << label << " iteration=" << iteration
+            << " now_epoch_ms=" << now
+            << '\n';
+        all_success = PrintSchedulerRunRecords(scheduler.run_due(loop, now)) && all_success;
+
+        if (iterations != 0 && iteration >= iterations) {
+            break;
+        }
+        if (interval_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+        }
+    }
+    return all_success;
+}
+
 void PrintSchedulerHistory(const std::vector<SchedulerExecutionRecord>& records) {
     for (const auto& record : records) {
         std::cout
@@ -805,6 +832,7 @@ void PrintUsage() {
         << "  agentos schedule history\n"
         << "  agentos schedule run-due\n"
         << "  agentos schedule tick [iterations=1] [interval_ms=1000]\n"
+        << "  agentos schedule daemon [iterations=0] [interval_ms=1000]\n"
         << "  agentos schedule remove id=<schedule_id>\n"
         << "  agentos subagents run agents=<agent[,agent]> [mode=sequential|parallel] objective=text\n"
         << "  agentos trust identity-add identity=<id> [user=<user>] [label=name]\n"
@@ -831,6 +859,7 @@ void PrintUsage() {
         << "  agentos schedule add id=demo-once task=write_file due=now path=runtime/scheduled.txt content=hello\n"
         << "  agentos schedule run-due\n"
         << "  agentos schedule tick iterations=1 interval_ms=0\n"
+        << "  agentos schedule daemon iterations=1 interval_ms=0\n"
         << "  agentos subagents run agents=mock_planner mode=sequential objective=Plan_the_next_phase\n"
         << "  agentos trust identity-add identity=phone user=local-user label=dev-phone\n"
         << "  agentos trust pair identity=phone device=device1 label=dev-phone permissions=task.submit\n"
@@ -1020,25 +1049,23 @@ int RunScheduleCommand(
             return 1;
         }
 
-        bool all_success = true;
-        int iteration = 0;
-        while (iterations == 0 || iteration < iterations) {
-            ++iteration;
-            const auto now = Scheduler::NowEpochMs();
-            std::cout
-                << "tick iteration=" << iteration
-                << " now_epoch_ms=" << now
-                << '\n';
-            all_success = PrintSchedulerRunRecords(scheduler.run_due(loop, now)) && all_success;
+        return RunSchedulerLoop(scheduler, loop, "tick", iterations, interval_ms) ? 0 : 1;
+    }
 
-            if (iterations != 0 && iteration >= iterations) {
-                break;
-            }
-            if (interval_ms > 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
-            }
+    if (command == "daemon") {
+        const auto iterations = ParseIntOption(options, "iterations", 0);
+        const auto interval_ms = ParseIntOption(options, "interval_ms", 1000);
+        if (iterations < 0 || interval_ms < 0) {
+            std::cerr << "iterations and interval_ms must be non-negative\n";
+            return 1;
         }
-        return all_success ? 0 : 1;
+
+        std::cout
+            << "daemon mode=foreground"
+            << " iterations=" << iterations
+            << " interval_ms=" << interval_ms
+            << '\n';
+        return RunSchedulerLoop(scheduler, loop, "daemon", iterations, interval_ms) ? 0 : 1;
     }
 
     PrintUsage();

@@ -211,6 +211,7 @@ Delivered:
 - interval tasks
 - manual `schedule run-due`
 - foreground `schedule tick` loop
+- foreground `schedule daemon` loop
 - scheduler-specific execution metadata
 - retry/backoff fields
 - small recurrence grammar (`every:<n>s|m|h|d`)
@@ -218,7 +219,6 @@ Delivered:
 
 Remaining:
 
-- daemon/service wrapper
 - full cron grammar
 - configurable missed-run catch-up policy
 
