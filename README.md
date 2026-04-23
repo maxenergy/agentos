@@ -68,7 +68,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Agent Scoring：Router 可基于历史 success_rate / latency 选择 agent
 - Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` 复用 AgentLoop 执行，支持 retry/backoff，并记录独立 run history
 - Subagent Orchestration：显式 agent 列表的 sequential / parallel 编排，复用 Policy / Audit / Memory
-- CTest smoke test：覆盖核心 loop、策略拒绝、权限模型、远程 pairing、workflow、scheduler、subagent 编排
+- CTest smoke test：覆盖核心 loop、策略拒绝、权限模型、远程 pairing、workflow、scheduler retry/disabled/missed-run、subagent 编排
 
 ## 开发计划
 

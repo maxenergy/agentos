@@ -22,7 +22,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
-| Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop, run history metadata, retry/backoff, small recurrence grammar | Daemon/service wrapper, full cron, missed-run policy |
+| Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop, run history metadata, retry/backoff, small recurrence grammar, disabled/missed-run coverage | Daemon/service wrapper, full cron, configurable missed-run policy |
 | Policy / Permissions | Implemented MVP | PermissionModel, risk parsing, unknown permission deny | Role-based permission grants, approval workflow |
 | Plugin Host | Not implemented | Docs only | JSON-RPC/stdio plugin runtime, plugin manifest, sandboxing |
 | Storage | Prototype | TSV files under `runtime/` | SQLite or versioned storage, migration, locking |
@@ -34,7 +34,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - `docs/ROADMAP.md` has now been synced to the current implementation state, but it must stay linked to this plan to avoid drifting again.
 - `AUTH_PRD.md` and `AUTH_DESIGN.md` describe OAuth, refresh, cloud credentials, and secure credential storage, but the current code only implements API-key env references, Codex/Claude CLI session probing, and refresh command plumbing without real OAuth exchange.
 - Workflow learning now has candidate/scoring output, LessonStore, lesson-driven routing/policy hints, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
-- Scheduler supports manual `run-due`, foreground `tick`, run history metadata, retry/backoff, and `every:<n>s|m|h|d` recurrence; there is no daemon/service wrapper, full cron parser, or missed-run semantics.
+- Scheduler supports manual `run-due`, foreground `tick`, run history metadata, retry/backoff, and `every:<n>s|m|h|d` recurrence. Disabled tasks are skipped, and missed interval tasks currently run once per tick and reschedule from the current scheduler time; there is no daemon/service wrapper, full cron parser, or configurable catch-up policy.
 - Multi-agent orchestration is explicit only. There is no automatic task decomposition, role assignment, WorkspaceSession, or cost-aware multi-agent router.
 - Plugin Host and external CLI spec loading are still docs-only.
 - Persistence is TSV-based and adequate for MVP, but not yet versioned, transactional, or migration-safe.
@@ -66,7 +66,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Add cron expression support or a documented smaller recurrence grammar.
 - [x] Add retry/backoff fields to `ScheduledTask`.
 - [x] Record scheduler execution metadata separately from task execution logs.
-- [ ] Add tests for missed tasks, disabled tasks, failed tasks, and recurring task persistence.
+- [x] Add tests for missed tasks, disabled tasks, failed tasks, and recurring task persistence.
 
 ### Phase D: Workflow Evolution
 
@@ -128,7 +128,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Record scheduler execution metadata separately from task execution logs.
 - [x] Add retry/backoff fields to `ScheduledTask`.
 - [x] Add cron expression support or a documented smaller recurrence grammar.
-- [ ] Add tests for missed tasks and disabled tasks.
+- [x] Add tests for missed tasks and disabled tasks.
 - [x] Add `WorkflowStore` skeleton.
 - [x] Add workflow promotion command.
 - [x] Extend `workflow_run` to execute stored workflow definitions.
@@ -167,3 +167,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added scheduler run history metadata backed by `runtime/scheduler/runs.tsv` and `schedule history`.
 - 2026-04-23: Added scheduler retry/backoff fields and verified failed tasks retry before disabling.
 - 2026-04-23: Added small scheduler recurrence grammar `every:<n>s|m|h|d` as an MVP alternative to full cron.
+- 2026-04-23: Added scheduler regression coverage for disabled tasks and missed interval tasks.

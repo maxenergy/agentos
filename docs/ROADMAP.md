@@ -213,12 +213,13 @@ Delivered:
 - scheduler-specific execution metadata
 - retry/backoff fields
 - small recurrence grammar (`every:<n>s|m|h|d`)
+- disabled-task and missed-interval regression coverage
 
 Remaining:
 
 - daemon/service wrapper
 - full cron grammar
-- missed-run semantics
+- configurable missed-run catch-up policy
 
 ---
 

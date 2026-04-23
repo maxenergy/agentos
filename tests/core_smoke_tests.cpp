@@ -1098,6 +1098,96 @@ void TestSchedulerRetriesFailedTaskWithBackoff(const std::filesystem::path& work
     }
 }
 
+void TestSchedulerSkipsDisabledTask(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "scheduler_disabled_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    agentos::Scheduler scheduler(isolated_workspace / "scheduler_disabled" / "tasks.tsv");
+    scheduler.save(agentos::ScheduledTask{
+        .schedule_id = "disabled-write",
+        .enabled = false,
+        .next_run_epoch_ms = 1000,
+        .interval_seconds = 0,
+        .max_runs = 1,
+        .run_count = 0,
+        .task = agentos::TaskRequest{
+            .task_type = "write_file",
+            .objective = "disabled scheduled write",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"path", "scheduled/disabled.txt"},
+                {"content", "disabled"},
+            },
+        },
+    });
+
+    const auto records = scheduler.run_due(runtime.loop, 1000);
+    Expect(records.empty(), "disabled scheduled task should not run when due");
+    Expect(!std::filesystem::exists(isolated_workspace / "scheduled" / "disabled.txt"), "disabled scheduled task should not create a file");
+    Expect(scheduler.run_history().empty(), "disabled scheduled task should not write run history");
+
+    const auto stored = scheduler.find("disabled-write");
+    Expect(stored.has_value(), "disabled scheduled task should remain persisted");
+    if (stored.has_value()) {
+        Expect(!stored->enabled, "disabled scheduled task should remain disabled");
+        Expect(stored->run_count == 0, "disabled scheduled task should not increment run_count");
+    }
+}
+
+void TestSchedulerMissedIntervalRunsOnceFromCurrentTime(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "scheduler_missed_interval_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    agentos::Scheduler scheduler(isolated_workspace / "scheduler_missed" / "tasks.tsv");
+    scheduler.save(agentos::ScheduledTask{
+        .schedule_id = "missed-interval",
+        .enabled = true,
+        .next_run_epoch_ms = 1000,
+        .interval_seconds = 60,
+        .max_runs = 0,
+        .run_count = 0,
+        .task = agentos::TaskRequest{
+            .task_type = "write_file",
+            .objective = "missed interval write",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"path", "scheduled/missed.txt"},
+                {"content", "missed"},
+            },
+        },
+    });
+
+    const auto records = scheduler.run_due(runtime.loop, 181000);
+    Expect(records.size() == 1, "missed interval task should run only once per scheduler tick");
+    if (records.size() == 1) {
+        Expect(records.front().result.success, "missed interval task should succeed");
+        Expect(records.front().rescheduled, "missed interval task should be rescheduled");
+    }
+
+    const auto stored = scheduler.find("missed-interval");
+    Expect(stored.has_value(), "missed interval task should remain scheduled");
+    if (stored.has_value()) {
+        Expect(stored->run_count == 1, "missed interval task should record one run");
+        Expect(stored->next_run_epoch_ms == 241000, "missed interval task should schedule next run from current scheduler time");
+    }
+
+    const auto history = scheduler.run_history();
+    Expect(history.size() == 1, "missed interval task should write one scheduler history record");
+    if (history.size() == 1) {
+        Expect(history.front().success, "missed interval history should record success");
+        Expect(history.front().rescheduled, "missed interval history should record reschedule");
+        Expect(history.front().run_count == 1, "missed interval history should record one run");
+    }
+}
+
 void TestSubagentManagerSequentialRun(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -1407,6 +1497,8 @@ int main() {
     TestSchedulerRunsDueTask(workspace);
     TestSchedulerReschedulesIntervalTask(workspace);
     TestSchedulerRetriesFailedTaskWithBackoff(workspace);
+    TestSchedulerSkipsDisabledTask(workspace);
+    TestSchedulerMissedIntervalRunsOnceFromCurrentTime(workspace);
     TestSubagentManagerSequentialRun(workspace);
     TestSubagentManagerParallelRun(workspace);
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);
