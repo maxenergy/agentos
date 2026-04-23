@@ -8,6 +8,7 @@
 #include "core/execution/execution_cache.hpp"
 #include "core/loop/agent_loop.hpp"
 #include "core/orchestration/subagent_manager.hpp"
+#include "core/orchestration/workspace_session.hpp"
 #include "core/policy/permission_model.hpp"
 #include "core/policy/policy_engine.hpp"
 #include "core/registry/agent_registry.hpp"
@@ -1542,6 +1543,67 @@ void TestSubagentManagerPolicyDeniesRemoteWithoutPairing(const std::filesystem::
     Expect(result.steps.front().error_code == "PolicyDenied", "remote denied subagent orchestration should fail at policy layer");
 }
 
+void TestWorkspaceSessionRunsAgentInSession(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "workspace_session_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::AgentRegistry agent_registry;
+    agent_registry.register_agent(std::make_shared<agentos::MockPlanningAgent>());
+
+    agentos::WorkspaceSession session(agent_registry, isolated_workspace, "workspace-session-smoke");
+    Expect(session.open_agent("mock_planner"), "workspace session should open a session-capable agent");
+
+    const auto opened = session.find("mock_planner");
+    Expect(opened.has_value(), "workspace session should expose opened agent session");
+    if (opened.has_value()) {
+        Expect(opened->workspace_session_id == "workspace-session-smoke", "workspace session should preserve workspace session id");
+        Expect(opened->agent_session_id.find("mock-session-") == 0, "workspace session should preserve provider session id");
+        Expect(opened->active, "workspace session should mark opened session active");
+    }
+
+    const auto result = session.run_agent_task("mock_planner", agentos::AgentTask{
+        .task_id = "workspace-session-task",
+        .task_type = "analysis",
+        .objective = "run through workspace session",
+    });
+    Expect(result.success, "workspace session should run an agent task inside the opened session");
+    Expect(result.summary.find("[mock-session-") != std::string::npos, "workspace session should use run_task_in_session");
+
+    Expect(session.close_agent("mock_planner"), "workspace session should close an active agent session");
+    const auto closed = session.find("mock_planner");
+    Expect(closed.has_value() && !closed->active, "workspace session should mark closed session inactive");
+
+    const auto after_close = session.run_agent_task("mock_planner", agentos::AgentTask{
+        .task_id = "workspace-session-after-close",
+        .task_type = "analysis",
+        .objective = "run after close",
+    });
+    Expect(!after_close.success, "workspace session should reject task after session close");
+    Expect(after_close.error_code == "WorkspaceSessionNotOpen", "closed workspace session should return a clear error");
+}
+
+void TestWorkspaceSessionRejectsUnsupportedAgent(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "workspace_session_unsupported_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::AgentRegistry agent_registry;
+    agent_registry.register_agent(std::make_shared<StaticTestAgent>("stateless_agent", "analysis"));
+
+    agentos::WorkspaceSession session(agent_registry, isolated_workspace, "workspace-session-unsupported");
+    Expect(!session.open_agent("stateless_agent"), "workspace session should reject agents that do not support sessions");
+    Expect(session.sessions().empty(), "workspace session should not store unsupported agent sessions");
+
+    const auto result = session.run_agent_task("stateless_agent", agentos::AgentTask{
+        .task_id = "workspace-session-unsupported-task",
+        .task_type = "analysis",
+        .objective = "run unsupported session",
+    });
+    Expect(!result.success, "workspace session should not run without an opened session");
+    Expect(result.error_code == "WorkspaceSessionNotOpen", "unsupported workspace session run should return a clear error");
+}
+
 void TestCliHostEnvironmentAllowlist(const std::filesystem::path& workspace) {
     SetEnvForTest("AGENTOS_CLI_LEAK_TEST", "secret-env-value");
 
@@ -1872,6 +1934,8 @@ int main() {
     TestSubagentManagerAutoSelectsCandidates(workspace);
     TestSubagentManagerAutoSelectionUsesLessons(workspace);
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);
+    TestWorkspaceSessionRunsAgentInSession(workspace);
+    TestWorkspaceSessionRejectsUnsupportedAgent(workspace);
     TestCliHostEnvironmentAllowlist(workspace);
     TestAuthApiKeySession(workspace);
     TestAuthRefreshSession(workspace);

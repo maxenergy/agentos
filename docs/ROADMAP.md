@@ -109,12 +109,12 @@ Delivered:
 - `codex_cli`
 - Agent health listing
 - Router selection by health and basic historical score
+- WorkspaceSession abstraction
+- session-aware agent execution helper
 
 Remaining:
 
 - Claude / Gemini / Qwen agent adapters
-- WorkspaceSession
-- session-aware agent execution
 - richer result normalization
 
 ---
@@ -235,6 +235,7 @@ Delivered:
 - sequential mode
 - parallel mode
 - automatic subagent candidate selection
+- WorkspaceSession abstraction
 - shared Policy / Audit / Memory path
 - `agentos subagents run ...`
 
@@ -242,7 +243,6 @@ Remaining:
 
 - task decomposition
 - role assignment
-- WorkspaceSession
 - cost and concurrency limits
 
 ---

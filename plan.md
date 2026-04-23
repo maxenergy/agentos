@@ -18,7 +18,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | Core Runtime | Mostly implemented MVP | `AgentLoop`, `Router`, `SkillRouter`, `AgentRouter`, `WorkflowRouter`, `PolicyEngine`, `AuditLogger`, registries | Failure recovery, lifecycle/session semantics |
 | Builtin Skills | Implemented MVP | `file_read`, `file_write`, `file_patch`, `http_fetch`, `workflow_run` | Schema validation, richer workflow definitions |
 | CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, cwd/timeout/output/env controls | External spec loader, `jq_transform`, resource limits |
-| Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager`, automatic subagent candidate selection | Task decomposition, WorkspaceSession, more adapters |
+| Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager`, automatic subagent candidate selection, `WorkspaceSession` abstraction | Task decomposition, role assignment, more adapters |
 | Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes/import tests, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
@@ -35,7 +35,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - `AUTH_PRD.md` and `AUTH_DESIGN.md` describe OAuth, refresh, cloud credentials, and secure credential storage, but the current code only implements API-key env references, Codex/Claude CLI session probing, and refresh command plumbing without real OAuth exchange.
 - Workflow learning now has candidate/scoring output, LessonStore, lesson-driven routing/policy hints, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
 - Scheduler supports manual `run-due`, foreground `tick`, foreground `daemon`, run history metadata, retry/backoff, `missed_run_policy=run-once|skip`, and `every:<n>s|m|h|d` recurrence. Disabled tasks are skipped, and missed interval tasks can either run once per tick or skip stale runs and reschedule from the current scheduler time; there is no full cron parser.
-- Multi-agent orchestration supports explicit lists and automatic healthy/capability-based subagent candidate selection. There is no automatic task decomposition, role assignment, WorkspaceSession, or cost-aware multi-agent router.
+- Multi-agent orchestration supports explicit lists, automatic healthy/capability-based subagent candidate selection, and a `WorkspaceSession` abstraction for session-capable agents. There is no automatic task decomposition, role assignment, or cost-aware multi-agent router.
 - Plugin Host and external CLI spec loading are still docs-only.
 - Persistence is TSV-based and adequate for MVP, but not yet versioned, transactional, or migration-safe.
 
@@ -84,7 +84,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 
 - [x] Split Router internals into SkillRouter, AgentRouter, and WorkflowRouter without changing public behavior.
 - [x] Add automatic agent candidate selection for SubagentManager.
-- [ ] Add WorkspaceSession abstraction for multi-agent work.
+- [x] Add WorkspaceSession abstraction for multi-agent work.
 - [ ] Add cost/concurrency limits for parallel subagent execution.
 - [ ] Add provider adapters beyond Codex CLI only after auth/session boundaries are clear.
 
@@ -174,3 +174,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added `missed_run_policy=run-once|skip` for interval tasks and covered skip semantics.
 - 2026-04-23: Split Router internals into SkillRouter, AgentRouter, and WorkflowRouter while preserving public selection behavior.
 - 2026-04-23: Added automatic SubagentManager candidate selection by healthy capability match, historical stats, and lessons.
+- 2026-04-23: Added WorkspaceSession abstraction for opening, using, and closing session-capable agent adapters within a workspace.
