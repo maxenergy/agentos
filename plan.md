@@ -17,7 +17,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | --- | --- | --- | --- |
 | Core Runtime | Mostly implemented MVP | `AgentLoop`, `Router`, `SkillRouter`, `AgentRouter`, `WorkflowRouter`, `PolicyEngine`, `AuditLogger`, registries | Failure recovery, lifecycle/session semantics |
 | Builtin Skills | Implemented MVP | `file_read`, `file_write`, `file_patch`, `http_fetch`, `workflow_run` | Schema validation, richer workflow definitions |
-| CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, repo-local external spec loader, cwd/timeout/output/env controls | `jq_transform`, redaction, resource limits |
+| CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, repo-local external spec loader, `jq_transform`, cwd/timeout/output/env controls | Redaction, resource limits |
 | Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager`, automatic subagent candidate selection, `WorkspaceSession` abstraction, subagent cost/concurrency limits | Task decomposition, role assignment, more adapters |
 | Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes/import tests, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
@@ -91,7 +91,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 ### Phase F: CLI And Plugin Ecosystem
 
 - [x] Add external CLI spec loader from a repo-local spec directory.
-- [ ] Add `jq_transform` CLI skill or explicitly remove it from Roadmap MVP.
+- [x] Add `jq_transform` CLI skill or explicitly remove it from Roadmap MVP.
 - [ ] Add command redaction support for sensitive arguments.
 - [ ] Add process resource controls where OS support is available.
 - [ ] Design and implement a minimal Plugin Host manifest and stdio protocol.
@@ -177,3 +177,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added WorkspaceSession abstraction for opening, using, and closing session-capable agent adapters within a workspace.
 - 2026-04-23: Added SubagentManager parallel concurrency limits and estimated-cost budget checks with memory cost stats.
 - 2026-04-23: Added repo-local external CLI spec loading from `runtime/cli_specs/*.tsv` and verified dynamic skill registration.
+- 2026-04-23: Added built-in `jq_transform` CLI skill backed by jq and covered it with a controllable CLI fixture.

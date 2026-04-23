@@ -22,6 +22,6 @@ CliSpec MakeRgSearchSpec();
 CliSpec MakeGitStatusSpec();
 CliSpec MakeGitDiffSpec();
 CliSpec MakeCurlFetchSpec();
+CliSpec MakeJqTransformSpec();
 
 }  // namespace agentos
-

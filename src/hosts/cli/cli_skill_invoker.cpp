@@ -115,4 +115,20 @@ CliSpec MakeCurlFetchSpec() {
     };
 }
 
+CliSpec MakeJqTransformSpec() {
+    return {
+        .name = "jq_transform",
+        .description = "Transform a workspace JSON file through jq compact output.",
+        .binary = "jq",
+        .args_template = {"-c", "{{filter}}", "{{path}}"},
+        .required_args = {"filter", "path"},
+        .input_schema_json = R"({"type":"object","required":["filter","path"]})",
+        .output_schema_json = R"({"type":"object","required":["stdout","stderr","exit_code"]})",
+        .parse_mode = "json",
+        .risk_level = "low",
+        .permissions = {"filesystem.read", "process.spawn"},
+        .timeout_ms = 3000,
+    };
+}
+
 }  // namespace agentos

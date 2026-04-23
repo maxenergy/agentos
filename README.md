@@ -50,7 +50,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - MemoryManager 基础任务记录与评分骨架
 - 内建 Skill：file_read / file_write / file_patch / http_fetch / workflow_run
 - CLI Host：受控 cwd、timeout、stdout/stderr 捕获、输出限流、env 白名单
-- CLI Skill：rg_search / git_status / git_diff / curl_fetch
+- CLI Skill：rg_search / git_status / git_diff / jq_transform / curl_fetch
 - Mock 二级代理：mock_planner
 - Codex CLI 二级代理适配器：codex_cli（显式 target 调用）
 - Auth 子系统：AuthManager / Provider Adapter / SessionStore / SecureTokenStore / CredentialBroker
@@ -136,6 +136,7 @@ build\agentos.exe auth login openai mode=cli-session
 build\agentos.exe auth default-profile qwen profile=work
 build\agentos.exe auth login qwen mode=api-key api_key_env=QWEN_API_KEY profile=default
 build\agentos.exe auth refresh qwen profile=default
+build\agentos.exe run jq_transform filter=. path=runtime/data.json
 build\agentos.exe run http_fetch url=https://example.com allow_network=true
 build\agentos.exe run analysis target=codex_cli objective=Review_the_project_structure
 ```

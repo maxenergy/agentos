@@ -348,6 +348,29 @@ void WriteClaudeCliFixture(const std::filesystem::path& bin_dir) {
     (void)WriteCliFixture(bin_dir, "claude", body);
 }
 
+void WriteJqCliFixture(const std::filesystem::path& bin_dir) {
+#ifdef _WIN32
+    const auto body =
+        "@echo off\n"
+        "if \"%1\"==\"-c\" (\n"
+        "  echo {\"fixture\":\"jq\",\"filter\":\"%2\"}\n"
+        "  exit /b 0\n"
+        ")\n"
+        "echo unexpected jq args %*\n"
+        "exit /b 2\n";
+#else
+    const auto body =
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-c\" ]; then\n"
+        "  printf '{\"fixture\":\"jq\",\"filter\":\"%s\"}\\n' \"$2\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "printf '%s\\n' \"unexpected jq args $*\"\n"
+        "exit 2\n";
+#endif
+    (void)WriteCliFixture(bin_dir, "jq", body);
+}
+
 void RegisterCore(TestRuntime& runtime) {
     runtime.skill_registry.register_skill(std::make_shared<agentos::FileReadSkill>());
     runtime.skill_registry.register_skill(std::make_shared<agentos::FileWriteSkill>());
@@ -1750,6 +1773,44 @@ void TestExternalCliSpecLoader(const std::filesystem::path& workspace) {
     Expect(result.output_json.find("external hello") != std::string::npos, "external CLI spec output should include rendered argument");
 }
 
+void TestJqTransformCliSkillWithFixture(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "jq_transform_fixture_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace / "bin");
+    std::filesystem::create_directories(isolated_workspace / "data");
+
+    WriteJqCliFixture(isolated_workspace / "bin");
+    {
+        std::ofstream input(isolated_workspace / "data" / "input.json", std::ios::binary);
+        input << R"({"name":"agentos"})";
+    }
+
+    const auto fixture_path = (isolated_workspace / "bin").string() + PathListSeparatorForTest() + ReadEnvForTest("PATH").value_or("");
+    ScopedEnvOverride path_override("PATH", fixture_path);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    agentos::CliHost cli_host;
+    runtime.skill_registry.register_skill(std::make_shared<agentos::CliSkillInvoker>(
+        agentos::MakeJqTransformSpec(), cli_host));
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "jq-transform-fixture",
+        .task_type = "jq_transform",
+        .objective = "transform json through jq fixture",
+        .workspace_path = isolated_workspace,
+        .inputs = {
+            {"filter", ".name"},
+            {"path", "data/input.json"},
+        },
+    });
+
+    Expect(result.success, "jq_transform should execute through CliSkillInvoker");
+    Expect(result.route_target == "jq_transform", "jq_transform should route by skill name");
+    Expect(result.output_json.find(R"({\"fixture\":\"jq\",\"filter\":\".name\"})") != std::string::npos,
+        "jq_transform output should include jq fixture JSON");
+}
+
 void TestAuthApiKeySession(const std::filesystem::path& workspace) {
     SetEnvForTest("AGENTOS_TEST_QWEN_KEY", "test-secret");
 
@@ -2064,6 +2125,7 @@ int main() {
     TestWorkspaceSessionRejectsUnsupportedAgent(workspace);
     TestCliHostEnvironmentAllowlist(workspace);
     TestExternalCliSpecLoader(workspace);
+    TestJqTransformCliSkillWithFixture(workspace);
     TestAuthApiKeySession(workspace);
     TestAuthRefreshSession(workspace);
     TestAuthDefaultProfileMapping(workspace);

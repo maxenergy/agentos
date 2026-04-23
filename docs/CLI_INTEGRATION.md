@@ -189,6 +189,7 @@ public:
 - `cwd` 参数必须解析到当前 workspace 内
 - Windows batch / cmd 启动已通过受控 `CreateProcess` 路径执行
 - `runtime/cli_specs/*.tsv` 可声明 repo-local 外部 CLI specs，并在启动时注册为 `CliSkillInvoker`
+- `jq_transform` 已作为内置 CLI skill 接入，使用 `jq -c <filter> <path>` 转换 workspace 内 JSON 文件
 
 ### 8.6 资源限制
 长期建议增加：

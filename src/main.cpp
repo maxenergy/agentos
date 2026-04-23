@@ -1367,6 +1367,7 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeGitStatusSpec(), runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeGitDiffSpec(), runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeCurlFetchSpec(), runtime.cli_host));
+    runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeJqTransformSpec(), runtime.cli_host));
     for (const auto& spec : LoadCliSpecsFromDirectory(workspace / "runtime" / "cli_specs")) {
         runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(spec, runtime.cli_host));
     }
