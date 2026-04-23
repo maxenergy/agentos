@@ -47,7 +47,7 @@ Auth System
 Memory System
 - Task log: ✅ 内存版 + runtime/memory/task_log.tsv 持久化已实现
 - Step log: ✅ runtime/memory/step_log.tsv 持久化已实现
-- LessonStore: ✅ runtime/memory/lessons.tsv 重复失败聚合已实现
+- LessonStore: 🚧 runtime/memory/lessons.tsv 重复失败聚合与 Router hint 已实现
 - Workflow: 🚧 候选生成 + runtime/memory/workflow_candidates.tsv + scoring 已实现，runtime/memory/workflows.tsv 持久化 / promotion / `workflow_run` 执行 / Router 自动选择已实现
 - Scoring: 🚧 Skill / Agent 基础统计已持久化，AgentRouter 已接入历史评分
 
@@ -225,13 +225,14 @@ ExecutionCache: ✅ runtime/execution_cache.tsv
 * WorkflowStore 持久化、promotion、`workflow_run` 执行持久定义与 Router 自动选择已实现
 * 自动选择目前基于 enabled + trigger_task_type + required_inputs 匹配 + score 排序，尚未引入复杂条件表达式
 * LessonStore 已可按 task_type / target / error_code 聚合重复失败
+* Router 会使用 lesson hint 抑制重复失败的自动 workflow，并降低重复失败 agent 的候选分
 
 #### 必须补充
 
 ```text
 TaskLog: ✅ runtime/memory/task_log.tsv
 StepLog: ✅ runtime/memory/step_log.tsv
-LessonStore: ✅ runtime/memory/lessons.tsv
+LessonStore: 🚧 runtime/memory/lessons.tsv + Router hint
 WorkflowStore: 🚧 workflow_candidates.tsv 候选层 + workflows.tsv 持久化定义 / promotion / required_inputs / 执行 / Router 自动选择已实现
 ```
 

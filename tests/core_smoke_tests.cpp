@@ -604,6 +604,78 @@ void TestRouterWorkflowApplicabilityRequiresInputs(const std::filesystem::path& 
     Expect(matching_input_result.output_json.find("requires_find_write_workflow") != std::string::npos, "selected workflow should be visible in output");
 }
 
+void TestRouterSkipsWorkflowAfterRepeatedLesson(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "router_lesson_workflow_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    runtime.memory_manager.workflow_store().save(agentos::WorkflowDefinition{
+        .name = "lesson_suppressed_write_workflow",
+        .trigger_task_type = "write_file",
+        .ordered_steps = {"file_write"},
+        .source = "promoted_candidate",
+        .enabled = true,
+        .score = 100.0,
+    });
+    runtime.memory_manager.lesson_store().save(agentos::LessonRecord{
+        .lesson_id = "write_file|workflow_run|WorkflowStepFailed",
+        .task_type = "write_file",
+        .target_name = "workflow_run",
+        .error_code = "WorkflowStepFailed",
+        .summary = "workflow failed repeatedly",
+        .occurrence_count = 2,
+        .last_task_id = "previous-workflow-failure",
+        .enabled = true,
+    });
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "router-lesson-suppressed-workflow",
+        .task_type = "write_file",
+        .objective = "write through direct skill after workflow lesson",
+        .workspace_path = isolated_workspace,
+        .inputs = {
+            {"path", "workflow/lesson_suppressed.txt"},
+            {"content", "direct-after-lesson"},
+        },
+    });
+
+    Expect(result.success, "write should still succeed when workflow is suppressed by lesson");
+    Expect(result.route_target == "file_write", "router should skip automatic workflow after repeated workflow lesson");
+}
+
+void TestRouterPenalizesAgentLessons(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "router_agent_lesson_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("lesson_agent_a", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("lesson_agent_b", "analysis"));
+    runtime.memory_manager.lesson_store().save(agentos::LessonRecord{
+        .lesson_id = "analysis|lesson_agent_a|AgentFailed",
+        .task_type = "analysis",
+        .target_name = "lesson_agent_a",
+        .error_code = "AgentFailed",
+        .summary = "agent failed repeatedly",
+        .occurrence_count = 2,
+        .last_task_id = "previous-agent-failure",
+        .enabled = true,
+    });
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "router-agent-lesson",
+        .task_type = "analysis",
+        .objective = "analyze with lesson-aware routing",
+        .workspace_path = isolated_workspace,
+    });
+
+    Expect(result.success, "agent task should still succeed with lesson-aware routing");
+    Expect(result.route_target == "lesson_agent_b", "router should penalize agents with repeated lessons");
+}
+
 void TestDefaultAgentRoute(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -1076,6 +1148,8 @@ int main() {
     TestWorkflowRunStoredDefinition(workspace);
     TestRouterPrefersPromotedWorkflow(workspace);
     TestRouterWorkflowApplicabilityRequiresInputs(workspace);
+    TestRouterSkipsWorkflowAfterRepeatedLesson(workspace);
+    TestRouterPenalizesAgentLessons(workspace);
     TestDefaultAgentRoute(workspace);
     TestIdempotentExecutionCache(workspace);
     TestPersistentTaskAndStepLogs(workspace);

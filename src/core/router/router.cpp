@@ -9,6 +9,8 @@ namespace agentos {
 
 namespace {
 
+constexpr int kRepeatedLessonThreshold = 2;
+
 std::string ToLower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
@@ -35,8 +37,41 @@ bool HealthyAgentExists(const AgentRegistry& registry, const std::string& name) 
     return agent && agent->healthy();
 }
 
-std::shared_ptr<IAgentAdapter> BestHealthyAgent(const AgentRegistry& registry, const MemoryManager* memory_manager) {
-    if (!memory_manager || memory_manager->agent_stats().empty()) {
+int LessonOccurrenceCount(
+    const MemoryManager* memory_manager,
+    const std::string& task_type,
+    const std::string& target_name) {
+    if (!memory_manager) {
+        return 0;
+    }
+
+    int occurrences = 0;
+    for (const auto& lesson : memory_manager->lesson_store().list()) {
+        if (lesson.enabled && lesson.task_type == task_type && lesson.target_name == target_name) {
+            occurrences += lesson.occurrence_count;
+        }
+    }
+    return occurrences;
+}
+
+bool HasRepeatedLesson(
+    const MemoryManager* memory_manager,
+    const std::string& task_type,
+    const std::string& target_name) {
+    return LessonOccurrenceCount(memory_manager, task_type, target_name) >= kRepeatedLessonThreshold;
+}
+
+bool HasRuntimeHistory(const MemoryManager* memory_manager) {
+    return memory_manager &&
+           (!memory_manager->agent_stats().empty() ||
+            !memory_manager->lesson_store().list().empty());
+}
+
+std::shared_ptr<IAgentAdapter> BestHealthyAgent(
+    const AgentRegistry& registry,
+    const MemoryManager* memory_manager,
+    const std::string& task_type) {
+    if (!HasRuntimeHistory(memory_manager)) {
         return registry.first_healthy();
     }
 
@@ -56,6 +91,7 @@ std::shared_ptr<IAgentAdapter> BestHealthyAgent(const AgentRegistry& registry, c
             const auto success_rate = static_cast<double>(stats.success_runs) / static_cast<double>(stats.total_runs);
             score = (success_rate * 100.0) - (stats.avg_duration_ms / 1000.0);
         }
+        score -= static_cast<double>(LessonOccurrenceCount(memory_manager, task_type, profile.agent_name)) * 25.0;
 
         if (!best_agent || score > best_score) {
             best_score = score;
@@ -71,6 +107,9 @@ std::optional<WorkflowDefinition> BestApplicableWorkflow(
     const SkillRegistry& skill_registry,
     const MemoryManager* memory_manager) {
     if (!memory_manager || !HealthySkillExists(skill_registry, "workflow_run")) {
+        return std::nullopt;
+    }
+    if (HasRepeatedLesson(memory_manager, task.task_type, "workflow_run")) {
         return std::nullopt;
     }
 
@@ -136,13 +175,13 @@ RouteDecision Router::select(
     }
 
     if (task.task_type == "analysis" || task.task_type == "delegate" || LooksLikeAgentWork(task.objective)) {
-        const auto agent = BestHealthyAgent(agent_registry, memory_manager);
+        const auto agent = BestHealthyAgent(agent_registry, memory_manager, task.task_type);
         if (agent) {
             return {
                 RouteTargetKind::agent,
                 agent->profile().agent_name,
-                memory_manager && !memory_manager->agent_stats().empty()
-                    ? "objective routed by agent health and historical score"
+                HasRuntimeHistory(memory_manager)
+                    ? "objective routed by agent health, historical score, and lessons"
                     : "objective is better handled by an agent adapter",
             };
         }

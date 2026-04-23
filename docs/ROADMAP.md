@@ -155,6 +155,7 @@ Delivered:
 - Skill stats
 - Agent stats
 - LessonStore
+- lesson-driven routing hints
 - Workflow candidate generation
 - Workflow scoring
 - durable WorkflowStore skeleton
@@ -166,6 +167,7 @@ Delivered:
 
 Remaining:
 
+- lesson-driven policy hints
 - SQLite or versioned storage migration
 
 ---
