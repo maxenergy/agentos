@@ -33,11 +33,13 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <cstdlib>
 #include <exception>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -55,6 +57,66 @@ void SetEnvForTest(const std::string& name, const std::string& value) {
     _putenv_s(name.c_str(), value.c_str());
 #else
     setenv(name.c_str(), value.c_str(), 1);
+#endif
+}
+
+void ClearEnvForTest(const std::string& name) {
+#ifdef _WIN32
+    _putenv_s(name.c_str(), "");
+#else
+    unsetenv(name.c_str());
+#endif
+}
+
+std::optional<std::string> ReadEnvForTest(const std::string& name) {
+#ifdef _WIN32
+    char* raw_value = nullptr;
+    std::size_t value_size = 0;
+    if (_dupenv_s(&raw_value, &value_size, name.c_str()) != 0 || raw_value == nullptr) {
+        return std::nullopt;
+    }
+
+    std::string value(raw_value, value_size > 0 ? value_size - 1 : 0);
+    std::free(raw_value);
+    return value;
+#else
+    const char* raw_value = std::getenv(name.c_str());
+    if (!raw_value) {
+        return std::nullopt;
+    }
+    return std::string(raw_value);
+#endif
+}
+
+class ScopedEnvOverride {
+public:
+    ScopedEnvOverride(std::string name, std::string value)
+        : name_(std::move(name)),
+          old_value_(ReadEnvForTest(name_)) {
+        SetEnvForTest(name_, value);
+    }
+
+    ScopedEnvOverride(const ScopedEnvOverride&) = delete;
+    ScopedEnvOverride& operator=(const ScopedEnvOverride&) = delete;
+
+    ~ScopedEnvOverride() {
+        if (old_value_.has_value()) {
+            SetEnvForTest(name_, *old_value_);
+        } else {
+            ClearEnvForTest(name_);
+        }
+    }
+
+private:
+    std::string name_;
+    std::optional<std::string> old_value_;
+};
+
+char PathListSeparatorForTest() {
+#ifdef _WIN32
+    return ';';
+#else
+    return ':';
 #endif
 }
 
@@ -198,6 +260,88 @@ std::filesystem::path FreshWorkspace() {
     std::filesystem::remove_all(workspace);
     std::filesystem::create_directories(workspace);
     return workspace;
+}
+
+std::filesystem::path WriteCliFixture(
+    const std::filesystem::path& bin_dir,
+    const std::string& command_name,
+    const std::string& script_body) {
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / (command_name + ".cmd");
+#else
+    const auto fixture_path = bin_dir / command_name;
+#endif
+
+    std::ofstream output(fixture_path, std::ios::binary);
+    output << script_body;
+    output.close();
+
+#ifndef _WIN32
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+
+    return fixture_path;
+}
+
+void WriteCodexCliFixture(const std::filesystem::path& bin_dir, const bool logged_in) {
+#ifdef _WIN32
+    const auto body = logged_in
+        ? "@echo off\n"
+          "if \"%1\"==\"login\" if \"%2\"==\"status\" (\n"
+          "  echo Logged in as fixture-user\n"
+          "  exit /b 0\n"
+          ")\n"
+          "echo unexpected codex args %*\n"
+          "exit /b 2\n"
+        : "@echo off\n"
+          "if \"%1\"==\"login\" if \"%2\"==\"status\" (\n"
+          "  echo Not logged in\n"
+          "  exit /b 0\n"
+          ")\n"
+          "exit /b 2\n";
+#else
+    const auto body = logged_in
+        ? "#!/bin/sh\n"
+          "if [ \"$1\" = \"login\" ] && [ \"$2\" = \"status\" ]; then\n"
+          "  printf '%s\\n' 'Logged in as fixture-user'\n"
+          "  exit 0\n"
+          "fi\n"
+          "printf '%s\\n' \"unexpected codex args $*\"\n"
+          "exit 2\n"
+        : "#!/bin/sh\n"
+          "if [ \"$1\" = \"login\" ] && [ \"$2\" = \"status\" ]; then\n"
+          "  printf '%s\\n' 'Not logged in'\n"
+          "  exit 0\n"
+          "fi\n"
+          "exit 2\n";
+#endif
+    (void)WriteCliFixture(bin_dir, "codex", body);
+}
+
+void WriteClaudeCliFixture(const std::filesystem::path& bin_dir) {
+#ifdef _WIN32
+    const auto body =
+        "@echo off\n"
+        "if \"%1\"==\"auth\" if \"%2\"==\"status\" (\n"
+        "  echo {\"loggedIn\": true}\n"
+        "  exit /b 0\n"
+        ")\n"
+        "echo unexpected claude args %*\n"
+        "exit /b 2\n";
+#else
+    const auto body =
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n"
+        "  printf '%s\\n' '{\"loggedIn\": true}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "printf '%s\\n' \"unexpected claude args $*\"\n"
+        "exit 2\n";
+#endif
+    (void)WriteCliFixture(bin_dir, "claude", body);
 }
 
 void RegisterCore(TestRuntime& runtime) {
@@ -1434,6 +1578,105 @@ void TestAuthStatusReloadLogoutAndMissingEnv(const std::filesystem::path& worksp
     Expect(logged_out_status.message == "no session found", "logout status should report missing session");
 }
 
+void TestAuthCliSessionImportWithFixtures(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "auth_cli_session_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    const auto home_dir = isolated_workspace / "home";
+    std::filesystem::create_directories(bin_dir);
+    std::filesystem::create_directories(home_dir);
+
+    WriteCodexCliFixture(bin_dir, true);
+    WriteClaudeCliFixture(bin_dir);
+
+    const auto fixture_path = bin_dir.string() + PathListSeparatorForTest() + ReadEnvForTest("PATH").value_or("");
+    ScopedEnvOverride path_override("PATH", fixture_path);
+    ScopedEnvOverride home_override("HOME", home_dir.string());
+    ScopedEnvOverride userprofile_override("USERPROFILE", home_dir.string());
+
+    const auto session_path = isolated_workspace / "auth_cli" / "sessions.tsv";
+    agentos::CliHost cli_host;
+    agentos::SessionStore session_store(session_path);
+    agentos::SecureTokenStore token_store;
+    agentos::AuthManager auth_manager(session_store);
+    auth_manager.register_provider(std::make_shared<agentos::OpenAiAuthProviderAdapter>(
+        session_store, token_store, cli_host, isolated_workspace));
+    auth_manager.register_provider(std::make_shared<agentos::AnthropicAuthProviderAdapter>(
+        session_store, token_store, cli_host, isolated_workspace));
+
+    const auto detected_status = auth_manager.status(agentos::AuthProviderId::openai, "default");
+    Expect(detected_status.authenticated, "Codex CLI fixture should be detected before import");
+    Expect(detected_status.managed_by_external_cli, "Codex detected status should be marked as external CLI");
+    Expect(detected_status.message == "external CLI session detected but not imported", "Codex detected status should distinguish probe from imported session");
+
+    const auto codex_session = auth_manager.login(
+        agentos::AuthProviderId::openai,
+        agentos::AuthMode::cli_session_passthrough,
+        {{"profile", "codex-fixture"}});
+    Expect(codex_session.profile_name == "codex-fixture", "Codex CLI import should honor requested profile");
+    Expect(codex_session.mode == agentos::AuthMode::cli_session_passthrough, "Codex CLI import should use cli-session mode");
+    Expect(codex_session.managed_by_external_cli, "Codex CLI import should be marked as external CLI managed");
+    Expect(codex_session.access_token_ref == "external-cli:codex", "Codex CLI import should persist external CLI token ref");
+    Expect(codex_session.metadata.at("probe").find("Logged in") != std::string::npos, "Codex CLI import should preserve probe output");
+
+    const auto codex_status = auth_manager.status(agentos::AuthProviderId::openai, "codex-fixture");
+    Expect(codex_status.authenticated, "Imported Codex CLI session should authenticate");
+    Expect(codex_status.message == "session available", "Imported Codex CLI status should read from SessionStore");
+
+    const auto claude_session = auth_manager.login(
+        agentos::AuthProviderId::anthropic,
+        agentos::AuthMode::cli_session_passthrough,
+        {{"profile", "claude-fixture"}});
+    Expect(claude_session.profile_name == "claude-fixture", "Claude CLI import should honor requested profile");
+    Expect(claude_session.managed_by_external_cli, "Claude CLI import should be marked as external CLI managed");
+    Expect(claude_session.access_token_ref == "external-cli:claude", "Claude CLI import should persist external CLI token ref");
+    Expect(claude_session.metadata.at("probe") == "loggedIn=true", "Claude CLI import should preserve normalized probe metadata");
+
+    agentos::SessionStore reloaded_store(session_path);
+    Expect(reloaded_store.find(agentos::AuthProviderId::openai, "codex-fixture").has_value(), "Imported Codex CLI session should persist");
+    Expect(reloaded_store.find(agentos::AuthProviderId::anthropic, "claude-fixture").has_value(), "Imported Claude CLI session should persist");
+}
+
+void TestAuthCliSessionUnavailableWithFixture(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "auth_cli_unavailable_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    const auto home_dir = isolated_workspace / "home";
+    std::filesystem::create_directories(bin_dir);
+    std::filesystem::create_directories(home_dir);
+
+    WriteCodexCliFixture(bin_dir, false);
+
+    const auto fixture_path = bin_dir.string() + PathListSeparatorForTest() + ReadEnvForTest("PATH").value_or("");
+    ScopedEnvOverride path_override("PATH", fixture_path);
+    ScopedEnvOverride home_override("HOME", home_dir.string());
+    ScopedEnvOverride userprofile_override("USERPROFILE", home_dir.string());
+
+    agentos::CliHost cli_host;
+    agentos::SessionStore session_store(isolated_workspace / "auth_cli_unavailable" / "sessions.tsv");
+    agentos::SecureTokenStore token_store;
+    agentos::AuthManager auth_manager(session_store);
+    auth_manager.register_provider(std::make_shared<agentos::OpenAiAuthProviderAdapter>(
+        session_store, token_store, cli_host, isolated_workspace));
+
+    bool unavailable = false;
+    try {
+        (void)auth_manager.login(
+            agentos::AuthProviderId::openai,
+            agentos::AuthMode::cli_session_passthrough,
+            {{"profile", "missing-cli-session"}});
+    } catch (const std::exception& error) {
+        unavailable = std::string(error.what()) == "CliSessionUnavailable";
+    }
+    Expect(unavailable, "Codex CLI import should fail clearly when fixture reports no login");
+
+    const auto status = auth_manager.status(agentos::AuthProviderId::openai, "missing-cli-session");
+    Expect(!status.authenticated, "Unavailable Codex CLI fixture should not authenticate status");
+    Expect(status.message == "no session found", "Unavailable Codex CLI fixture should leave no imported session");
+}
+
 void TestAuthUnsupportedMode(const std::filesystem::path& workspace) {
     agentos::SessionStore session_store(workspace / "auth_unsupported" / "sessions.tsv");
     agentos::SecureTokenStore token_store;
@@ -1507,6 +1750,8 @@ int main() {
     TestAuthRefreshSession(workspace);
     TestAuthDefaultProfileMapping(workspace);
     TestAuthStatusReloadLogoutAndMissingEnv(workspace);
+    TestAuthCliSessionImportWithFixtures(workspace);
+    TestAuthCliSessionUnavailableWithFixture(workspace);
     TestAuthUnsupportedMode(workspace);
     TestAuthOAuthDeferred(workspace);
 

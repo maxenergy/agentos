@@ -43,7 +43,7 @@ Auth System
 - 基础结构: ✅ AuthManager / ProviderAdapter / SessionStore / CredentialBroker
 - Profile mapping: ✅ runtime/auth_profiles.tsv provider 默认 profile 映射已实现
 - OAuth: ❌
-- CLI session: 🚧 Codex / Claude passthrough probe 与导入已实现
+- CLI session: 🚧 Codex / Claude passthrough probe 与导入已实现，并已有可控 fixture 测试覆盖
 
 Memory System
 - Task log: ✅ 内存版 + runtime/memory/task_log.tsv 持久化已实现

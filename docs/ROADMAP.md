@@ -133,6 +133,7 @@ Delivered:
 - API-key profile support
 - workspace default profile mapping
 - Codex / Claude CLI session probes
+- Codex / Claude CLI session import fixture coverage
 - refresh command and adapter/store refresh path
 - credential store status explicitly marks env-ref-only dev fallback
 - OAuth PKCE explicitly deferred from MVP (`BrowserOAuthNotImplemented`)

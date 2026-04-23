@@ -362,7 +362,7 @@ agentos auth logout gemini
 - API key env-ref 模式
 - credential store status 明确标记当前为 `env-ref-only` dev fallback，未接入系统 Keychain
 - workspace default profile mapping (`runtime/auth_profiles.tsv`)
-- Codex / Claude CLI session passthrough probe
+- Codex / Claude CLI session passthrough probe 与导入 fixture 测试
 - `auth refresh` 命令、AuthManager refresh 入口与 Adapter refresh 覆盖已接入
 - Browser OAuth / PKCE 在 MVP 中显式 defer，调用会返回 `BrowserOAuthNotImplemented`
 

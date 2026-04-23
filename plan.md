@@ -19,7 +19,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | Builtin Skills | Implemented MVP | `file_read`, `file_write`, `file_patch`, `http_fetch`, `workflow_run` | Schema validation, richer workflow definitions |
 | CLI Integration | Implemented MVP | `CliHost`, CLI skill invoker, cwd/timeout/output/env controls | External spec loader, `jq_transform`, resource limits |
 | Agent System | Partial | `IAgentAdapter`, `mock_planner`, `codex_cli`, `SubagentManager` | Auto multi-agent routing, WorkspaceSession, more adapters |
-| Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
+| Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes/import tests, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
 | Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop, run history metadata, retry/backoff, small recurrence grammar, disabled/missed-run coverage | Daemon/service wrapper, full cron, configurable missed-run policy |
@@ -57,7 +57,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
 - [x] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
 - [x] Add tests for logout, status reload, and missing env refs.
-- [ ] Add CLI session import behavior tests with controllable CLI fixtures.
+- [x] Add CLI session import behavior tests with controllable CLI fixtures.
 
 ### Phase C: Scheduler Hardening
 
@@ -142,7 +142,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Implement system credential store integration or clearly mark local fallback as insecure/dev-only.
 - [x] Implement OAuth PKCE skeleton for Gemini or explicitly defer OAuth from MVP.
 - [x] Add tests for logout, status reload, and missing env refs.
-- [ ] Add CLI session import behavior tests with controllable CLI fixtures.
+- [x] Add CLI session import behavior tests with controllable CLI fixtures.
 
 ## Progress Log
 
@@ -168,3 +168,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added scheduler retry/backoff fields and verified failed tasks retry before disabling.
 - 2026-04-23: Added small scheduler recurrence grammar `every:<n>s|m|h|d` as an MVP alternative to full cron.
 - 2026-04-23: Added scheduler regression coverage for disabled tasks and missed interval tasks.
+- 2026-04-23: Added controllable Codex/Claude CLI session fixture tests for auth probe/import success and unavailable-session failure.

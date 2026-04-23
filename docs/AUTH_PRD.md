@@ -231,7 +231,7 @@ Gemini 是第一阶段最适合自己实现标准 OAuth 的 provider。
 - API key mode，当前以环境变量引用保存，不落明文 key
 - `auth credential-store` 明确展示当前 env-ref-only dev fallback
 - workspace 默认 profile 映射
-- Codex CLI / Claude CLI session probe
+- Codex CLI / Claude CLI session probe 与导入 fixture 测试
 - `agentos auth providers/status/login/logout/refresh/probe`
 - Browser OAuth / PKCE 显式 defer，当前返回 `BrowserOAuthNotImplemented`
 
