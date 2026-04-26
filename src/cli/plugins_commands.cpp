@@ -56,6 +56,7 @@ bool PrintPlugins(
             << " lifecycle_mode=" << spec.lifecycle_mode
             << " startup_timeout_ms=" << spec.startup_timeout_ms
             << " idle_timeout_ms=" << spec.idle_timeout_ms
+            << " pool_size=" << spec.pool_size
             << " source=" << spec.source_file.string()
             << " line=" << spec.source_line_number;
         if (check_command_health) {
@@ -152,6 +153,7 @@ void PrintPluginInspect(
         << "lifecycle_mode=" << spec.lifecycle_mode << '\n'
         << "startup_timeout_ms=" << spec.startup_timeout_ms << '\n'
         << "idle_timeout_ms=" << spec.idle_timeout_ms << '\n'
+        << "pool_size=" << spec.pool_size << '\n'
         << "source=" << spec.source_file.string() << '\n'
         << "line=" << spec.source_line_number << '\n'
         << "valid=" << (conflicts_with_registered_skill ? "false" : "true") << '\n';
@@ -238,6 +240,7 @@ int PrintPluginLifecycle(
             << " protocol=" << spec.protocol
             << " startup_timeout_ms=" << spec.startup_timeout_ms
             << " idle_timeout_ms=" << spec.idle_timeout_ms
+            << " pool_size=" << spec.pool_size
             << " source=" << spec.source_file.string()
             << " line=" << spec.source_line_number
             << " valid=" << (conflicts_with_registered_skill ? "false" : "true");
@@ -271,6 +274,92 @@ int PrintPluginLifecycle(
     return loaded.diagnostics.empty() && host_options.diagnostics.empty() && conflict_count == 0 ? 0 : 1;
 }
 
+std::string SessionAdminPluginName(const int argc, char* argv[]) {
+    for (int index = 3; index < argc; ++index) {
+        std::string value = argv[index];
+        constexpr std::string_view kPrefix = "name=";
+        if (value.starts_with(kPrefix)) {
+            value.erase(0, kPrefix.size());
+            return value;
+        }
+    }
+    return {};
+}
+
+int PrintPluginSessions(const PluginHost* plugin_host) {
+    if (plugin_host == nullptr) {
+        std::cout << "plugin_sessions_unavailable reason=\"plugin host runtime not available\"\n";
+        return 2;
+    }
+    const auto sessions = plugin_host->list_sessions();
+    for (const auto& session : sessions) {
+        std::cout
+            << "plugin_session"
+            << " name=" << session.plugin_name
+            << " pid=" << session.pid
+            << " workspace=" << session.workspace_path
+            << " binary=" << session.binary
+            << " started_at_unix_ms=" << session.started_at_unix_ms
+            << " last_used_at_unix_ms=" << session.last_used_at_unix_ms
+            << " idle_for_ms=" << session.idle_for_ms
+            << " request_count=" << session.request_count
+            << " alive=" << (session.alive ? "true" : "false")
+            << '\n';
+    }
+    std::cout
+        << "plugin_sessions_summary"
+        << " total=" << sessions.size()
+        << " active=" << plugin_host->active_session_count()
+        << '\n';
+    return 0;
+}
+
+int RestartPluginSession(
+    const PluginHost* plugin_host,
+    const int argc,
+    char* argv[]) {
+    if (plugin_host == nullptr) {
+        std::cout << "plugin_sessions_unavailable reason=\"plugin host runtime not available\"\n";
+        return 2;
+    }
+    const auto name = SessionAdminPluginName(argc, argv);
+    if (name.empty()) {
+        std::cout
+            << "missing required plugin name; use: agentos plugins session-restart name=<plugin_name>\n";
+        return 2;
+    }
+    const auto restarted = plugin_host->restart_sessions_for_plugin(name);
+    std::cout
+        << "plugin_session_restart"
+        << " name=" << name
+        << " restarted=" << restarted
+        << '\n';
+    return 0;
+}
+
+int ClosePluginSession(
+    const PluginHost* plugin_host,
+    const int argc,
+    char* argv[]) {
+    if (plugin_host == nullptr) {
+        std::cout << "plugin_sessions_unavailable reason=\"plugin host runtime not available\"\n";
+        return 2;
+    }
+    const auto name = SessionAdminPluginName(argc, argv);
+    if (name.empty()) {
+        std::cout
+            << "missing required plugin name; use: agentos plugins session-close name=<plugin_name>\n";
+        return 2;
+    }
+    const auto closed = plugin_host->close_sessions_for_plugin(name);
+    std::cout
+        << "plugin_session_close"
+        << " name=" << name
+        << " closed=" << closed
+        << '\n';
+    return 0;
+}
+
 }  // namespace
 
 std::string PluginSpecConflictReason(const std::string& name) {
@@ -281,13 +370,23 @@ int RunPluginsCommand(
     const std::filesystem::path& workspace,
     const std::set<std::string>& builtin_skill_names,
     const int argc,
-    char* argv[]) {
+    char* argv[],
+    const PluginHost* plugin_host) {
     const auto conflict_names = PluginValidateConflictNames(workspace, builtin_skill_names);
     if (argc >= 3 && std::string(argv[2]) == "inspect") {
         return InspectPlugin(workspace, conflict_names, argc, argv);
     }
     if (argc >= 3 && std::string(argv[2]) == "lifecycle") {
         return PrintPluginLifecycle(workspace, conflict_names);
+    }
+    if (argc >= 3 && std::string(argv[2]) == "sessions") {
+        return PrintPluginSessions(plugin_host);
+    }
+    if (argc >= 3 && std::string(argv[2]) == "session-restart") {
+        return RestartPluginSession(plugin_host, argc, argv);
+    }
+    if (argc >= 3 && std::string(argv[2]) == "session-close") {
+        return ClosePluginSession(plugin_host, argc, argv);
     }
     if (argc >= 3 && std::string(argv[2]) == "validate") {
         const bool valid = PrintPlugins(workspace, conflict_names, false);

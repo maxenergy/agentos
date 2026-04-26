@@ -110,6 +110,69 @@ std::size_t PluginHost::close_all_sessions() const {
     return count;
 }
 
+std::size_t PluginHost::close_sessions_for_plugin(const std::string& plugin_name) const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::size_t closed = 0;
+    for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
+        if (iterator->second && iterator->second->spec.name == plugin_name) {
+            iterator = sessions_.erase(iterator);
+            ++closed;
+        } else {
+            ++iterator;
+        }
+    }
+    return closed;
+}
+
+std::size_t PluginHost::restart_sessions_for_plugin(const std::string& plugin_name) const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::size_t restarted = 0;
+    for (auto& [key, session] : sessions_) {
+        (void)key;
+        if (!session || session->spec.name != plugin_name) {
+            continue;
+        }
+        const auto spec = session->spec;
+        const auto workspace_path = session->workspace_path;
+        session.reset();
+        std::string start_error;
+        auto fresh = PersistentPluginSession::start(spec, workspace_path, start_error);
+        if (fresh && fresh->wait_until_started(spec.startup_timeout_ms)) {
+            session = std::move(fresh);
+            ++restarted;
+        }
+    }
+    return restarted;
+}
+
+std::vector<PluginSessionInfo> PluginHost::list_sessions() const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::vector<PluginSessionInfo> entries;
+    entries.reserve(sessions_.size());
+    const auto now_steady = std::chrono::steady_clock::now();
+    for (const auto& [key, session] : sessions_) {
+        (void)key;
+        if (!session) {
+            continue;
+        }
+        PluginSessionInfo info;
+        info.plugin_name = session->spec.name;
+        info.workspace_path = session->workspace_path.string();
+        info.binary = session->spec.binary;
+        info.pid = session->pid_value();
+        info.started_at_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            session->started_at_wall.time_since_epoch()).count();
+        info.last_used_at_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            session->last_used_at_wall.time_since_epoch()).count();
+        info.idle_for_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now_steady - session->last_used_at).count());
+        info.request_count = session->request_count;
+        info.alive = session->alive();
+        entries.push_back(std::move(info));
+    }
+    return entries;
+}
+
 namespace {
 
 void PruneInactivePersistentSessions(
@@ -150,6 +213,46 @@ void EvictOldestPersistentSession(
     }
 }
 
+void EvictOldestSessionForPlugin(
+    std::map<std::string, std::unique_ptr<PersistentPluginSession>>& sessions,
+    const std::string& plugin_name,
+    const std::string& requested_session_key,
+    const int pool_size) {
+    if (pool_size <= 0 || sessions.contains(requested_session_key)) {
+        return;
+    }
+    PruneInactivePersistentSessions(sessions);
+    while (true) {
+        std::size_t plugin_session_count = 0;
+        for (const auto& [key, session] : sessions) {
+            (void)key;
+            if (session && session->spec.name == plugin_name) {
+                ++plugin_session_count;
+            }
+        }
+        if (plugin_session_count < static_cast<std::size_t>(pool_size)) {
+            break;
+        }
+        auto oldest = sessions.end();
+        for (auto iterator = sessions.begin(); iterator != sessions.end(); ++iterator) {
+            if (iterator->first == requested_session_key || !iterator->second) {
+                continue;
+            }
+            if (iterator->second->spec.name != plugin_name) {
+                continue;
+            }
+            if (oldest == sessions.end() ||
+                iterator->second->last_used_at < oldest->second->last_used_at) {
+                oldest = iterator;
+            }
+        }
+        if (oldest == sessions.end()) {
+            break;
+        }
+        sessions.erase(oldest);
+    }
+}
+
 }  // namespace
 
 PluginRunResult PluginHost::run(const PluginRunRequest& request) const {
@@ -172,6 +275,11 @@ PluginRunResult PluginHost::run(const PluginRunRequest& request) const {
         const auto session_key =
             request.spec.name + "\n" + request.workspace_path.string() + "\n" + request.spec.binary;
         std::lock_guard<std::mutex> lock(sessions_mutex_);
+        const int effective_pool_size = (std::max)(1, request.spec.pool_size);
+        const int capped_pool_size = options_.max_persistent_sessions == 0
+            ? effective_pool_size
+            : (std::min)(effective_pool_size, static_cast<int>(options_.max_persistent_sessions));
+        EvictOldestSessionForPlugin(sessions_, request.spec.name, session_key, capped_pool_size);
         EvictOldestPersistentSession(sessions_, session_key, options_.max_persistent_sessions);
         auto& session = sessions_[session_key];
         const bool had_session = static_cast<bool>(session);
