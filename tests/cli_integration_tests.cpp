@@ -1410,6 +1410,27 @@ void TestAuthCommands() {
     Expect(valid_oauth_config.output.find("valid=true") != std::string::npos,
         "auth oauth-config-validate should report valid configs");
 
+    const auto all_oauth_config = RunAgentos(workspace, {"auth", "oauth-config-validate", "--all"});
+    Expect(all_oauth_config.exit_code == 0, "auth oauth-config-validate --all should succeed for valid configs");
+    Expect(all_oauth_config.output.find("oauth_config_provider provider=gemini") != std::string::npos,
+        "oauth-config-validate --all should enumerate gemini provider audit row");
+    Expect(all_oauth_config.output.find("oauth_config_provider provider=openai") != std::string::npos,
+        "oauth-config-validate --all should enumerate openai provider audit row");
+    Expect(all_oauth_config.output.find("oauth_config_provider provider=anthropic") != std::string::npos,
+        "oauth-config-validate --all should enumerate anthropic provider audit row");
+    Expect(all_oauth_config.output.find("oauth_config_provider provider=qwen") != std::string::npos,
+        "oauth-config-validate --all should enumerate qwen provider audit row");
+    Expect(all_oauth_config.output.find("origin=stub") != std::string::npos,
+        "oauth-config-validate --all should mark stubbed providers with origin=stub");
+    Expect(all_oauth_config.output.find("origin=config") != std::string::npos,
+        "oauth-config-validate --all should mark provider with origin=config when overridden");
+
+    const auto oauth_defaults_origin = RunAgentos(workspace, {"auth", "oauth-defaults", "anthropic"});
+    Expect(oauth_defaults_origin.output.find("origin=stub") != std::string::npos,
+        "auth oauth-defaults should report origin=stub for unsupported providers");
+    Expect(oauth_defaults_origin.output.find("note=") != std::string::npos,
+        "auth oauth-defaults should include a note for stubbed providers");
+
     const auto qwen_oauth_defaults = RunAgentos(workspace, {"auth", "oauth-defaults", "qwen"});
     Expect(qwen_oauth_defaults.exit_code != 0,
         "auth oauth-defaults should return non-zero for providers without built-in OAuth defaults");

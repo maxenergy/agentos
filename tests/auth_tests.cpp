@@ -894,6 +894,131 @@ void TestAuthMissingSessionAndUnregisteredProviderFailures(const std::filesystem
     Expect(provider_not_registered, "auth status should fail clearly for unregistered providers");
 }
 
+void TestSecureTokenStoreInMemoryBackend(const std::filesystem::path& workspace) {
+    (void)workspace;
+
+    agentos::SecureTokenStore store;
+    auto in_memory = agentos::SecureTokenStore::MakeInMemoryBackendForTesting();
+    store.set_backend_for_testing(in_memory);
+
+    const auto status = store.status();
+    Expect(status.backend_name == "in-memory", "in-memory backend should report its name in status");
+    Expect(!status.system_keychain_backed, "in-memory backend should not claim system keychain support");
+    Expect(status.dev_only, "in-memory backend should be marked dev-only");
+    Expect(store.backend_name() == "in-memory", "backend_name accessor should match status backend");
+
+    // Env-ref reads still work even when a custom backend is installed.
+    SetEnvForTest("AGENTOS_TEST_INMEM_KEY", "env-secret");
+    const auto env_ref = store.make_env_ref("AGENTOS_TEST_INMEM_KEY");
+    Expect(env_ref == "env:AGENTOS_TEST_INMEM_KEY", "make_env_ref should produce env-prefixed refs");
+    Expect(store.read_ref(env_ref) == "env-secret", "in-memory backend should not interfere with env: refs");
+    Expect(store.ref_available(env_ref), "ref_available should follow read_ref for env refs");
+    Expect(!store.delete_ref(env_ref), "delete_ref should refuse to remove env-backed refs");
+
+    // Round-trip a managed token through the in-memory backend.
+    const auto managed_ref = store.write_managed_token("anthropic", "smoke", "access", "managed-secret");
+    Expect(managed_ref.rfind("memtoken:", 0) == 0, "in-memory backend should use the memtoken: prefix");
+    Expect(store.read_ref(managed_ref) == "managed-secret", "in-memory backend should read what it wrote");
+    Expect(store.ref_available(managed_ref), "in-memory managed refs should be available after write");
+
+    // make_managed_ref should produce the same ref as write_managed_token.
+    const auto computed_ref = store.make_managed_ref("anthropic", "smoke", "access");
+    Expect(computed_ref == managed_ref, "make_managed_ref should match what write_managed_token returns");
+
+    // Empty token values are rejected.
+    bool rejected_empty = false;
+    try {
+        (void)store.write_managed_token("anthropic", "smoke", "access", "");
+    } catch (const std::exception& error) {
+        rejected_empty = std::string(error.what()).find("PolicyDenied") != std::string::npos;
+    }
+    Expect(rejected_empty, "write_managed_token should reject empty values with PolicyDenied");
+
+    // Delete should remove the entry from the backend.
+    Expect(store.delete_ref(managed_ref), "delete_ref should report success on existing in-memory ref");
+    Expect(!store.ref_available(managed_ref), "deleted in-memory refs should no longer be available");
+    Expect(!store.delete_ref(managed_ref), "deleting a missing in-memory ref should report false");
+
+    // Unknown ref prefixes return nullopt and don't crash.
+    Expect(!store.read_ref("unknown-prefix:foo").has_value(), "unknown ref prefixes should return nullopt");
+    Expect(!store.delete_ref("unknown-prefix:foo"), "delete_ref should return false for unknown prefixes");
+
+    // Restoring the platform default backend is supported.
+    store.set_backend_for_testing(nullptr);
+    const auto restored = store.status().backend_name;
+#ifdef _WIN32
+    Expect(restored == "windows-credential-manager", "platform default backend on Windows should be Credential Manager");
+#elif defined(__APPLE__)
+    Expect(restored == "macos-keychain", "platform default backend on macOS should be Keychain");
+#else
+    Expect(restored == "env-ref-only" || restored == "linux-secret-service",
+        "platform default backend on Linux should be env-ref-only or linux-secret-service");
+#endif
+
+    ClearEnvForTest("AGENTOS_TEST_INMEM_KEY");
+}
+
+void TestOAuthDefaultsCoverageAndConfigOverride(const std::filesystem::path& workspace) {
+    // Builtin defaults: gemini is supported with origin=builtin; openai,
+    // anthropic, qwen are stubbed with origin=stub.
+    {
+        const auto gemini = agentos::OAuthDefaultsForProvider(agentos::AuthProviderId::gemini);
+        Expect(gemini.supported, "gemini should have builtin OAuth defaults");
+        Expect(gemini.origin == "builtin", "gemini defaults origin should be builtin");
+        Expect(!gemini.note.empty(), "gemini defaults should carry a human-readable note");
+        Expect(!gemini.token_endpoint.empty(), "gemini token endpoint should be populated");
+    }
+    for (const auto provider : {
+             agentos::AuthProviderId::openai,
+             agentos::AuthProviderId::anthropic,
+             agentos::AuthProviderId::qwen,
+         }) {
+        const auto defaults = agentos::OAuthDefaultsForProvider(provider);
+        Expect(!defaults.supported, "non-gemini providers should be unsupported by default");
+        Expect(defaults.origin == "stub", "non-gemini providers should be marked as stub");
+        Expect(!defaults.note.empty(), "stub providers should explain why OAuth is unavailable");
+        Expect(defaults.authorization_endpoint.empty(), "stub providers should not expose endpoints");
+        Expect(defaults.token_endpoint.empty(), "stub providers should not expose endpoints");
+    }
+
+    // Loading a config file should mark loaded entries with origin=config.
+    const auto config_path = workspace / "runtime" / "auth_oauth_providers_test.tsv";
+    std::filesystem::create_directories(config_path.parent_path());
+    {
+        std::ofstream output(config_path, std::ios::binary);
+        output << "# AgentOS OAuth provider defaults override (test)\n";
+        output << "openai\thttps://example.test/auth\thttps://example.test/token\topenid,profile\n";
+        output << "anthropic\t\t\t\n";  // missing endpoints
+    }
+
+    const auto loaded = agentos::LoadOAuthProviderDefaultsFromFile(config_path);
+    Expect(loaded.size() == 2, "loader should return all parsed rows including invalid ones");
+    const auto openai_it = loaded.find(agentos::AuthProviderId::openai);
+    Expect(openai_it != loaded.end(), "loader should include openai override");
+    Expect(openai_it->second.origin == "config", "loaded entries should carry origin=config");
+    Expect(openai_it->second.supported, "openai override with full endpoints should be marked supported");
+
+    const auto anthropic_it = loaded.find(agentos::AuthProviderId::anthropic);
+    Expect(anthropic_it != loaded.end(), "loader should include anthropic override row");
+    Expect(!anthropic_it->second.supported, "anthropic override with no endpoints should not be supported");
+
+    // Merging a config override on top of a stub builtin should mark the
+    // result origin=config and refresh the stub note.
+    const auto merged = agentos::MergeOAuthProviderDefaults(
+        agentos::OAuthDefaultsForProvider(agentos::AuthProviderId::openai),
+        openai_it->second);
+    Expect(merged.supported, "merged openai defaults should be supported");
+    Expect(merged.origin == "config", "merged defaults should report origin=config");
+    Expect(merged.token_endpoint == "https://example.test/token", "merged defaults should pick up override token endpoint");
+    Expect(merged.note.find("override") != std::string::npos,
+        "merged defaults should reset the stub note when config supplies endpoints");
+
+    // Single-provider lookup helper.
+    const auto override_only = agentos::LoadOAuthProviderDefaultsFromFile(config_path, agentos::AuthProviderId::openai);
+    Expect(override_only.has_value(), "single-provider loader should find openai override");
+    Expect(override_only->origin == "config", "single-provider loader should preserve origin=config");
+}
+
 }  // namespace
 
 int main() {
@@ -910,6 +1035,8 @@ int main() {
     TestAuthOAuthUnavailableWithoutGeminiCliSession(workspace);
     TestAuthGeminiCloudAdcLogin(workspace);
     TestAuthMissingSessionAndUnregisteredProviderFailures(workspace);
+    TestSecureTokenStoreInMemoryBackend(workspace);
+    TestOAuthDefaultsCoverageAndConfigOverride(workspace);
 
     if (failures != 0) {
         std::cerr << failures << " auth test assertion(s) failed\n";
