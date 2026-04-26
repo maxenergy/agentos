@@ -145,6 +145,23 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Add tests for logout, status reload, and missing env refs.
 - [x] Add CLI session import behavior tests with controllable CLI fixtures.
 
+## Post-Review Work
+
+Tracking items raised by `completion_review.md` that fall outside the original
+Phase A–I plan. These are research / decision items rather than direct
+implementation tasks.
+
+- [ ] **Structured JSON dependency** — `completion_review.md` §6 ⚠️ flags that
+  the repo still uses hand-rolled `json_utils` and bespoke parse/validate
+  paths for schema, provider, and plugin protocols. Decision recorded in
+  [`docs/ADR-JSON-001.md`](docs/ADR-JSON-001.md) (Status: Proposed,
+  recommends nlohmann/json with a phased migration plan; no code changes
+  applied yet). Resolves only after the migration phases in that ADR are
+  executed.
+- [ ] **Storage backend boundary** — already tracked under Phase H; the
+  long-form decision is captured in `ADR-STORAGE-001` (TSV remains MVP,
+  SQLite deferred).
+
 ## Progress Log
 
 - 2026-04-23: Reviewed current code/docs completion and created this plan.
@@ -178,3 +195,4 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added SubagentManager parallel concurrency limits and estimated-cost budget checks with memory cost stats.
 - 2026-04-23: Added repo-local external CLI spec loading from `runtime/cli_specs/*.tsv` and verified dynamic skill registration.
 - 2026-04-23: Added built-in `jq_transform` CLI skill backed by jq and covered it with a controllable CLI fixture.
+- 2026-04-26: Authored `docs/ADR-JSON-001.md` (Proposed) recommending nlohmann/json adoption with a phased migration plan. No code or build-system changes yet.
