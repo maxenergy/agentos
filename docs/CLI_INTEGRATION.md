@@ -237,4 +237,35 @@ public:
 - jq_transform
 - curl_fetch
 
+---
+
+## 11. Plugin Host 管理子命令
+
+`agentos plugins` 子命令在 CLI 层封装 `PluginHost` 与 `runtime/plugin_specs/*` 的运维入口：
+
+| 命令 | 用途 |
+|------|------|
+| `agentos plugins` | 列出已加载的 plugin specs，附带 lifecycle/sandbox/pool_size 等 manifest 信息及 health 状态 |
+| `agentos plugins validate` | 仅做静态校验，不发起 health probe |
+| `agentos plugins health` | 列出加载结果并执行声明的 health probe（含 persistent JSON-RPC round-trip） |
+| `agentos plugins lifecycle` | 列出 lifecycle 信息汇总：oneshot/persistent 计数、`max_persistent_sessions`、每条 spec 的 `pool_size` |
+| `agentos plugins inspect name=<plugin> [health=true]` | 打印单个 spec 的所有字段，可选附加 health probe |
+| `agentos plugins sessions` | 列出当前进程内 PluginHost 已经长驻的 persistent sessions（plugin 名、pid、started_at、last_used_at、idle_for_ms、request_count、alive） |
+| `agentos plugins session-restart name=<plugin>` | 强制重启某个 plugin 名下的所有 persistent sessions |
+| `agentos plugins session-close name=<plugin>` | 优雅关闭某个 plugin 名下的所有 persistent sessions |
+
+manifest 关键字段（TSV 列顺序与 JSON 字段名相同）：
+
+- `lifecycle_mode=oneshot|persistent`
+- `startup_timeout_ms`、`idle_timeout_ms`、`pool_size`
+- `runtime/plugin_host.tsv` 中的 `max_persistent_sessions`
+
+### 11.1 进程池策略
+
+- `pool_size=N` 限制单个 plugin 在 PluginHost 中可同时存在的 persistent session 数量；
+- 实际生效值是 `min(pool_size, max_persistent_sessions)`；
+- 当超过 `pool_size` 时优先驱逐该 plugin 最旧的 session；当超过全局 `max_persistent_sessions`
+  时按 LRU 驱逐任意 plugin 的最旧 session；
+- 默认 `pool_size=1`，与既有单 session 行为兼容。
+
 这些工具足以覆盖很多基础开发与检索任务。

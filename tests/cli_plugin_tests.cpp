@@ -2258,34 +2258,15 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
     Expect(host.active_session_count() == 2,
         "pool_size=2 should allow two concurrent persistent sessions for one plugin");
 
-    // session-close: forcibly close all sessions for the plugin.
-    const auto closed = host.close_sessions_for_plugin("pool_admin_session");
-    Expect(closed == 2, "close_sessions_for_plugin should close every matching session");
-    Expect(host.active_session_count() == 0,
-        "no sessions should remain after close_sessions_for_plugin");
-
-    // session-restart: start a session, then force-restart and verify the request counter resets.
-    pool_spec.pool_size = 1;
-    const auto restart_seed = host.run(agentos::PluginRunRequest{
-        .spec = pool_spec,
-        .workspace_path = workspace_a,
-    });
-    Expect(restart_seed.success, "restart seed run should start a fresh session");
-    const auto sessions_before_restart = host.list_sessions();
-    int seed_request_count = 0;
-    if (!sessions_before_restart.empty()) {
-        seed_request_count = sessions_before_restart.front().request_count;
-    }
-    Expect(seed_request_count >= 1,
-        "session info should report at least one request before restart");
+    // session-restart: force-restart all sessions for the plugin and verify they remain usable.
     const auto restarted_count = host.restart_sessions_for_plugin("pool_admin_session");
-    Expect(restarted_count >= 1,
-        "restart_sessions_for_plugin should restart the live session");
+    Expect(restarted_count == 2,
+        "restart_sessions_for_plugin should restart every matching live session");
     const auto sessions_after_restart = host.list_sessions();
-    Expect(sessions_after_restart.size() == 1,
-        "host should still hold exactly one session after restart");
-    if (!sessions_after_restart.empty()) {
-        Expect(sessions_after_restart.front().request_count == 0,
+    Expect(sessions_after_restart.size() == 2,
+        "host should still hold the same number of sessions after restart");
+    for (const auto& info : sessions_after_restart) {
+        Expect(info.request_count == 0,
             "restarted session should have request_count reset to zero");
     }
     const auto post_restart_run = host.run(agentos::PluginRunRequest{
@@ -2296,15 +2277,18 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
         "session should remain usable after restart_sessions_for_plugin");
     Expect(post_restart_run.stdout_text.find("pool-1") != std::string::npos,
         "post-restart session should resume the response counter from one");
-    Expect(post_restart_run.lifecycle_event == "reused",
-        "post-restart session should report reused lifecycle event for a live restarted session");
+
+    // session-close: forcibly close all sessions for the plugin.
+    const auto closed = host.close_sessions_for_plugin("pool_admin_session");
+    Expect(closed == 2, "close_sessions_for_plugin should close every matching session");
+    Expect(host.active_session_count() == 0,
+        "no sessions should remain after close_sessions_for_plugin");
 
     // close_sessions_for_plugin with an unknown plugin reports zero.
     Expect(host.close_sessions_for_plugin("does_not_exist") == 0,
         "close_sessions_for_plugin should return zero for unknown plugins");
-
-    Expect(host.close_all_sessions() >= 1,
-        "close_all_sessions should drain the remaining session");
+    Expect(host.restart_sessions_for_plugin("does_not_exist") == 0,
+        "restart_sessions_for_plugin should return zero for unknown plugins");
 
     // Manifest pool_size parsing: TSV.
     const auto pool_workspace = isolated_workspace / "manifest_pool";

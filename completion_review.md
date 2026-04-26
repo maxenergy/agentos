@@ -259,7 +259,7 @@ runtime/
 |------|---------|------|
 | OAuth provider-specific UX/config | Auth | PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed exchange helper、response 解析、managed AuthSession persistence helper、single-command `oauth-login`、scriptable oauth-complete、Gemini Google OAuth 默认 endpoint/scope、repo-local `runtime/auth_oauth_providers.tsv` defaults 覆盖、`oauth-config-validate`、`oauth-defaults` 和参数化 provider adapter 原生 login/refresh 已落地，但仍缺更广泛 provider discovery 和完整多 provider 交互式 login UX |
 | 非 Windows 系统 credential store 集成 | Auth | Windows 已接入 Credential Manager；macOS/Linux 仍为 env-ref-only dev fallback |
-| Plugin 进程池与 lifecycle admin UX | Plugin Host | persistent `json-rpc-v0` session manager 已实现 MVP，并覆盖 crash/restart、session close、idle restart、LRU eviction 与 lifecycle_event；模块拆分、workspace-configurable session cap、plugin_host config diagnostics、`plugins inspect name=<plugin> [health=true]` 和 `plugins lifecycle` 已完成，后续主要是更细 process-pool policy 和更丰富运行时 session admin UX |
+| Plugin 进程池与 lifecycle admin UX | Plugin Host | persistent `json-rpc-v0` session manager 已实现 MVP，并覆盖 crash/restart、session close、idle restart、LRU eviction 与 lifecycle_event；模块拆分、workspace-configurable session cap、plugin_host config diagnostics、`plugins inspect name=<plugin> [health=true]` 和 `plugins lifecycle` 已完成；新增 `PluginSpec.pool_size` 每 plugin 进程池上限（受全局 `max_persistent_sessions` 约束）和 `agentos plugins sessions` / `session-restart` / `session-close` 运行时 session admin 命令，剩余主要是 daemon 化跨进程 session 共享与更细的 OS 级隔离策略 |
 | 更强 Plugin sandbox 模型 | Plugin Host | 已有 `sandbox_mode=workspace|none` 的路径参数约束；更强隔离仍需 OS sandbox/cgroup/job 策略 |
 
 ### 🟡 中优先级（功能增强）
@@ -329,7 +329,7 @@ Auth System         ██████████████████░░
 Memory & Evolution  ██████████████████░░ 90%  ← 基本完备
 Identity / Trust    ██████████████████░░ 90%  ← 缺 admin UX
 Scheduler           ██████████████████░░ 90%  ← 缺 timezone/DST
-Plugin Host         █████████████████░░░ 85%  ← 缺更深 process-pool policy / OS sandbox
+Plugin Host         ██████████████████░░ 90%  ← 已补 per-plugin pool_size + sessions/session-restart/session-close 管理；剩余 daemon 跨进程 session 共享 / OS sandbox
 Storage             ██████████████████░░ 91%  ← 缺跨格式迁移和更完整 audit recovery
 Tests & CI          ██████████████████░░ 90%  ← 已相当充分
 Documentation       ██████████████████░░ 90%  ← 仍需随剩余生产化项持续更新
@@ -398,3 +398,4 @@ Documentation       ██████████████████░░
 - 已修正：ExecutionCache 现在以 `idempotency_key` + task input/context fingerprint 共同决定缓存命中；同 key 不同 inputs/context 会重新执行，同时兼容读取旧 9 列 TSV 缓存。
 - 成立：auto_decompose 过去主要覆盖 happy path，已补充 planner 失败与 planner 输出缺少 `plan_steps[].action` 的负面路径测试。
 - 已大部分完成：拆分 `main.cpp`、拆分 `plugin_host.cpp`、收敛 PolicyEngine 构造、抽 shared step lifecycle、抽 LessonHintProvider 均已落地；仍待评估引入结构化 JSON 依赖。
+- 2026-04-26：补齐 Plugin Host per-plugin process pool 与 admin UX——`PluginSpec.pool_size` 受全局 `max_persistent_sessions` 约束、`PluginHost::list_sessions/close_sessions_for_plugin/restart_sessions_for_plugin`，并新增 `agentos plugins sessions / session-restart / session-close` 子命令、TSV/JSON manifest pool_size 解析及 pool/admin 回归测试。

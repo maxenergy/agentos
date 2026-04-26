@@ -279,4 +279,49 @@ struct SkillStats {
 - http_fetch
 - workflow_run
 
+---
+
+## 11. Plugin Skill lifecycle 与 process pool 策略
+
+Plugin Skill 由 `runtime/plugin_specs/*.tsv` / `*.json` 通过 `PluginHost` 加载，支持
+两种 lifecycle：
+
+- `lifecycle_mode=oneshot`（默认）— 每次调用启动一个独立子进程，立即收割。`stdio-json-v0` 与
+  `json-rpc-v0` 都支持 oneshot。
+- `lifecycle_mode=persistent` — 仅 `json-rpc-v0` 支持。`PluginHost` 维护一个长驻 stdin/stdout
+  会话，按 request_id 路由 JSON-RPC 调用，命中失败/超时时自动重启会话。
+
+`PluginHost` 通过两层上限管理 persistent 会话池：
+
+- **全局上限**：`PluginHostOptions.max_persistent_sessions`（默认 16），可在
+  `runtime/plugin_host.tsv` 中配置：
+
+  ```
+  max_persistent_sessions	16
+  ```
+
+  超出全局上限时按 LRU `last_used_at` 驱逐其他 plugin 的最旧 session。
+
+- **每 plugin 上限**：`PluginSpec.pool_size`（默认 1），manifest 字段。当某个 plugin name
+  的当前活跃会话数 ≥ `pool_size` 时，`PluginHost` 会先驱逐该 plugin 自己最旧的 session。
+  实际生效值为 `min(pool_size, max_persistent_sessions)`。`pool_size` 仅在 `lifecycle_mode=persistent`
+  时有意义；oneshot 时被忽略但仍可在 manifest 中声明。
+
+每个 session 还有 `idle_timeout_ms`（默认 30000）。当一个 session 距离 `last_used_at`
+超过此值时，下一次该 session 的请求会先重启进程。
+
+### 11.1 Admin CLI
+
+`agentos plugins` 提供运行时 session 管理：
+
+- `agentos plugins sessions` — 列出当前 PluginHost 中活跃的 persistent sessions，包含
+  plugin 名、pid、started_at_unix_ms、last_used_at_unix_ms、idle_for_ms、request_count、alive。
+- `agentos plugins session-restart name=<plugin>` — 强制重启某个 plugin 的所有 persistent
+  sessions（适合修复挂死或想清空状态的场景）。
+- `agentos plugins session-close name=<plugin>` — 优雅关闭某个 plugin 的所有 persistent
+  sessions。
+
+由于 CLI 命令和 daemon 进程是独立的，目前 `sessions/session-restart/session-close` 主要
+反映当前 CLI 进程内启动的 PluginHost 状态；持续 daemon 化部署时可继续扩展为跨进程查询。
+
 这五个即可支撑较多上层能力。
