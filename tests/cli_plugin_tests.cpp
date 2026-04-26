@@ -2151,6 +2151,241 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
         "plugin health should explain missing plugin binaries");
 }
 
+void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "plugin_pool_admin_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+#ifdef _WIN32
+    const auto binary = "powershell";
+    const auto script_path = isolated_workspace / "pool_admin_session.ps1";
+    {
+        std::ofstream script(script_path, std::ios::binary);
+        script
+            << "$counter = 0\n"
+            << "while (($line = [Console]::In.ReadLine()) -ne $null) {\n"
+            << "  $counter += 1\n"
+            << "  Write-Output \"{\"\"jsonrpc\"\":\"\"2.0\"\",\"\"id\"\":$counter,\"\"result\"\":{\"\"message\"\":\"\"pool-$counter\"\"}}\"\n"
+            << "  [Console]::Out.Flush()\n"
+            << "}\n";
+    }
+    const std::vector<std::string> persistent_args = {
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script_path.string()};
+#else
+    const auto binary = "sh";
+    const auto script_path = isolated_workspace / "pool_admin_session.sh";
+    {
+        std::ofstream script(script_path, std::ios::binary);
+        script
+            << "#!/usr/bin/env sh\n"
+            << "counter=0\n"
+            << "while IFS= read -r line; do\n"
+            << "  counter=$((counter + 1))\n"
+            << "  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"message\":\"pool-%s\"}}\\n' \"$counter\" \"$counter\"\n"
+            << "done\n";
+    }
+    std::filesystem::permissions(
+        script_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+    const std::vector<std::string> persistent_args = {script_path.string()};
+#endif
+
+    agentos::PluginSpec pool_spec;
+    pool_spec.manifest_version = "plugin.v1";
+    pool_spec.name = "pool_admin_session";
+    pool_spec.description = "Pool/admin fixture";
+    pool_spec.binary = binary;
+    pool_spec.args_template = persistent_args;
+    pool_spec.protocol = "json-rpc-v0";
+    pool_spec.permissions = {"process.spawn"};
+    pool_spec.lifecycle_mode = "persistent";
+    pool_spec.timeout_ms = 1000;
+    pool_spec.startup_timeout_ms = 1500;
+    pool_spec.idle_timeout_ms = 60000;
+    pool_spec.pool_size = 1;
+
+    agentos::CliHost cli_host;
+    agentos::PluginHost host(cli_host, agentos::PluginHostOptions{.max_persistent_sessions = 16});
+
+    // First call: workspace A, should start a fresh persistent session.
+    const auto workspace_a = isolated_workspace / "ws_a";
+    std::filesystem::create_directories(workspace_a);
+    const auto first_run = host.run(agentos::PluginRunRequest{
+        .spec = pool_spec,
+        .workspace_path = workspace_a,
+    });
+    Expect(first_run.success, "pool fixture should start a session in workspace A");
+    Expect(host.active_session_count() == 1, "pool host should hold one active session after first run");
+    const auto sessions_after_first = host.list_sessions();
+    Expect(sessions_after_first.size() == 1, "list_sessions should report one entry after first run");
+    if (!sessions_after_first.empty()) {
+        const auto& info = sessions_after_first.front();
+        Expect(info.plugin_name == "pool_admin_session",
+            "session info should expose the plugin name");
+        Expect(info.pid > 0, "session info should expose a non-zero pid for an alive process");
+        Expect(info.request_count >= 1,
+            "session info request_count should reflect the executed request");
+        Expect(info.alive, "session info alive flag should be true for a running process");
+    }
+
+    // Second call: workspace B with pool_size=1 → must evict the workspace-A session.
+    const auto workspace_b = isolated_workspace / "ws_b";
+    std::filesystem::create_directories(workspace_b);
+    const auto second_run = host.run(agentos::PluginRunRequest{
+        .spec = pool_spec,
+        .workspace_path = workspace_b,
+    });
+    Expect(second_run.success, "pool fixture should start a second session in workspace B");
+    Expect(host.active_session_count() == 1,
+        "pool_size=1 should evict the older session for the same plugin");
+    const auto sessions_after_second = host.list_sessions();
+    bool saw_workspace_b = false;
+    for (const auto& info : sessions_after_second) {
+        if (info.workspace_path.find("ws_b") != std::string::npos) {
+            saw_workspace_b = true;
+        }
+    }
+    Expect(saw_workspace_b, "remaining session should be the workspace B session after pool_size=1 eviction");
+
+    // pool_size=2 → both workspace A and B sessions can coexist.
+    pool_spec.pool_size = 2;
+    const auto wide_first = host.run(agentos::PluginRunRequest{
+        .spec = pool_spec,
+        .workspace_path = workspace_a,
+    });
+    Expect(wide_first.success, "pool_size=2 fixture should start a workspace-A session");
+    Expect(host.active_session_count() == 2,
+        "pool_size=2 should allow two concurrent persistent sessions for one plugin");
+
+    // session-close: forcibly close all sessions for the plugin.
+    const auto closed = host.close_sessions_for_plugin("pool_admin_session");
+    Expect(closed == 2, "close_sessions_for_plugin should close every matching session");
+    Expect(host.active_session_count() == 0,
+        "no sessions should remain after close_sessions_for_plugin");
+
+    // session-restart: start a session, then force-restart and verify the request counter resets.
+    pool_spec.pool_size = 1;
+    const auto restart_seed = host.run(agentos::PluginRunRequest{
+        .spec = pool_spec,
+        .workspace_path = workspace_a,
+    });
+    Expect(restart_seed.success, "restart seed run should start a fresh session");
+    const auto sessions_before_restart = host.list_sessions();
+    int seed_request_count = 0;
+    if (!sessions_before_restart.empty()) {
+        seed_request_count = sessions_before_restart.front().request_count;
+    }
+    Expect(seed_request_count >= 1,
+        "session info should report at least one request before restart");
+    const auto restarted_count = host.restart_sessions_for_plugin("pool_admin_session");
+    Expect(restarted_count >= 1,
+        "restart_sessions_for_plugin should restart the live session");
+    const auto sessions_after_restart = host.list_sessions();
+    Expect(sessions_after_restart.size() == 1,
+        "host should still hold exactly one session after restart");
+    if (!sessions_after_restart.empty()) {
+        Expect(sessions_after_restart.front().request_count == 0,
+            "restarted session should have request_count reset to zero");
+    }
+    const auto post_restart_run = host.run(agentos::PluginRunRequest{
+        .spec = pool_spec,
+        .workspace_path = workspace_a,
+    });
+    Expect(post_restart_run.success,
+        "session should remain usable after restart_sessions_for_plugin");
+    Expect(post_restart_run.stdout_text.find("pool-1") != std::string::npos,
+        "post-restart session should resume the response counter from one");
+    Expect(post_restart_run.lifecycle_event == "reused",
+        "post-restart session should report reused lifecycle event for a live restarted session");
+
+    // close_sessions_for_plugin with an unknown plugin reports zero.
+    Expect(host.close_sessions_for_plugin("does_not_exist") == 0,
+        "close_sessions_for_plugin should return zero for unknown plugins");
+
+    Expect(host.close_all_sessions() >= 1,
+        "close_all_sessions should drain the remaining session");
+
+    // Manifest pool_size parsing: TSV.
+    const auto pool_workspace = isolated_workspace / "manifest_pool";
+    std::filesystem::create_directories(pool_workspace / "runtime" / "plugin_specs");
+    {
+        std::ofstream spec_file(pool_workspace / "runtime" / "plugin_specs" / "pool_size_plugin.tsv", std::ios::binary);
+        spec_file
+            << "plugin.v1" << '\t'
+            << "pool_size_plugin" << '\t'
+            << "Pool size manifest fixture." << '\t'
+            << binary << '\t'
+#ifdef _WIN32
+            << "/d,/s,/c,echo {}" << '\t'
+#else
+            << "-c,printf '{}\\n'" << '\t'
+#endif
+            << "" << '\t'
+            << "json-rpc-v0" << '\t'
+            << "low" << '\t'
+            << "process.spawn" << '\t'
+            << "3000" << '\t'
+            << R"({"type":"object"})" << '\t'
+            << R"({"type":"object"})" << '\t'
+            << "4096" << '\t'
+            << "" << '\t'
+            << "true" << '\t'
+            << "" << '\t'
+            << "" << '\t'
+            << "" << '\t'
+            << "" << '\t'
+            << "" << '\t'
+            << "" << '\t'
+            << "workspace" << '\t'
+            << "persistent" << '\t'
+            << "" << '\t'
+            << "" << '\t'
+            << "4"
+            << '\n';
+    }
+    const auto loaded = agentos::LoadPluginSpecsWithDiagnostics(pool_workspace / "runtime" / "plugin_specs");
+    Expect(loaded.diagnostics.empty(),
+        "pool_size manifest fixture should load without diagnostics");
+    Expect(loaded.specs.size() == 1, "pool_size manifest fixture should yield one spec");
+    if (!loaded.specs.empty()) {
+        Expect(loaded.specs.front().pool_size == 4,
+            "TSV plugin manifest should parse pool_size=4");
+    }
+
+    // Manifest pool_size parsing: JSON.
+    const auto json_pool_workspace = isolated_workspace / "manifest_pool_json";
+    std::filesystem::create_directories(json_pool_workspace / "runtime" / "plugin_specs");
+    {
+        std::ofstream spec_file(
+            json_pool_workspace / "runtime" / "plugin_specs" / "pool_size_json.json",
+            std::ios::binary);
+        spec_file
+            << "{\n"
+            << R"(  "manifest_version": "plugin.v1",)" << '\n'
+            << R"(  "name": "pool_size_json",)" << '\n'
+            << R"(  "description": "JSON pool_size fixture.",)" << '\n'
+            << R"(  "binary": ")" << binary << R"(",)" << '\n'
+#ifdef _WIN32
+            << R"(  "args_template": ["/d", "/s", "/c", "echo {}"],)" << '\n'
+#else
+            << R"(  "args_template": ["-c", "printf '{}\\n'"],)" << '\n'
+#endif
+            << R"(  "protocol": "json-rpc-v0",)" << '\n'
+            << R"(  "permissions": ["process.spawn"],)" << '\n'
+            << R"(  "lifecycle_mode": "persistent",)" << '\n'
+            << R"(  "pool_size": 3)" << '\n'
+            << "}\n";
+    }
+    const auto loaded_json = agentos::LoadPluginSpecsWithDiagnostics(json_pool_workspace / "runtime" / "plugin_specs");
+    Expect(loaded_json.diagnostics.empty(),
+        "JSON pool_size manifest should load without diagnostics");
+    if (!loaded_json.specs.empty()) {
+        Expect(loaded_json.specs.front().pool_size == 3,
+            "JSON plugin manifest should parse pool_size=3");
+    }
+}
+
 void TestJqTransformCliSkillWithFixture(const std::filesystem::path& workspace) {
     const auto isolated_workspace = workspace / "jq_transform_fixture_isolated";
     std::filesystem::remove_all(isolated_workspace);
@@ -2200,6 +2435,7 @@ int main() {
     TestCliHostTimeoutKillsProcessTree(workspace);
     TestExternalCliSpecLoader(workspace);
     TestPluginSpecLoaderAndInvoker(workspace);
+    TestPluginPoolPolicyAndAdmin(workspace);
     TestJqTransformCliSkillWithFixture(workspace);
 
     if (failures != 0) {
