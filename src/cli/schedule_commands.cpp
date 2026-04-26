@@ -185,6 +185,8 @@ bool IsReservedScheduleOption(const std::string& key) {
         "delay_seconds",
         "recurrence",
         "cron",
+        "timezone",
+        "tz",
         "interval_seconds",
         "max_runs",
         "max_retries",
@@ -271,6 +273,9 @@ ScheduledTask BuildScheduledTaskFromOptions(
         .retry_backoff_seconds = ParseIntOption(options, "retry_backoff_seconds", 0),
         .missed_run_policy = options.contains("missed_run_policy") ? options.at("missed_run_policy") : "run-once",
         .cron_expression = cron_expression,
+        .timezone_name = options.contains("timezone")
+            ? options.at("timezone")
+            : (options.contains("tz") ? options.at("tz") : ""),
         .task = std::move(task),
     };
 }
@@ -278,7 +283,7 @@ ScheduledTask BuildScheduledTaskFromOptions(
 void PrintScheduleUsage() {
     std::cerr
         << "schedule commands:\n"
-        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m|cron:<expr>] [cron=\"*/5 * * * *\"|@hourly|@daily|@weekly|@monthly|@yearly] [missed_run_policy=run-once|skip] key=value ...\n"
+        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m|cron:<expr>] [cron=\"*/5 * * * *\"|@hourly|@daily|@weekly|@monthly|@yearly] [timezone=America/New_York|UTC+08:00] [missed_run_policy=run-once|skip] key=value ...\n"
         << "  agentos schedule list\n"
         << "  agentos schedule history\n"
         << "  agentos schedule run-due\n"
@@ -299,6 +304,7 @@ void PrintScheduledTask(const ScheduledTask& task) {
         << " retry_backoff_seconds=" << task.retry_backoff_seconds
         << " missed_run_policy=" << task.missed_run_policy
         << " cron=\"" << task.cron_expression << "\""
+        << " timezone=\"" << task.timezone_name << "\""
         << " task_type=" << task.task.task_type
         << " objective=\"" << task.task.objective << "\""
         << '\n';
@@ -418,9 +424,14 @@ int RunScheduleCommand(
             std::cerr << "cron expression must use five fields: minute hour day-of-month month day-of-week, or @hourly/@daily/@weekly/@monthly/@yearly/@annually\n";
             return 1;
         }
+        if (!Scheduler::IsTimezoneValid(scheduled_task.timezone_name)) {
+            std::cerr << "timezone must be UTC, a fixed offset (UTC+HH:MM / UTC-HH:MM), or a recognized IANA zone\n";
+            return 1;
+        }
         if (!scheduled_task.cron_expression.empty() && scheduled_task.next_run_epoch_ms <= Scheduler::NowEpochMs()) {
-            scheduled_task.next_run_epoch_ms =
-                Scheduler::NextCronRunEpochMs(scheduled_task.cron_expression, Scheduler::NowEpochMs()).value_or(scheduled_task.next_run_epoch_ms);
+            scheduled_task.next_run_epoch_ms = Scheduler::NextCronRunEpochMs(
+                scheduled_task.cron_expression, scheduled_task.timezone_name,
+                Scheduler::NowEpochMs()).value_or(scheduled_task.next_run_epoch_ms);
         }
         if (scheduled_task.max_retries < 0 || scheduled_task.retry_backoff_seconds < 0) {
             std::cerr << "max_retries and retry_backoff_seconds must be non-negative\n";

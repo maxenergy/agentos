@@ -451,7 +451,7 @@ void TestSchedulerCompactsLegacyTaskStore(const std::filesystem::path& workspace
     std::string line;
     std::getline(input, line);
 
-    Expect(CountFields(line) == 27, "scheduler task compaction should rewrite legacy rows to the current 27-column schema");
+    Expect(CountFields(line) == 28, "scheduler task compaction should rewrite legacy rows to the current 28-column schema");
 }
 
 void TestSessionStoreCompactsCurrentFormat(const std::filesystem::path& workspace) {

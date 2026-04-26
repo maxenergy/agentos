@@ -267,7 +267,7 @@ runtime/
 | 缺口 | 所属模块 | 影响 |
 |------|---------|------|
 | 更复杂的模型驱动任务拆分 | Subagent | 当前 auto_decompose 仍以 planner `plan_steps` 映射为主 |
-| Timezone/DST calendar hardening | Scheduler | 跨时区/夏令时边界场景 |
+| ~~Timezone/DST calendar hardening~~ ✅ | Scheduler | 已通过 `src/scheduler/cron.{hpp,cpp}` + `timezone.{hpp,cpp}` 接入 curated IANA 区 + 固定偏移 + DST 消歧；`schedule add timezone=...` 已支持，TSV 列已扩展为 28 列且向后兼容旧行 |
 | Windows file-handle limits | CLI Host | POSIX 有 RLIMIT_NOFILE，Windows 缺少对应 |
 | 更丰富的 JSON Schema 关键字 | Skill/Plugin | 已覆盖大部分常用关键字，仍可扩展 |
 | SQLite 或跨格式存储迁移 | Storage | TSV 已明确为 MVP backend；多文件 prepare/commit/recover helper 已补齐事务性维护入口；`ADR-STORAGE-001` 已定义 SQLite 迁移边界 |
@@ -328,7 +328,7 @@ Agent System        █████████████████░░░
 Auth System         ██████████████████░░ 91%  ← 缺更广泛 provider discovery / 非 Windows credential store / 完整多账号策略
 Memory & Evolution  ██████████████████░░ 90%  ← 基本完备
 Identity / Trust    ██████████████████░░ 90%  ← 缺 admin UX
-Scheduler           ██████████████████░░ 90%  ← 缺 timezone/DST
+Scheduler           ██████████████████░░ 95%  ← timezone/DST 已接入（curated IANA + 固定偏移），剩余 IANA 覆盖按需扩展
 Plugin Host         ██████████████████░░ 90%  ← 已补 per-plugin pool_size + sessions/session-restart/session-close 管理；剩余 daemon 跨进程 session 共享 / OS sandbox
 Storage             ██████████████████░░ 91%  ← 缺跨格式迁移和更完整 audit recovery
 Tests & CI          ██████████████████░░ 90%  ← 已相当充分

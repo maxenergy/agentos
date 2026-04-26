@@ -60,7 +60,11 @@ public:
     [[nodiscard]] std::vector<SchedulerExecutionRecord> run_history() const;
     static long long NowEpochMs();
     static bool IsCronExpressionValid(const std::string& expression);
+    static bool IsTimezoneValid(const std::string& timezone_name);
     static std::optional<long long> NextCronRunEpochMs(const std::string& expression, long long after_epoch_ms);
+    static std::optional<long long> NextCronRunEpochMs(const std::string& expression,
+                                                       const std::string& timezone_name,
+                                                       long long after_epoch_ms);
 
     std::vector<SchedulerRunRecord> run_due(AgentLoop& loop, long long now_epoch_ms = NowEpochMs());
     void compact_tasks() const;

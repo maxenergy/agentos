@@ -470,10 +470,14 @@ void TestSchedulerCronExpressionSupport(const std::filesystem::path& workspace) 
     Expect(next_yearly_alias.has_value() && next_yearly_expression.has_value() &&
             *next_yearly_alias == *next_yearly_expression,
         "@yearly should normalize to the Jan 1 midnight cron expression");
+    // Cron evaluation now happens in UTC by default (was system-local before
+    // wireup of the modular cron+tz). Use UTC instants directly so the test
+    // is deterministic regardless of the machine's timezone.
+    constexpr long long kJan2_1970_UtcMs = 86400000LL;       // 1970-01-02 00:00 UTC (Friday)
+    constexpr long long kJan5_1970_UtcMs = 4LL * 86400000LL; // 1970-01-05 00:00 UTC (Monday)
     const auto next_dom_or_dow = agentos::Scheduler::NextCronRunEpochMs(
-        "0 0 1 * 1",
-        LocalEpochMs(1970, 1, 2));
-    Expect(next_dom_or_dow.has_value() && *next_dom_or_dow == LocalEpochMs(1970, 1, 5),
+        "0 0 1 * 1", "UTC", kJan2_1970_UtcMs);
+    Expect(next_dom_or_dow.has_value() && *next_dom_or_dow == kJan5_1970_UtcMs,
         "cron day-of-month and day-of-week restrictions should match with OR semantics");
 
     TestRuntime runtime(isolated_workspace);
@@ -549,6 +553,75 @@ void TestSchedulerCronExpressionSupport(const std::filesystem::path& workspace) 
     }
 }
 
+void TestSchedulerCronTimezoneAwareness(const std::filesystem::path& /*workspace*/) {
+    Expect(agentos::Scheduler::IsTimezoneValid(""),
+        "empty timezone should be accepted as UTC");
+    Expect(agentos::Scheduler::IsTimezoneValid("UTC"),
+        "literal UTC timezone should be accepted");
+    Expect(agentos::Scheduler::IsTimezoneValid("UTC+08:00"),
+        "fixed-offset timezone should be accepted");
+    Expect(agentos::Scheduler::IsTimezoneValid("America/New_York"),
+        "curated IANA zone should be accepted");
+    Expect(!agentos::Scheduler::IsTimezoneValid("Mars/Olympus_Mons"),
+        "unknown timezone should be rejected");
+
+    // Cron 09:30 daily in Asia/Shanghai (UTC+8) should fire at 01:30 UTC.
+    // Search starts from 1970-01-01 00:00 UTC; first match is 01:30 UTC same day.
+    const auto next_shanghai = agentos::Scheduler::NextCronRunEpochMs(
+        "30 9 * * *", "Asia/Shanghai", 0);
+    constexpr long long kExpectShanghai = (1LL * 3600LL + 30LL * 60LL) * 1000LL;
+    Expect(next_shanghai.has_value() && *next_shanghai == kExpectShanghai,
+        "cron in Asia/Shanghai (UTC+8) should fire at 01:30 UTC for 09:30 local");
+
+    // Same expression with explicit UTC+08:00 fixed offset should match.
+    const auto next_offset = agentos::Scheduler::NextCronRunEpochMs(
+        "30 9 * * *", "UTC+08:00", 0);
+    Expect(next_offset.has_value() && *next_offset == kExpectShanghai,
+        "fixed-offset UTC+08:00 should match Asia/Shanghai for non-DST zones");
+
+    // Cron 09:30 daily in UTC (default behavior) should fire at 09:30 UTC.
+    const auto next_utc = agentos::Scheduler::NextCronRunEpochMs(
+        "30 9 * * *", "UTC", 0);
+    constexpr long long kExpectUtc = (9LL * 3600LL + 30LL * 60LL) * 1000LL;
+    Expect(next_utc.has_value() && *next_utc == kExpectUtc,
+        "cron in UTC should fire at 09:30 UTC");
+}
+
+void TestSchedulerCronTimezoneRoundTrip(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "scheduler_cron_tz_roundtrip";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    const auto store_path = isolated_workspace / "tasks.tsv";
+    {
+        agentos::Scheduler scheduler(store_path);
+        scheduler.save(agentos::ScheduledTask{
+            .schedule_id = "cron-tz",
+            .enabled = true,
+            .next_run_epoch_ms = 0,
+            .max_runs = 0,
+            .cron_expression = "30 9 * * *",
+            .timezone_name = "Asia/Shanghai",
+            .task = agentos::TaskRequest{
+                .task_type = "write_file",
+                .objective = "tz cron",
+                .workspace_path = isolated_workspace,
+                .inputs = {{"path", "tz.txt"}, {"content", "tz"}},
+            },
+        });
+    }
+
+    agentos::Scheduler reloaded(store_path);
+    const auto roundtrip = reloaded.find("cron-tz");
+    Expect(roundtrip.has_value(), "tz scheduled task should reload from TSV");
+    if (roundtrip.has_value()) {
+        Expect(roundtrip->cron_expression == "30 9 * * *",
+            "cron expression should persist across reload");
+        Expect(roundtrip->timezone_name == "Asia/Shanghai",
+            "timezone_name should persist across reload");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -562,6 +635,8 @@ int main() {
     TestSchedulerMissedIntervalSkipPolicy(workspace);
     TestSchedulerNormalizesInvalidMissedRunPolicy(workspace);
     TestSchedulerCronExpressionSupport(workspace);
+    TestSchedulerCronTimezoneAwareness(workspace);
+    TestSchedulerCronTimezoneRoundTrip(workspace);
 
     if (failures != 0) {
         std::cerr << failures << " scheduler test assertion(s) failed\n";
