@@ -58,7 +58,9 @@ add_library(agentos_core
     src/storage/storage_policy.cpp
     src/storage/storage_transaction.cpp
     src/storage/storage_version_store.cpp
+    src/scheduler/cron.cpp
     src/scheduler/scheduler.cpp
+    src/scheduler/timezone.cpp
     src/core/router/router.cpp
     src/core/router/agent_router.cpp
     src/core/router/skill_router.cpp

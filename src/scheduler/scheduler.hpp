@@ -23,6 +23,7 @@ struct ScheduledTask {
     int retry_backoff_seconds = 0;
     std::string missed_run_policy = "run-once";
     std::string cron_expression;
+    std::string timezone_name;
     TaskRequest task;
 };
 
