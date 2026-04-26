@@ -22,7 +22,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 | Auth System | Partial | Auth manager, provider adapters, API-key env refs, CLI session probes/import tests, refresh command/adapter path, workspace default profile mapping, credential store dev-fallback status | OAuth token exchange, system credential store, full multi-account strategy |
 | Memory And Evolution | Partial | Task/step logs, skill/agent stats, LessonStore, lesson-driven routing/policy hints, workflow candidates/scoring, durable WorkflowStore, promotion command, stored workflow execution, Router workflow preference, `required_inputs` applicability | Richer condition expressions |
 | Identity / Trust | Implemented MVP | Identity store, pairing, allowlist, TrustPolicy | Pairing handshake UX, role/user-level authorization, device lifecycle |
-| Scheduler | Partial MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick` loop, foreground `daemon` loop, run history metadata, retry/backoff, small recurrence grammar, `missed_run_policy`, disabled/missed-run coverage | Full cron grammar |
+| Scheduler | Implemented MVP | persisted one-shot/interval tasks, `run-due`, foreground `tick`/`daemon` loops, run history metadata, retry/backoff, small recurrence grammar, full 5-field cron + aliases, timezone (UTC / fixed offsets / curated IANA zones with DST), spring-forward/fall-back DST handling, `missed_run_policy`, backward-compatible TSV | Full IANA tzdb integration |
 | Policy / Permissions | Implemented MVP | PermissionModel, risk parsing, unknown permission deny | Role-based permission grants, approval workflow |
 | Plugin Host | Not implemented | Docs only | JSON-RPC/stdio plugin runtime, plugin manifest, sandboxing |
 | Storage | Prototype | TSV files under `runtime/` | SQLite or versioned storage, migration, locking |
@@ -34,7 +34,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - `docs/ROADMAP.md` has now been synced to the current implementation state, but it must stay linked to this plan to avoid drifting again.
 - `AUTH_PRD.md` and `AUTH_DESIGN.md` describe OAuth, refresh, cloud credentials, and secure credential storage, but the current code only implements API-key env references, Codex/Claude CLI session probing, and refresh command plumbing without real OAuth exchange.
 - Workflow learning now has candidate/scoring output, LessonStore, lesson-driven routing/policy hints, durable WorkflowStore, manual promotion, stored workflow execution, Router preference, and `required_inputs` applicability checks.
-- Scheduler supports manual `run-due`, foreground `tick`, foreground `daemon`, run history metadata, retry/backoff, `missed_run_policy=run-once|skip`, and `every:<n>s|m|h|d` recurrence. Disabled tasks are skipped, and missed interval tasks can either run once per tick or skip stale runs and reschedule from the current scheduler time; there is no full cron parser.
+- Scheduler supports manual `run-due`, foreground `tick`, foreground `daemon`, run history metadata, retry/backoff, `missed_run_policy=run-once|skip`, `every:<n>s|m|h|d` recurrence, full five-field cron expressions with `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` aliases and DOM/DOW OR semantics, and timezone-aware cron evaluation (UTC, `UTC±HH:MM` fixed offsets, and a curated set of named IANA zones with built-in DST rules: US post-2007, EU post-1996, AU post-2008; fixed-offset Asian zones). DST gaps are skipped to the first valid post-gap minute and DST folds fire at the earliest occurrence only so a `30 1 * * *` cron does not double-fire when DST ends. Disabled tasks are skipped, and missed cron/interval tasks can either run once per tick or skip stale runs and reschedule from the current scheduler time. The scheduler TSV format is backward-compatible: legacy rows without `cron_expression`/`timezone_name` columns load as UTC.
 - Multi-agent orchestration supports explicit lists, automatic healthy/capability-based subagent candidate selection, `WorkspaceSession` for session-capable agents, parallel concurrency limits, and estimated-cost budget checks. There is no automatic task decomposition or role assignment.
 - Plugin Host is still docs-only. External CLI spec loading now supports repo-local `runtime/cli_specs/*.tsv` files.
 - Persistence is TSV-based and adequate for MVP, but not yet versioned, transactional, or migration-safe.
@@ -68,6 +68,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - [x] Record scheduler execution metadata separately from task execution logs.
 - [x] Add tests for missed tasks, disabled tasks, failed tasks, and recurring task persistence.
 - [x] Add configurable missed-run policy for interval tasks.
+- [x] Add timezone field on `ScheduledTask` and evaluate cron in that zone, including DST gap (skip-forward) and fall-back (fire-once) handling.
 
 ### Phase D: Workflow Evolution
 
@@ -178,3 +179,7 @@ This file is the working plan for aligning the implementation with the docs. Upd
 - 2026-04-23: Added SubagentManager parallel concurrency limits and estimated-cost budget checks with memory cost stats.
 - 2026-04-23: Added repo-local external CLI spec loading from `runtime/cli_specs/*.tsv` and verified dynamic skill registration.
 - 2026-04-23: Added built-in `jq_transform` CLI skill backed by jq and covered it with a controllable CLI fixture.
+
+## Post-Review Updates
+
+- 2026-04-26: Added five-field cron grammar (with `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` aliases, DOM/DOW OR semantics) and a lightweight Timezone module (UTC, `UTC±HH:MM` fixed offsets, curated IANA zones with built-in US/EU/AU DST rules). `ScheduledTask` gains `cron_expression` and `timezone_name` fields persisted as two new TSV columns. Scheduler reschedules cron tasks via timezone-aware next-fire computation; spring-forward gaps skip to the first valid post-gap minute and fall-back folds fire only at the earliest occurrence. CLI accepts `cron=` and `timezone=` and rejects invalid values with `InvalidCronExpression` / `TimezoneUnknown`. Legacy TSV rows without the new columns still load (defaulting to UTC).

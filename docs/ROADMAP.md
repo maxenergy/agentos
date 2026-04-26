@@ -201,12 +201,12 @@ Remaining:
 
 ## Phase 8: Scheduler
 
-Status: 🚧 Partial
+Status: ✅ Implemented
 
 Delivered:
 
 - `Scheduler`
-- persisted `ScheduledTask`
+- persisted `ScheduledTask` (with `cron_expression` and `timezone_name` columns)
 - one-shot tasks
 - interval tasks
 - manual `schedule run-due`
@@ -215,12 +215,16 @@ Delivered:
 - scheduler-specific execution metadata
 - retry/backoff fields
 - small recurrence grammar (`every:<n>s|m|h|d`)
+- five-field cron grammar with `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` aliases and DOM/DOW OR semantics
+- timezone support: UTC, fixed offsets (`UTC±HH:MM`), and a curated set of named IANA zones (US/EU/AU with built-in post-2007/post-1996/post-2008 DST rules; fixed-offset Asian zones)
+- DST handling: spring-forward gaps skip to the first valid post-gap minute; fall-back folds fire at the earliest occurrence only (no double-fire)
 - configurable missed-run policy (`run-once` or `skip`)
-- disabled-task and missed-interval regression coverage
+- disabled-task, missed-interval, cron+timezone, and DST regression coverage
+- backward-compatible TSV: legacy rows without cron/timezone columns load as UTC
 
-Remaining:
+Documented limitations / future work:
 
-- full cron grammar
+- The named-zone table is curated (the most common US/EU/AU/Asia zones). Other IANA zones must use the fixed-offset form (e.g. `UTC+05:30`) or be added to `src/scheduler/timezone.cpp`. Migrating to a full IANA tzdb (via `std::chrono::tzdb` once stable across MSVC and libstdc++, or via Howard Hinnant date/tz under an ADR) is deferred.
 
 ---
 
