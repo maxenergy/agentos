@@ -94,6 +94,31 @@ target_include_directories(agentos_core PUBLIC ${PROJECT_SOURCE_DIR}/src)
 if(WIN32)
     target_link_libraries(agentos_core PUBLIC Advapi32 Ws2_32)
 endif()
+if(APPLE)
+    # SecureTokenStore uses the macOS Security framework for the Keychain backend.
+    find_library(AGENTOS_SECURITY_FRAMEWORK Security REQUIRED)
+    find_library(AGENTOS_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    target_link_libraries(agentos_core PUBLIC
+        ${AGENTOS_SECURITY_FRAMEWORK}
+        ${AGENTOS_COREFOUNDATION_FRAMEWORK})
+endif()
+if(UNIX AND NOT APPLE)
+    # libsecret is optional: if present, SecureTokenStore enables the Linux
+    # Secret Service backend; otherwise we fall back to env-ref-only.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(AGENTOS_LIBSECRET QUIET libsecret-1)
+    endif()
+    if(AGENTOS_LIBSECRET_FOUND)
+        target_compile_definitions(agentos_core PUBLIC AGENTOS_HAVE_LIBSECRET=1)
+        target_include_directories(agentos_core PUBLIC ${AGENTOS_LIBSECRET_INCLUDE_DIRS})
+        target_link_libraries(agentos_core PUBLIC ${AGENTOS_LIBSECRET_LIBRARIES})
+        target_compile_options(agentos_core PUBLIC ${AGENTOS_LIBSECRET_CFLAGS_OTHER})
+        message(STATUS "AgentOS: libsecret found; enabling Linux Secret Service backend")
+    else()
+        message(STATUS "AgentOS: libsecret not found; SecureTokenStore will use env-ref-only fallback on Linux")
+    endif()
+endif()
 target_link_libraries(agentos PRIVATE agentos_core)
 
 enable_testing()

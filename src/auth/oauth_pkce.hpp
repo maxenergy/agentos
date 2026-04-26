@@ -29,6 +29,16 @@ struct OAuthProviderDefaults {
     std::string authorization_endpoint;
     std::string token_endpoint;
     std::vector<std::string> scopes;
+    // Origin of the supported state: "builtin" when the values are baked into
+    // the binary, "config" when overridden from the workspace TSV, "stub" when
+    // we know the provider but have no PKCE-eligible defaults yet, or empty
+    // when nothing is known.  Filled by OAuthDefaultsForProvider /
+    // EffectiveOAuthDefaultsForProvider; merge sites preserve it sensibly.
+    std::string origin;
+    // Optional human-readable note explaining why the defaults are stubbed or
+    // require manual configuration (e.g. "anthropic OAuth flow not yet
+    // documented for end users — supply endpoints manually").
+    std::string note;
 };
 
 struct OAuthPkceStart {
