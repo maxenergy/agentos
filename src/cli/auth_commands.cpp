@@ -142,7 +142,7 @@ void PrintAuthUsage() {
         << "  agentos auth credential-store\n"
         << "  agentos auth status [provider] [profile=name]\n"
         << "  agentos auth oauth-defaults [provider]\n"
-        << "  agentos auth oauth-config-validate\n"
+        << "  agentos auth oauth-config-validate [--all]\n"
         << "  agentos auth oauth-start <provider> client_id=ID redirect_uri=URL [authorization_endpoint=URL] [scopes=a,b] [profile=name] [open_browser=true]\n"
         << "  agentos auth oauth-login <provider> client_id=ID redirect_uri=URL [authorization_endpoint=URL] [token_endpoint=URL] [scopes=a,b] [profile=name] [set_default=true] [port=48177] [timeout_ms=120000] [open_browser=true]\n"
         << "  agentos auth oauth-callback callback_url=URL state=STATE\n"
@@ -262,10 +262,14 @@ OAuthProviderDefaults EffectiveOAuthDefaultsForProvider(
 
 void PrintOAuthDefaultsForProvider(const std::filesystem::path& workspace, const AuthProviderDescriptor& provider) {
     const auto defaults = EffectiveOAuthDefaultsForProvider(workspace, provider.provider);
+    const std::string origin = defaults.origin.empty()
+        ? (defaults.supported ? std::string("builtin") : std::string("none"))
+        : defaults.origin;
     std::cout
         << "oauth_defaults provider=" << provider.provider_name
         << " browser=" << (provider.browser_login_supported ? "true" : "false")
         << " supported=" << (defaults.supported ? "true" : "false")
+        << " origin=" << origin
         << " authorization_endpoint=\"" << defaults.authorization_endpoint << "\""
         << " token_endpoint=\"" << defaults.token_endpoint << "\""
         << " scopes=\"";
@@ -275,7 +279,11 @@ void PrintOAuthDefaultsForProvider(const std::filesystem::path& workspace, const
         }
         std::cout << defaults.scopes[index];
     }
-    std::cout << "\"\n";
+    std::cout << "\"";
+    if (!defaults.note.empty()) {
+        std::cout << " note=\"" << defaults.note << "\"";
+    }
+    std::cout << '\n';
 }
 
 int PrintOAuthDefaults(const AuthManager& auth_manager, const std::filesystem::path& workspace, const int argc, char* argv[]) {
@@ -303,57 +311,76 @@ int PrintOAuthDefaults(const AuthManager& auth_manager, const std::filesystem::p
     return any_supported ? 0 : 1;
 }
 
-int ValidateOAuthDefaultsConfig(const AuthManager& auth_manager, const std::filesystem::path& workspace) {
+int ValidateOAuthDefaultsConfig(const AuthManager& auth_manager, const std::filesystem::path& workspace, bool include_builtin_audit = false) {
     const auto path = OAuthDefaultsConfigPath(workspace);
     std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        std::cout
-            << "oauth_config file=\"" << path.string() << "\""
-            << " exists=false valid=true rows=0\n";
-        return 0;
-    }
-
     int row_count = 0;
     int diagnostic_count = 0;
-    std::string line;
-    int line_number = 0;
-    while (std::getline(input, line)) {
-        ++line_number;
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-        ++row_count;
+    bool exists = static_cast<bool>(input);
+    if (exists) {
+        std::string line;
+        int line_number = 0;
+        while (std::getline(input, line)) {
+            ++line_number;
+            if (line.empty() || line[0] == '#') {
+                continue;
+            }
+            ++row_count;
 
-        const auto fields = SplitTsvFields(line);
-        const auto provider = fields.empty() ? std::nullopt : ParseAuthProviderId(fields[0]);
-        std::string reason;
-        if (fields.size() < 3 || fields.size() > 4) {
-            reason = "expected fields: provider, authorization_endpoint, token_endpoint, optional scopes";
-        } else if (!provider.has_value()) {
-            reason = "unknown provider: " + (fields.empty() ? std::string{} : fields[0]);
-        } else if (!FindAuthProviderDescriptor(auth_manager, *provider).has_value()) {
-            reason = "provider is not registered: " + fields[0];
-        } else if (fields[1].empty()) {
-            reason = "authorization_endpoint is required";
-        } else if (fields[2].empty()) {
-            reason = "token_endpoint is required";
-        }
+            const auto fields = SplitTsvFields(line);
+            const auto provider = fields.empty() ? std::nullopt : ParseAuthProviderId(fields[0]);
+            std::string reason;
+            if (fields.size() < 3 || fields.size() > 4) {
+                reason = "expected fields: provider, authorization_endpoint, token_endpoint, optional scopes";
+            } else if (!provider.has_value()) {
+                reason = "unknown provider: " + (fields.empty() ? std::string{} : fields[0]);
+            } else if (!FindAuthProviderDescriptor(auth_manager, *provider).has_value()) {
+                reason = "provider is not registered: " + fields[0];
+            } else if (fields[1].empty()) {
+                reason = "authorization_endpoint is required";
+            } else if (fields[2].empty()) {
+                reason = "token_endpoint is required";
+            }
 
-        if (!reason.empty()) {
-            ++diagnostic_count;
-            std::cout
-                << "oauth_config_diagnostic line=" << line_number
-                << " reason=\"" << reason << "\"\n";
+            if (!reason.empty()) {
+                ++diagnostic_count;
+                std::cout
+                    << "oauth_config_diagnostic line=" << line_number
+                    << " reason=\"" << reason << "\"\n";
+            }
         }
     }
 
     std::cout
         << "oauth_config file=\"" << path.string() << "\""
-        << " exists=true"
+        << " exists=" << (exists ? "true" : "false")
         << " valid=" << (diagnostic_count == 0 ? "true" : "false")
         << " rows=" << row_count
         << " diagnostics=" << diagnostic_count
         << '\n';
+
+    if (include_builtin_audit) {
+        // Audit every registered provider.  Surfaces whether each provider has
+        // PKCE-eligible defaults (builtin), an override (config), or remains
+        // unsupported (stub/none).  This is informational, not fatal: stubbed
+        // providers are not counted as diagnostics.
+        for (const auto& provider : auth_manager.providers()) {
+            const auto defaults = EffectiveOAuthDefaultsForProvider(workspace, provider.provider);
+            const std::string origin = defaults.origin.empty()
+                ? (defaults.supported ? std::string("builtin") : std::string("none"))
+                : defaults.origin;
+            std::cout
+                << "oauth_config_provider provider=" << provider.provider_name
+                << " browser=" << (provider.browser_login_supported ? "true" : "false")
+                << " supported=" << (defaults.supported ? "true" : "false")
+                << " origin=" << origin;
+            if (!defaults.note.empty()) {
+                std::cout << " note=\"" << defaults.note << "\"";
+            }
+            std::cout << '\n';
+        }
+    }
+
     return diagnostic_count == 0 ? 0 : 1;
 }
 
@@ -457,7 +484,14 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
         }
 
         if (command == "oauth-config-validate") {
-            return ValidateOAuthDefaultsConfig(auth_manager, workspace);
+            bool include_builtin_audit = false;
+            for (int index = 3; index < argc; ++index) {
+                const std::string arg = argv[index];
+                if (arg == "--all" || arg == "all=true") {
+                    include_builtin_audit = true;
+                }
+            }
+            return ValidateOAuthDefaultsConfig(auth_manager, workspace, include_builtin_audit);
         }
 
         if (command == "oauth-start") {

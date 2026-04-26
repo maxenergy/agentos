@@ -500,6 +500,47 @@ OAuthProviderDefaults OAuthDefaultsForProvider(const AuthProviderId provider) {
                 "profile",
                 "https://www.googleapis.com/auth/cloud-platform",
             },
+            .origin = "builtin",
+            .note = "Google OAuth 2.0 PKCE endpoints (shared with the Gemini CLI).",
+        };
+    }
+    if (provider == AuthProviderId::openai) {
+        // OpenAI / Codex CLI use a non-public OAuth flow today; we surface a
+        // stub entry so `auth oauth-defaults` lists the provider and users can
+        // override via runtime/auth_oauth_providers.tsv when they have valid
+        // endpoints.
+        return {
+            .supported = false,
+            .authorization_endpoint = "",
+            .token_endpoint = "",
+            .scopes = {},
+            .origin = "stub",
+            .note = "OpenAI/Codex public PKCE endpoints are not yet documented; supply "
+                    "authorization_endpoint and token_endpoint via runtime/auth_oauth_providers.tsv "
+                    "or the oauth-start/oauth-login CLI flags.",
+        };
+    }
+    if (provider == AuthProviderId::anthropic) {
+        return {
+            .supported = false,
+            .authorization_endpoint = "",
+            .token_endpoint = "",
+            .scopes = {},
+            .origin = "stub",
+            .note = "Anthropic/Claude public PKCE endpoints are not yet documented; supply "
+                    "authorization_endpoint and token_endpoint via runtime/auth_oauth_providers.tsv "
+                    "or the oauth-start/oauth-login CLI flags.",
+        };
+    }
+    if (provider == AuthProviderId::qwen) {
+        return {
+            .supported = false,
+            .authorization_endpoint = "",
+            .token_endpoint = "",
+            .scopes = {},
+            .origin = "stub",
+            .note = "Alibaba Qwen API uses long-lived API keys; OAuth PKCE is not currently "
+                    "applicable. Use mode=api-key for production setups.",
         };
     }
     return {};
@@ -509,16 +550,28 @@ OAuthProviderDefaults MergeOAuthProviderDefaults(
     const OAuthProviderDefaults& base,
     const OAuthProviderDefaults& override_defaults) {
     auto merged = base;
+    bool overridden = false;
     if (!override_defaults.authorization_endpoint.empty()) {
         merged.authorization_endpoint = override_defaults.authorization_endpoint;
+        overridden = true;
     }
     if (!override_defaults.token_endpoint.empty()) {
         merged.token_endpoint = override_defaults.token_endpoint;
+        overridden = true;
     }
     if (!override_defaults.scopes.empty()) {
         merged.scopes = override_defaults.scopes;
+        overridden = true;
     }
     merged.supported = !merged.authorization_endpoint.empty() && !merged.token_endpoint.empty();
+    if (overridden) {
+        merged.origin = "config";
+        // Preserve the base note unless it was the stub note for an
+        // unsupported builtin entry — config typically resolves the gap.
+        if (merged.supported && base.origin == "stub") {
+            merged.note = "Endpoints supplied by runtime/auth_oauth_providers.tsv override.";
+        }
+    }
     return merged;
 }
 
@@ -550,6 +603,7 @@ std::map<AuthProviderId, OAuthProviderDefaults> LoadOAuthProviderDefaultsFromFil
         defaults.token_endpoint = fields.size() > 2 ? fields[2] : "";
         defaults.scopes = fields.size() > 3 ? SplitNonEmpty(fields[3], ',') : std::vector<std::string>{};
         defaults.supported = !defaults.authorization_endpoint.empty() && !defaults.token_endpoint.empty();
+        defaults.origin = "config";
         defaults_by_provider[*provider] = std::move(defaults);
     }
 
