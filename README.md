@@ -60,7 +60,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Gemini CLI OAuth / Google ADC passthrough：可导入已登录的 `gemini` CLI 浏览器 OAuth 会话，或通过 `gcloud auth application-default print-access-token` 使用 Google ADC，并通过 `target=gemini` 调用
 - CLI session passthrough：Codex CLI / Claude CLI 登录态探测与导入
 - API key profile：通过环境变量引用保存，不落明文 key
-- Credential Store：Windows 使用 Credential Manager 存储托管 token；其他平台当前为 `env-ref-only` dev fallback
+- Credential Store：通过 `ISecureTokenBackend` 抽象选择平台后端 — Windows = Credential Manager (`wincred:`), macOS = Keychain via Security framework (`keychain:`), Linux = Secret Service via libsecret (`secret-service:`，可选 CMake 依赖)；缺 libsecret 的 Linux 主机退化为 `env-ref-only` dev fallback；测试可注入 `MakeInMemoryBackendForTesting()` 后端
 - Workspace auth profile：`runtime/auth_profiles.tsv` 保存 provider 默认 profile 映射
 - Identity / Trust：IdentityManager、远程触发身份字段、PairingManager、PairingInviteStore、TrustPolicy、AllowlistStore、RoleCatalog
 - Remote Trigger Policy：远程任务默认拒绝，必须先 pairing 并具备 `task.submit`
@@ -186,6 +186,9 @@ build\agentos.exe auth providers
 build\agentos.exe auth profiles qwen
 build\agentos.exe auth credential-store
 build\agentos.exe auth oauth-config-validate
+build\agentos.exe auth oauth-config-validate --all
+build\agentos.exe auth oauth-defaults
+build\agentos.exe auth oauth-defaults anthropic
 build\agentos.exe auth oauth-start gemini client_id=CLIENT_ID redirect_uri=http://127.0.0.1:48177/callback
 build\agentos.exe auth oauth-login gemini client_id=CLIENT_ID redirect_uri=http://127.0.0.1:48177/callback port=48177 open_browser=true profile=default set_default=true
 build\agentos.exe auth oauth-callback callback_url=http://127.0.0.1:48177/callback?code=CODE^&state=STATE state=STATE
@@ -211,7 +214,7 @@ build\agentos.exe run analysis target=qwen model=qwen-plus objective=Explain_the
 build\agentos.exe run analysis target=codex_cli objective=Review_the_project_structure
 ```
 
-`runtime/auth_oauth_providers.tsv` 可覆盖或补充 OAuth defaults，并可用 `auth oauth-config-validate` 校验；字段为 `provider<TAB>authorization_endpoint<TAB>token_endpoint<TAB>scopes`，例如：
+`runtime/auth_oauth_providers.tsv` 可覆盖或补充 OAuth defaults，并可用 `auth oauth-config-validate [--all]` 校验（`--all` 还会输出每个已注册 provider 的 builtin/config/stub 状态与提示信息）；字段为 `provider<TAB>authorization_endpoint<TAB>token_endpoint<TAB>scopes`，例如：
 
 ```text
 gemini	https://accounts.example.test/custom-auth	https://accounts.example.test/custom-token	openid,email

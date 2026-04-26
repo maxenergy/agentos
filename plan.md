@@ -85,13 +85,17 @@ Current review: AgentOS is a runnable local MVP, not a production-complete syste
 
 - [x] Add a credential-store abstraction that can report and select `env-ref-only` or Windows Credential Manager backends.
 - [x] Implement a Windows Credential Manager backend first, with read/write/delete/status tests guarded for Windows.
-- [ ] Add macOS Keychain and Linux libsecret backends when those platforms become target deployment environments.
+- [x] Add macOS Keychain backend via the Security framework (generic password items) selected automatically on `__APPLE__`.
+- [x] Add Linux Secret Service backend via libsecret (D-Bus) as an optional CMake dependency, falling back to env-ref-only when libsecret is not installed.
+- [x] Refactor `SecureTokenStore` around an `ISecureTokenBackend` abstraction with a test-only in-memory backend so unit tests never reach the real keychain.
 - [x] Add native OAuth PKCE scaffolding behind provider capability flags, including state/verifier generation, authorization URL output, callback URL parsing/validation, one-shot loopback callback capture, authorization-code and refresh-token request construction, curl-backed exchange helpers, token response parsing, and managed AuthSession persistence helpers.
 - [x] Add a scriptable callback-to-session OAuth completion bridge through `auth oauth-complete`.
 - [x] Implement parameterized provider adapter native login/refresh orchestration for callers that provide callback/token endpoint/client configuration.
 - [x] Add Gemini provider-specific OAuth defaults for Google authorization/token endpoints and default scopes.
 - [x] Add a single-command OAuth login bridge that orchestrates start/listen/token-exchange/session persistence for providers with OAuth defaults or explicit endpoints.
-- [ ] Add broader provider-specific OAuth discovery and fuller multi-provider product login UX.
+- [x] Broaden OAuth provider discovery: stub entries for `openai` / `anthropic` / `qwen` with `origin` and `note` metadata, surfaced via `auth oauth-defaults` and `auth oauth-config-validate --all` so users can see at a glance which providers ship builtin defaults vs. require workspace overrides.
+- [ ] Document and ship public PKCE endpoints for OpenAI / Anthropic once the providers expose stable customer flows (currently registered as `stub` defaults).
+- [ ] Polish multi-provider interactive login UX (single-binary CLI prompt with per-provider hints sourced from the new origin/note metadata).
 - [x] Update `AUTH_PRD.md`, `AUTH_DESIGN.md`, and README examples after native credential storage and OAuth flows exist.
 
 ### Phase K: Plugin Long-Running Lifecycle
@@ -455,3 +459,5 @@ Current review: AgentOS is a runnable local MVP, not a production-complete syste
 - 2026-04-25: Added `memory update-workflow` for validated in-place edits to stored workflow names, trigger, steps, enabled state, and applicability conditions, including clearing list-valued conditions.
 - 2026-04-25: Added `memory clone-workflow` to copy stored workflow definitions under a new name for further editing.
 - 2026-04-25: Added filters to `memory stored-workflows` for enabled state, trigger task type, source, and name substring.
+- 2026-04-26: Refactored `SecureTokenStore` around an `ISecureTokenBackend` abstraction and added macOS Keychain (Security framework) and Linux Secret Service (libsecret, optional CMake dependency) backends with an in-memory test backend so unit tests never touch the real keychain. `auth credential-store` now reports `windows-credential-manager` / `macos-keychain` / `linux-secret-service` / `env-ref-only` per platform.
+- 2026-04-26: Broadened OAuth provider discovery: added `origin` (builtin/config/stub/none) and `note` metadata to `OAuthProviderDefaults`, registered stub entries for `openai` / `anthropic` / `qwen`, and extended `auth oauth-config-validate` with `--all` to enumerate every registered provider in one shot.

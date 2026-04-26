@@ -61,7 +61,16 @@ AuthManager
 
 优先级：
 1. 系统 Keychain / Credential Store
-2. 本地加密文件
+   - Windows: Credential Manager (`wincred:` ref 前缀)
+   - macOS: Keychain via Security framework, generic password items (`keychain:` ref 前缀)
+   - Linux: Secret Service via libsecret/D-Bus (`secret-service:` ref 前缀, optional dependency)
+2. `env:` 引用（始终可用；不持久化明文）
+3. `env-ref-only` dev fallback（无系统 keychain 时）
+
+实现细节：
+- 内部使用 `ISecureTokenBackend` 抽象，平台特定后端在编译期通过 `_WIN32` / `__APPLE__` / `AGENTOS_HAVE_LIBSECRET` 选择。
+- 测试通过 `SecureTokenStore::MakeInMemoryBackendForTesting()` 注入 in-memory 后端，CI 中绝不触达真实 keychain。
+- `read_ref` 永远走 `env:` 解析路径或当前后端，不会回退到 plaintext 文件。
 
 ### 2.5 CredentialBroker
 对上层统一暴露凭据获取接口：
@@ -362,7 +371,7 @@ agentos auth logout gemini
 - `CredentialBroker`
 - OpenAI / Anthropic / Gemini / Qwen provider adapter
 - API key env-ref 模式
-- credential store status 明确标记当前后端；Windows 使用 Credential Manager，其他平台仍为 `env-ref-only` dev fallback
+- credential store status 明确标记当前后端：Windows = Credential Manager，macOS = Keychain (Security framework)，Linux = Secret Service via libsecret（可选依赖；缺失时回退至 `env-ref-only` dev fallback）
 - workspace default profile mapping (`runtime/auth_profiles.tsv`)
 - profile listing through `auth profiles [provider]`
 - `set_default=true` on login / OAuth completion commands for one-step default profile selection
@@ -373,8 +382,8 @@ agentos auth logout gemini
 
 关键偏差：
 
-- `SecureTokenStore` 在 Windows 上可写入/读取/删除 Windows Credential Manager 托管 token，同时继续支持 env ref；非 Windows 平台当前仍为 `env-ref-only` dev fallback，CLI 会通过 `auth credential-store` 明确标记当前后端。
-- 原生 OAuth 的 PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、single-command `oauth-login`、`oauth-defaults` provider discovery、repo-local OAuth defaults 覆盖、`oauth-config-validate` 配置诊断、`oauth-start open_browser=true` 系统默认浏览器启动、Gemini Google OAuth 默认 endpoint/scope，以及 provider adapter 在给定 callback/token 参数时的原生 login/refresh 编排已落地；剩余主要是更多 provider discovery、完整多 provider 交互 UX 与非 Windows 系统 credential store。Google ADC 已支持通过 gcloud passthrough mint bearer token。
+- `SecureTokenStore` 通过 `ISecureTokenBackend` 抽象为多平台后端：Windows Credential Manager（`wincred:`）、macOS Keychain（`keychain:`）、Linux Secret Service via libsecret（`secret-service:`，可选依赖）。所有后端继续支持 `env:` 引用；缺失系统 keychain 时退化为 `env-ref-only` dev fallback。`auth credential-store` 命令打印当前后端标识，便于 ops 验证生产环境 token 落点。`SecureTokenStore::MakeInMemoryBackendForTesting()` 提供单元测试用的内存后端，CI 中绝不触达真实 keychain。
+- 原生 OAuth 的 PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、single-command `oauth-login`、`oauth-defaults` provider discovery（含 origin/note 元数据）、repo-local OAuth defaults 覆盖、`oauth-config-validate [--all]` 配置诊断与全 provider 审计、`oauth-start open_browser=true` 系统默认浏览器启动、Gemini Google OAuth 默认 endpoint/scope，以及 provider adapter 在给定 callback/token 参数时的原生 login/refresh 编排已落地。`OAuthProviderDefaults` 现在包含 `origin`(builtin/config/stub/none) 与 `note` 字段，`openai`/`anthropic`/`qwen` 已注册为 `stub` provider 并在 CLI 中输出说明文本，便于发现仍待填写公开 endpoints 的 provider。Google ADC 已支持通过 gcloud passthrough mint bearer token。
 - workspace profile 选择已支持 provider 默认 profile 映射、`auth profiles [provider]` profile 发现，以及 login / OAuth completion 的 `set_default=true` 一步式默认 profile 选择；更完整的多账号策略仍需补齐。
 - CLI session passthrough 只做探测与导入，不直接读取或复制外部 CLI token。
 
