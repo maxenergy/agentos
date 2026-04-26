@@ -22,6 +22,12 @@ struct CliSpec {
     int timeout_ms = 3000;
     std::size_t output_limit_bytes = 1024 * 1024;
     std::vector<std::string> env_allowlist;
+    std::size_t memory_limit_bytes = 0;
+    int max_processes = 0;
+    int cpu_time_limit_seconds = 0;
+    int file_descriptor_limit = 0;
+    std::filesystem::path source_file;
+    int source_line_number = 0;
 };
 
 struct CliRunRequest {

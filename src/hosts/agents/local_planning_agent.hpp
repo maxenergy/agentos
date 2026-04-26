@@ -3,10 +3,13 @@
 #include "core/models.hpp"
 
 #include <atomic>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 
 namespace agentos {
 
-class MockPlanningAgent final : public IAgentAdapter {
+class LocalPlanningAgent final : public IAgentAdapter {
 public:
     AgentProfile profile() const override;
     bool healthy() const override;
@@ -17,8 +20,12 @@ public:
     bool cancel(const std::string& task_id) override;
 
 private:
+    [[nodiscard]] bool is_cancelled(const std::string& task_id) const;
+
     std::atomic<int> session_counter_{0};
+    mutable std::mutex mutex_;
+    std::unordered_set<std::string> active_sessions_;
+    std::unordered_set<std::string> cancelled_tasks_;
 };
 
 }  // namespace agentos
-

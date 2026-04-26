@@ -2,6 +2,7 @@
 
 #include "utils/command_utils.hpp"
 #include "utils/path_utils.hpp"
+#include "utils/secret_redaction.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -19,6 +20,15 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace agentos {
@@ -32,7 +42,7 @@ int ElapsedMs(const std::chrono::steady_clock::time_point started_at) {
 
 bool ContainsWhitespaceOrQuote(const std::string& value) {
     return value.empty() || std::any_of(value.begin(), value.end(), [](const unsigned char ch) {
-        return std::isspace(ch) != 0 || ch == '"';
+        return std::isspace(ch) != 0 || ch == '"' || ch == '&' || ch == '<' || ch == '>' || ch == '|' || ch == '^';
     });
 }
 
@@ -45,6 +55,14 @@ std::string BuildCommandLine(const std::string& binary, const std::vector<std::s
     }
 
     return command.str();
+}
+
+CliRunResult RedactCliRunResult(CliRunResult result, const StringMap& arguments) {
+    result.command_display = RedactSensitiveText(std::move(result.command_display), arguments);
+    result.stdout_text = RedactSensitiveText(std::move(result.stdout_text), arguments);
+    result.stderr_text = RedactSensitiveText(std::move(result.stderr_text), arguments);
+    result.error_message = RedactSensitiveText(std::move(result.error_message), arguments);
+    return result;
 }
 
 std::string ClipOutput(const std::string& value, const std::size_t limit) {
@@ -154,6 +172,43 @@ void ReadPipeToString(HANDLE read_handle, std::string& output, const std::size_t
     }
 }
 
+void CloseIfOpen(HANDLE handle) {
+    if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle);
+    }
+}
+
+bool CliSpecUsesWindowsJobLimits(const CliSpec& spec) {
+    return spec.memory_limit_bytes > 0 || spec.max_processes > 0 || spec.cpu_time_limit_seconds > 0;
+}
+
+bool ConfigureJobLimits(const CliSpec& spec, HANDLE job_handle) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+    if (spec.memory_limit_bytes > 0) {
+        limits.ProcessMemoryLimit = static_cast<SIZE_T>(spec.memory_limit_bytes);
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    }
+
+    if (spec.max_processes > 0) {
+        limits.BasicLimitInformation.ActiveProcessLimit = static_cast<DWORD>(spec.max_processes);
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+    }
+
+    if (spec.cpu_time_limit_seconds > 0) {
+        limits.BasicLimitInformation.PerProcessUserTimeLimit.QuadPart =
+            static_cast<LONGLONG>(spec.cpu_time_limit_seconds) * 10'000'000LL;
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_TIME;
+    }
+
+    return SetInformationJobObject(
+               job_handle,
+               JobObjectExtendedLimitInformation,
+               &limits,
+               static_cast<DWORD>(sizeof(limits))) != FALSE;
+}
+
 CliRunResult RunProcessWindows(
     const CliRunRequest& request,
     const std::filesystem::path& cwd,
@@ -168,6 +223,7 @@ CliRunResult RunProcessWindows(
     HANDLE stdout_write = nullptr;
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
+    HANDLE stdin_read = nullptr;
 
     if (!CreatePipe(&stdout_read, &stdout_write, &security_attributes, 0) ||
         !CreatePipe(&stderr_read, &stderr_write, &security_attributes, 0)) {
@@ -181,13 +237,24 @@ CliRunResult RunProcessWindows(
 
     SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+    stdin_read = CreateFileA(
+        "NUL",
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &security_attributes,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (stdin_read == INVALID_HANDLE_VALUE) {
+        stdin_read = nullptr;
+    }
 
     STARTUPINFOA startup_info{};
     startup_info.cb = sizeof(STARTUPINFOA);
     startup_info.dwFlags = STARTF_USESTDHANDLES;
     startup_info.hStdOutput = stdout_write;
     startup_info.hStdError = stderr_write;
-    startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup_info.hStdInput = stdin_read != INVALID_HANDLE_VALUE ? stdin_read : GetStdHandle(STD_INPUT_HANDLE);
 
     PROCESS_INFORMATION process_info{};
     auto command_display = BuildCommandLine(request.spec.binary, args);
@@ -195,6 +262,7 @@ CliRunResult RunProcessWindows(
     auto mutable_command_line = process_command_line;
     auto cwd_string = cwd.string();
     auto environment_block = BuildWindowsEnvironmentBlock(request.spec);
+    DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
 
     const BOOL created = CreateProcessA(
         nullptr,
@@ -202,7 +270,7 @@ CliRunResult RunProcessWindows(
         nullptr,
         nullptr,
         TRUE,
-        CREATE_NO_WINDOW,
+        creation_flags,
         environment_block.data(),
         cwd_string.c_str(),
         &startup_info,
@@ -212,14 +280,52 @@ CliRunResult RunProcessWindows(
     CloseHandle(stderr_write);
 
     if (!created) {
-        CloseHandle(stdout_read);
-        CloseHandle(stderr_read);
+        CloseIfOpen(stdout_read);
+        CloseIfOpen(stderr_read);
+        CloseIfOpen(stdin_read);
         return {
             .success = false,
             .duration_ms = ElapsedMs(started_at),
             .command_display = command_display,
             .error_code = "ProcessStartFailed",
             .error_message = "failed to start process",
+        };
+    }
+
+    CloseIfOpen(stdin_read);
+    HANDLE job_handle = CreateJobObjectA(nullptr, nullptr);
+    if (job_handle == nullptr || !ConfigureJobLimits(request.spec, job_handle) ||
+        !AssignProcessToJobObject(job_handle, process_info.hProcess)) {
+        TerminateProcess(process_info.hProcess, 125);
+        WaitForSingleObject(process_info.hProcess, INFINITE);
+        CloseIfOpen(job_handle);
+        CloseIfOpen(process_info.hThread);
+        CloseIfOpen(process_info.hProcess);
+        CloseIfOpen(stdout_read);
+        CloseIfOpen(stderr_read);
+        return {
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .command_display = command_display,
+            .error_code = "ResourceLimitSetupFailed",
+            .error_message = "failed to apply Windows job object controls",
+        };
+    }
+
+    if (ResumeThread(process_info.hThread) == static_cast<DWORD>(-1)) {
+        TerminateProcess(process_info.hProcess, 125);
+        WaitForSingleObject(process_info.hProcess, INFINITE);
+        CloseIfOpen(job_handle);
+        CloseIfOpen(process_info.hThread);
+        CloseIfOpen(process_info.hProcess);
+        CloseIfOpen(stdout_read);
+        CloseIfOpen(stderr_read);
+        return {
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .command_display = command_display,
+            .error_code = "ProcessStartFailed",
+            .error_message = "failed to resume process after applying Windows job object controls",
         };
     }
 
@@ -232,15 +338,15 @@ CliRunResult RunProcessWindows(
     bool timed_out = false;
     if (wait_result == WAIT_TIMEOUT) {
         timed_out = true;
-        TerminateProcess(process_info.hProcess, 124);
+        TerminateJobObject(job_handle, 124);
         WaitForSingleObject(process_info.hProcess, INFINITE);
     }
 
     DWORD exit_code = 0;
     GetExitCodeProcess(process_info.hProcess, &exit_code);
 
-    CloseHandle(process_info.hThread);
-    CloseHandle(process_info.hProcess);
+    CloseIfOpen(process_info.hThread);
+    CloseIfOpen(process_info.hProcess);
 
     if (stdout_thread.joinable()) {
         stdout_thread.join();
@@ -249,8 +355,9 @@ CliRunResult RunProcessWindows(
         stderr_thread.join();
     }
 
-    CloseHandle(stdout_read);
-    CloseHandle(stderr_read);
+    CloseIfOpen(stdout_read);
+    CloseIfOpen(stderr_read);
+    CloseIfOpen(job_handle);
 
     return {
         .success = !timed_out && exit_code == 0,
@@ -267,11 +374,10 @@ CliRunResult RunProcessWindows(
 
 #else
 
-std::string BuildPortableEnvironmentPrefix(const CliSpec& spec) {
-    std::ostringstream output;
-    output << "env -i";
-
+std::vector<std::string> BuildPortableEnvironmentEntries(const CliSpec& spec) {
+    std::vector<std::string> entries;
     std::unordered_set<std::string> seen;
+
     for (const auto& name : EffectiveEnvironmentAllowlist(spec)) {
         if (name.empty() || seen.contains(name)) {
             continue;
@@ -279,11 +385,90 @@ std::string BuildPortableEnvironmentPrefix(const CliSpec& spec) {
         seen.insert(name);
 
         if (const auto value = ReadEnvironmentVariable(name); value.has_value()) {
-            output << ' ' << QuoteCommandForDisplay(name + "=" + *value);
+            entries.push_back(name + "=" + *value);
         }
     }
 
-    return output.str();
+    return entries;
+}
+
+std::vector<char*> BuildCStringVector(std::vector<std::string>& values) {
+    std::vector<char*> output;
+    output.reserve(values.size() + 1);
+    for (auto& value : values) {
+        output.push_back(value.data());
+    }
+    output.push_back(nullptr);
+    return output;
+}
+
+bool SetNonBlocking(const int fd) {
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        return false;
+    }
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
+}
+
+void AppendAvailablePipeOutput(const int fd, std::string& output, const std::size_t limit) {
+    char buffer[4096];
+    while (true) {
+        const auto bytes_read = read(fd, buffer, sizeof(buffer));
+        if (bytes_read > 0) {
+            if (output.size() < limit) {
+                const auto remaining = limit - output.size();
+                output.append(buffer, std::min<std::size_t>(static_cast<std::size_t>(bytes_read), remaining));
+            }
+            continue;
+        }
+
+        if (bytes_read == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return;
+        }
+        return;
+    }
+}
+
+void ApplyPortableResourceLimits(const CliSpec& spec) {
+    if (spec.memory_limit_bytes > 0) {
+        const rlim_t memory_limit = static_cast<rlim_t>(spec.memory_limit_bytes);
+        const struct rlimit limit{memory_limit, memory_limit};
+        (void)setrlimit(RLIMIT_AS, &limit);
+    }
+
+#ifdef RLIMIT_NPROC
+    if (spec.max_processes > 0) {
+        const rlim_t process_limit = static_cast<rlim_t>(spec.max_processes);
+        const struct rlimit limit{process_limit, process_limit};
+        (void)setrlimit(RLIMIT_NPROC, &limit);
+    }
+#endif
+
+#ifdef RLIMIT_CPU
+    if (spec.cpu_time_limit_seconds > 0) {
+        const rlim_t cpu_limit = static_cast<rlim_t>(spec.cpu_time_limit_seconds);
+        const struct rlimit limit{cpu_limit, cpu_limit};
+        (void)setrlimit(RLIMIT_CPU, &limit);
+    }
+#endif
+
+#ifdef RLIMIT_NOFILE
+    if (spec.file_descriptor_limit > 0) {
+        const rlim_t descriptor_limit = static_cast<rlim_t>(spec.file_descriptor_limit);
+        const struct rlimit limit{descriptor_limit, descriptor_limit};
+        (void)setrlimit(RLIMIT_NOFILE, &limit);
+    }
+#endif
+}
+
+int PortableExitCodeFromStatus(const int status) {
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return status;
 }
 
 CliRunResult RunProcessPortable(
@@ -291,38 +476,117 @@ CliRunResult RunProcessPortable(
     const std::filesystem::path& cwd,
     const std::vector<std::string>& args) {
     const auto started_at = std::chrono::steady_clock::now();
-    const auto command_line = "cd " + QuoteCommandForDisplay(cwd.string()) + " && " +
-                              BuildPortableEnvironmentPrefix(request.spec) + " " +
-                              BuildCommandLine(request.spec.binary, args) + " 2>&1";
+    auto command_display = BuildCommandLine(request.spec.binary, args);
+    const auto resolved_binary = ResolveCommandPath(request.spec.binary).value_or(std::filesystem::path(request.spec.binary));
 
-    FILE* pipe = popen(command_line.c_str(), "r");
-    if (!pipe) {
+    int pipe_fds[2] = {-1, -1};
+    if (pipe(pipe_fds) != 0) {
         return {
             .success = false,
             .duration_ms = ElapsedMs(started_at),
-            .command_display = command_line,
+            .command_display = command_display,
+            .error_code = "PipeCreateFailed",
+            .error_message = "failed to create process output pipe",
+        };
+    }
+    if (!SetNonBlocking(pipe_fds[0])) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return {
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .command_display = command_display,
             .error_code = "ProcessStartFailed",
-            .error_message = "failed to start process",
+            .error_message = "failed to configure process output pipe",
         };
     }
 
-    std::string output;
-    char buffer[4096];
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        if (output.size() < request.spec.output_limit_bytes) {
-            output.append(buffer);
-        }
+    auto arg_values = args;
+    arg_values.insert(arg_values.begin(), request.spec.binary);
+    auto argv = BuildCStringVector(arg_values);
+    auto env_entries = BuildPortableEnvironmentEntries(request.spec);
+    auto envp = BuildCStringVector(env_entries);
+
+    const pid_t child_pid = fork();
+    if (child_pid == -1) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return {
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .command_display = command_display,
+            .error_code = "ProcessStartFailed",
+            .error_message = std::string("failed to fork process: ") + std::strerror(errno),
+        };
     }
 
-    const int status = pclose(pipe);
+    if (child_pid == 0) {
+        (void)setpgid(0, 0);
+        close(pipe_fds[0]);
+        (void)dup2(pipe_fds[1], STDOUT_FILENO);
+        (void)dup2(pipe_fds[1], STDERR_FILENO);
+        close(pipe_fds[1]);
+        if (const int dev_null = open("/dev/null", O_RDONLY); dev_null != -1) {
+            (void)dup2(dev_null, STDIN_FILENO);
+            close(dev_null);
+        }
+
+        if (chdir(cwd.string().c_str()) != 0) {
+            _exit(126);
+        }
+
+        ApplyPortableResourceLimits(request.spec);
+        execve(resolved_binary.string().c_str(), argv.data(), envp.data());
+        _exit(127);
+    }
+
+    (void)setpgid(child_pid, child_pid);
+    close(pipe_fds[1]);
+
+    std::string output;
+    int status = 0;
+    bool exited = false;
+    bool timed_out = false;
+
+    while (!exited) {
+        AppendAvailablePipeOutput(pipe_fds[0], output, request.spec.output_limit_bytes);
+
+        const pid_t wait_result = waitpid(child_pid, &status, WNOHANG);
+        if (wait_result == child_pid) {
+            exited = true;
+            break;
+        }
+
+        if (wait_result == -1) {
+            status = 127;
+            exited = true;
+            break;
+        }
+
+        if (ElapsedMs(started_at) >= request.spec.timeout_ms) {
+            timed_out = true;
+            kill(-child_pid, SIGKILL);
+            (void)waitpid(child_pid, &status, 0);
+            exited = true;
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    AppendAvailablePipeOutput(pipe_fds[0], output, request.spec.output_limit_bytes);
+    close(pipe_fds[0]);
+
+    const int exit_code = timed_out ? 124 : PortableExitCodeFromStatus(status);
     return {
-        .success = status == 0,
-        .exit_code = status,
+        .success = !timed_out && exit_code == 0,
+        .exit_code = exit_code,
+        .timed_out = timed_out,
         .duration_ms = ElapsedMs(started_at),
-        .command_display = command_line,
+        .command_display = command_display,
         .stdout_text = ClipOutput(output, request.spec.output_limit_bytes),
-        .error_code = status == 0 ? "" : "ExternalProcessFailed",
-        .error_message = status == 0 ? "" : "CLI command exited with a non-zero status",
+        .error_code = timed_out ? "Timeout" : (exit_code == 0 ? "" : "ExternalProcessFailed"),
+        .error_message = timed_out ? "CLI command timed out" : (exit_code == 0 ? "" : "CLI command exited with a non-zero status"),
     };
 }
 
@@ -412,9 +676,9 @@ CliRunResult CliHost::run(const CliRunRequest& request) const {
         const auto args = RenderArgs(request.spec, request.arguments);
 
 #ifdef _WIN32
-        return RunProcessWindows(request, cwd, args);
+        return RedactCliRunResult(RunProcessWindows(request, cwd, args), request.arguments);
 #else
-        return RunProcessPortable(request, cwd, args);
+        return RedactCliRunResult(RunProcessPortable(request, cwd, args), request.arguments);
 #endif
     } catch (const std::exception& error) {
         return {

@@ -121,12 +121,12 @@ src/
 优先写：
 - Registry 测试
 - Router 测试
-- Auth adapter 的 mock 测试
+- Auth adapter 的 fixture 测试
 - Skill 执行的单测
 - Workflow 生成逻辑测试
 
 对外部 CLI/Agent：
-- 尽量使用 mock adapter 做主流程测试
+- 尽量使用可控 fixture adapter 做主流程测试
 - 真实集成测试独立出来
 
 ---

@@ -1,5 +1,7 @@
 #include "memory/memory_manager.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <fstream>
 #include <algorithm>
 #include <map>
@@ -199,6 +201,10 @@ const LessonStore& MemoryManager::lesson_store() const {
     return lesson_store_;
 }
 
+const std::filesystem::path& MemoryManager::storage_dir() const {
+    return storage_dir_;
+}
+
 std::vector<WorkflowCandidate> MemoryManager::workflow_candidates() const {
     std::unordered_map<std::string, WorkflowScoreAccumulator> stats_by_task_type;
 
@@ -269,7 +275,7 @@ void MemoryManager::refresh_workflow_store() const {
         return;
     }
 
-    std::ofstream output(storage_dir_ / "workflow_candidates.tsv", std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& workflow : workflow_candidates()) {
         std::ostringstream steps;
         for (std::size_t index = 0; index < workflow.ordered_steps.size(); ++index) {
@@ -291,6 +297,8 @@ void MemoryManager::refresh_workflow_store() const {
             << workflow.score
             << '\n';
     }
+
+    WriteFileAtomically(storage_dir_ / "workflow_candidates.tsv", output.str());
 }
 
 void MemoryManager::load_persisted_logs() {
@@ -375,7 +383,7 @@ void MemoryManager::append_task_log(const TaskRequest& task, const TaskRunResult
         return;
     }
 
-    std::ofstream output(storage_dir_ / "task_log.tsv", std::ios::binary | std::ios::app);
+    std::ostringstream output;
     output
         << EncodeField(task.task_id) << kDelimiter
         << EncodeField(task.task_type) << kDelimiter
@@ -387,8 +395,8 @@ void MemoryManager::append_task_log(const TaskRequest& task, const TaskRunResult
         << EncodeField(route_target_kind_name(result.route_kind)) << kDelimiter
         << EncodeField(result.route_target) << kDelimiter
         << EncodeField(result.error_code) << kDelimiter
-        << EncodeField(result.error_message)
-        << '\n';
+        << EncodeField(result.error_message);
+    AppendLineToFile(storage_dir_ / "task_log.tsv", output.str());
 }
 
 void MemoryManager::append_step_log(const TaskRequest& task, const TaskStepRecord& step) const {
@@ -396,7 +404,7 @@ void MemoryManager::append_step_log(const TaskRequest& task, const TaskStepRecor
         return;
     }
 
-    std::ofstream output(storage_dir_ / "step_log.tsv", std::ios::binary | std::ios::app);
+    std::ostringstream output;
     output
         << EncodeField(task.task_id) << kDelimiter
         << EncodeField(route_target_kind_name(step.target_kind)) << kDelimiter
@@ -406,8 +414,54 @@ void MemoryManager::append_step_log(const TaskRequest& task, const TaskStepRecor
         << step.estimated_cost << kDelimiter
         << EncodeField(step.summary) << kDelimiter
         << EncodeField(step.error_code) << kDelimiter
-        << EncodeField(step.error_message)
-        << '\n';
+        << EncodeField(step.error_message);
+    AppendLineToFile(storage_dir_ / "step_log.tsv", output.str());
+}
+
+void MemoryManager::compact_logs() const {
+    if (storage_dir_.empty()) {
+        return;
+    }
+
+    {
+        std::ostringstream output;
+        for (const auto& task : tasks_) {
+            output
+                << EncodeField(task.task_id) << kDelimiter
+                << EncodeField(task.task_type) << kDelimiter
+                << EncodeField(task.objective) << kDelimiter
+                << EncodeField(task.idempotency_key) << kDelimiter
+                << (task.success ? "1" : "0") << kDelimiter
+                << (task.from_cache ? "1" : "0") << kDelimiter
+                << task.duration_ms << kDelimiter
+                << EncodeField(task.steps.empty() ? "none" : route_target_kind_name(task.steps.front().target_kind)) << kDelimiter
+                << EncodeField(task.steps.empty() ? "" : task.steps.front().target_name) << kDelimiter
+                << EncodeField(task.steps.empty() ? "" : task.steps.front().error_code) << kDelimiter
+                << EncodeField(task.steps.empty() ? "" : task.steps.front().error_message)
+                << '\n';
+        }
+        WriteFileAtomically(storage_dir_ / "task_log.tsv", output.str());
+    }
+
+    {
+        std::ostringstream output;
+        for (const auto& task : tasks_) {
+            for (const auto& step : task.steps) {
+                output
+                    << EncodeField(task.task_id) << kDelimiter
+                    << EncodeField(route_target_kind_name(step.target_kind)) << kDelimiter
+                    << EncodeField(step.target_name) << kDelimiter
+                    << (step.success ? "1" : "0") << kDelimiter
+                    << step.duration_ms << kDelimiter
+                    << step.estimated_cost << kDelimiter
+                    << EncodeField(step.summary) << kDelimiter
+                    << EncodeField(step.error_code) << kDelimiter
+                    << EncodeField(step.error_message)
+                    << '\n';
+            }
+        }
+        WriteFileAtomically(storage_dir_ / "step_log.tsv", output.str());
+    }
 }
 
 void MemoryManager::flush_stats() const {
@@ -416,7 +470,7 @@ void MemoryManager::flush_stats() const {
     }
 
     {
-        std::ofstream output(storage_dir_ / "skill_stats.tsv", std::ios::binary | std::ios::trunc);
+        std::ostringstream output;
         for (const auto& [name, stats] : skill_stats_) {
             output
                 << EncodeField(name) << kDelimiter
@@ -427,10 +481,11 @@ void MemoryManager::flush_stats() const {
                 << stats.acceptance_rate
                 << '\n';
         }
+        WriteFileAtomically(storage_dir_ / "skill_stats.tsv", output.str());
     }
 
     {
-        std::ofstream output(storage_dir_ / "agent_stats.tsv", std::ios::binary | std::ios::trunc);
+        std::ostringstream output;
         for (const auto& [name, stats] : agent_stats_) {
             output
                 << EncodeField(name) << kDelimiter
@@ -443,6 +498,7 @@ void MemoryManager::flush_stats() const {
                 << stats.patch_accept_rate
                 << '\n';
         }
+        WriteFileAtomically(storage_dir_ / "agent_stats.tsv", output.str());
     }
 }
 

@@ -129,6 +129,8 @@ Skill 分为四类：
 
 统一通过 JSON-RPC / stdio / gRPC 协议接入。
 
+当前实现已有 MVP 协议入口：`runtime/plugin_specs/*.tsv` 与 `runtime/plugin_specs/*.json` 可声明 repo-local `plugin.v1` / `stdio-json-v0` / `json-rpc-v0` 插件，启动时注册为 Skill，并透传底层 CLI 的资源限制字段。`stdio-json-v0` 校验 JSON-object stdout；`json-rpc-v0` 校验 JSON-RPC 2.0 response 并抽取 JSON-object `result`。`agentos plugins health` 支持 binary 可用性检查、可选 `health_args_template` 探针，以及 persistent JSON-RPC lifecycle round-trip；`agentos plugins inspect name=<plugin> [health=true]` 可脚本化查看单个 manifest 的协议、权限、参数、资源限制、sandbox、lifecycle、source 和 valid 状态，并可按需执行单插件 health probe。`agentos plugins lifecycle` 汇总 manifest lifecycle、当前 persistent session cap 和 plugin host config diagnostics。未知 manifest version / protocol 会被跳过。manifest 支持 `sandbox_mode=workspace|none`，默认 workspace 模式会拒绝解析到 workspace 外的路径类运行参数。manifest 也支持 `lifecycle_mode=oneshot|persistent`、`startup_timeout_ms` 和 `idle_timeout_ms`，其中 `persistent` 当前仅允许 `json-rpc-v0`，并通过长驻进程 stdin/stdout JSON-RPC session 复用处理请求。`runtime/plugin_host.tsv` 的 `max_persistent_sessions` 可限制长驻 session 数量并按 LRU 驱逐，非法配置会在 `plugins lifecycle` 中输出诊断。实现已拆为 manifest loader、schema validator、JSON-RPC helper、persistent session、health、sandbox、spec utils、SkillInvoker 与 runtime execution 文件，降低 `plugin_host.cpp` 的职责密度。
+
 ### Agent Adapter Host
 负责托管二级代理：
 
@@ -244,7 +246,7 @@ agentos/
     hosts/
       agents/
       cli/
-      plugin/              # planned
+      plugin/
     memory/
     scheduler/
     skills/
@@ -262,16 +264,30 @@ agentos/
 当前实现已经新增或提前落地了若干原规划未列出的目录：
 
 - `src/auth/`：认证管理、provider adapter、session store、credential broker
+- `src/cli/`：CLI command group dispatchers extracted from `main.cpp` as command groups stabilize; currently includes agents, auth, cli-specs, memory, plugins, storage, schedule, subagents, and trust commands
 - `src/core/execution/`：idempotency execution cache
+- `src/core/execution/task_lifecycle.*`：AgentLoop / SubagentManager shared step recording and task finalization helpers
 - `src/core/orchestration/`：SubagentManager
+- `src/core/router/`：Router facade plus separate `SkillRouter` / `AgentRouter` / `WorkflowRouter` implementation files
+- `src/hosts/plugin/plugin_spec_utils.*`：shared PluginSpec support validation and PluginSpec-to-CliSpec conversion helpers
+- `src/hosts/plugin/plugin_manifest_loader.cpp`：TSV / JSON plugin manifest parsing, validation diagnostics, source file/line metadata
+- `src/hosts/plugin/plugin_schema_validator.*`：successful plugin output validation against `output_schema_json`
+- `src/hosts/plugin/plugin_json_rpc.*`：JSON-RPC 2.0 request rendering, response validation, and result-object extraction
+- `src/hosts/plugin/plugin_persistent_session.hpp`：persistent JSON-RPC process session lifecycle and request round-trip handling
+- `src/hosts/plugin/plugin_health.cpp`：plugin binary, health probe, and persistent lifecycle health checks
+- `src/hosts/plugin/plugin_execution.cpp`：PluginHost runtime execution, session-map management, and output validation orchestration
+- `src/hosts/plugin/plugin_sandbox.*`：workspace sandbox path-argument containment checks for plugin execution
+- `src/hosts/plugin/plugin_skill_invoker.cpp`：PluginSkillInvoker adapter implementation, separated from PluginHost runtime execution
 - `src/scheduler/`：ScheduledTask 与 Scheduler
-- `src/trust/`：IdentityManager、PairingManager、AllowlistStore、TrustPolicy
+- `src/storage/`：storage manifest、export/import、status、migration policy
+- `src/trust/`：IdentityManager、PairingManager、PairingInviteStore、AllowlistStore（含 paired / last_seen 设备生命周期元数据）、TrustPolicy
 
 仍未实现：
 
-- `src/hosts/plugin/`
-- `src/storage/` 或 SQLite 存储层
-- 独立 `workflow/` 目录与持久 WorkflowStore
+- Plugin Host deeper process-pool policy and fuller lifecycle admin UX
+- SQLite 或其他事务型存储后端（当前以 `ADR-STORAGE-001` 决策记录推迟，迁移前需先抽象 StorageBackend interface 并保留 TSV import 兼容路径）
+
+WorkflowStore 当前已作为 `src/memory/` 下的持久化组件落地，写入 `runtime/memory/workflows.tsv`；暂未拆成独立 `workflow/` 目录。
 
 ---
 

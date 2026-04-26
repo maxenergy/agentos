@@ -222,6 +222,8 @@ public:
 - `filesystem.*` 这类 namespace wildcard
 - 未知权限默认拒绝
 
+`TaskRequest.permission_grants` 可进一步约束当前任务实际授予的权限；当 grants 非空时，Skill manifest 声明的权限必须被 grants 覆盖，Agent 调用必须具备 `agent.invoke`。当 grants 为空且配置了 `RoleCatalog` 时，`PolicyEngine` 会使用 `runtime/trust/roles.tsv` 中的 user-role 权限作为授予集合。
+
 ### 8.2 风险等级
 建议等级：
 
@@ -230,7 +232,7 @@ public:
 - high
 - critical
 
-当前实现会把未知风险等级视为需要 `allow_high_risk=true` 的高风险请求。
+当前实现会把未知风险等级视为高风险请求。CLI runtime 中必须同时提供 `allow_high_risk=true` 和已批准的 `approval_id`；审批记录保存在 `runtime/trust/approvals.tsv`，可通过 `agentos trust approval-request` / `approval-approve` / `approval-revoke` / `approvals` 管理。未配置 ApprovalStore 的低层单元测试 PolicyEngine 仍保持只校验 `approval_id` 存在的兼容行为。
 
 ### 8.3 工作区限制
 涉及文件或命令的 Skill 默认应受 workspace 限制。

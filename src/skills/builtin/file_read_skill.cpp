@@ -15,7 +15,7 @@ SkillManifest FileReadSkill::manifest() const {
         .version = "0.1.0",
         .description = "Read a text file inside the active workspace.",
         .capabilities = {"filesystem", "read"},
-        .input_schema_json = R"({"type":"object","required":["path"]})",
+        .input_schema_json = R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})",
         .output_schema_json = R"({"type":"object","required":["path","content"]})",
         .risk_level = "low",
         .permissions = {"filesystem.read"},
@@ -57,4 +57,3 @@ bool FileReadSkill::healthy() const {
 }
 
 }  // namespace agentos
-

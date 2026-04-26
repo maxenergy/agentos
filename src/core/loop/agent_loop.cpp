@@ -1,5 +1,10 @@
 #include "core/loop/agent_loop.hpp"
 
+#include "core/execution/task_lifecycle.hpp"
+#include "core/schema/schema_validator.hpp"
+#include "memory/lesson_hints.hpp"
+#include "utils/json_utils.hpp"
+
 #include <chrono>
 #include <sstream>
 
@@ -12,41 +17,19 @@ int ElapsedMs(const std::chrono::steady_clock::time_point started_at) {
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
 }
 
-void ApplyLessonPolicyHint(
-    const MemoryManager& memory_manager,
-    const TaskRequest& task,
-    const std::string& target_name,
-    PolicyDecision& decision) {
-    if (decision.allowed) {
-        return;
-    }
-
-    int occurrences = 0;
-    std::string summary;
-    for (const auto& lesson : memory_manager.lesson_store().list()) {
-        if (lesson.enabled &&
-            lesson.task_type == task.task_type &&
-            lesson.target_name == target_name &&
-            lesson.error_code == "PolicyDenied") {
-            occurrences += lesson.occurrence_count;
-            if (summary.empty()) {
-                summary = lesson.summary;
-            }
+std::string InputsAsJson(const StringMap& inputs) {
+    std::ostringstream output;
+    output << "{";
+    bool first = true;
+    for (const auto& [key, value] : inputs) {
+        if (!first) {
+            output << ",";
         }
+        first = false;
+        output << QuoteJson(key) << ":" << QuoteJson(value);
     }
-
-    if (occurrences <= 0) {
-        return;
-    }
-
-    std::ostringstream hint;
-    hint << decision.reason
-         << " lesson_hint=previous_policy_denials:"
-         << occurrences;
-    if (!summary.empty()) {
-        hint << " last=\"" << summary << "\"";
-    }
-    decision.reason = hint.str();
+    output << "}";
+    return output.str();
 }
 
 }  // namespace
@@ -70,11 +53,11 @@ AgentLoop::AgentLoop(
 TaskRunResult AgentLoop::run(const TaskRequest& task) {
     audit_logger_.record_task_start(task);
 
+    const auto input_fingerprint = ExecutionCache::fingerprint_for_task(task);
     if (!task.idempotency_key.empty()) {
-        if (auto cached = execution_cache_.find(task.idempotency_key); cached.has_value()) {
+        if (auto cached = execution_cache_.find(task.idempotency_key, input_fingerprint); cached.has_value()) {
             cached->summary = "Idempotent replay from execution cache. " + cached->summary;
-            audit_logger_.record_task_end(task.task_id, *cached);
-            memory_manager_.record_task(task, *cached);
+            FinalizeTaskRun(audit_logger_, memory_manager_, task, *cached);
             return *cached;
         }
     }
@@ -88,8 +71,7 @@ TaskRunResult AgentLoop::run(const TaskRequest& task) {
         result.summary = "No execution target was selected.";
         result.error_code = "RouteNotFound";
         result.error_message = route.rationale;
-        audit_logger_.record_task_end(task.task_id, result);
-        memory_manager_.record_task(task, result);
+        FinalizeTaskRun(audit_logger_, memory_manager_, task, result);
         return result;
     }
 
@@ -99,9 +81,8 @@ TaskRunResult AgentLoop::run(const TaskRequest& task) {
         result = run_agent_task(task, route);
     }
 
-    audit_logger_.record_task_end(task.task_id, result);
-    memory_manager_.record_task(task, result);
-    execution_cache_.store(task.idempotency_key, result);
+    FinalizeTaskRun(audit_logger_, memory_manager_, task, result);
+    execution_cache_.store(task.idempotency_key, input_fingerprint, result);
     return result;
 }
 
@@ -134,7 +115,8 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
         call.arguments["workflow"] = *route.workflow_name;
     }
 
-    auto policy = policy_engine_.evaluate_skill(task, skill->manifest(), call);
+    const auto manifest = skill->manifest();
+    auto policy = policy_engine_.evaluate_skill(task, manifest, call);
     ApplyLessonPolicyHint(memory_manager_, task, route.target_name, policy);
     audit_logger_.record_policy(task.task_id, route.target_name, policy);
     if (!policy.allowed) {
@@ -149,6 +131,30 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
         };
     }
 
+    if (const auto schema = ValidateRequiredInputFields(manifest, call.arguments); !schema.valid) {
+        TaskStepRecord step{
+            .target_kind = RouteTargetKind::skill,
+            .target_name = route.target_name,
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .summary = "Skill input schema validation failed.",
+            .error_code = "SchemaValidationFailed",
+            .error_message = schema.error_message,
+        };
+        RecordTaskStep(audit_logger_, task.task_id, step);
+
+        return {
+            .success = false,
+            .summary = "Skill input schema validation failed.",
+            .route_target = route.target_name,
+            .route_kind = RouteTargetKind::skill,
+            .error_code = "SchemaValidationFailed",
+            .error_message = schema.error_message,
+            .duration_ms = ElapsedMs(started_at),
+            .steps = {step},
+        };
+    }
+
     const auto skill_result = skill->execute(call);
     TaskStepRecord step{
         .target_kind = RouteTargetKind::skill,
@@ -160,7 +166,7 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
         .error_message = skill_result.error_message,
     };
 
-    audit_logger_.record_step(task.task_id, step);
+    RecordTaskStep(audit_logger_, task.task_id, step);
 
     return {
         .success = skill_result.success,
@@ -196,8 +202,10 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task, const RouteDeci
         .task_type = task.task_type,
         .objective = task.objective,
         .workspace_path = task.workspace_path.string(),
-        .context_json = "",
-        .constraints_json = "",
+        .context_json = InputsAsJson(task.inputs),
+        .constraints_json = task.inputs.contains("model")
+            ? MakeJsonObject({{"model", QuoteJson(task.inputs.at("model"))}})
+            : "",
         .timeout_ms = task.timeout_ms,
         .budget_limit = task.budget_limit,
     };
@@ -229,7 +237,7 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task, const RouteDeci
         .error_message = agent_result.error_message,
     };
 
-    audit_logger_.record_step(task.task_id, step);
+    RecordTaskStep(audit_logger_, task.task_id, step);
 
     return {
         .success = agent_result.success,

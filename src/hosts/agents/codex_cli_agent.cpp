@@ -1,5 +1,6 @@
 #include "hosts/agents/codex_cli_agent.hpp"
 
+#include "core/orchestration/agent_result_normalizer.hpp"
 #include "utils/command_utils.hpp"
 #include "utils/json_utils.hpp"
 #include "utils/path_utils.hpp"
@@ -131,17 +132,19 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
         final_message = result.stdout_text;
     }
 
-    return {
+    const auto legacy_output = MakeJsonObject({
+        {"agent", QuoteJson("codex_cli")},
+        {"content", QuoteJson(result.success ? final_message : "")},
+        {"command", QuoteJson(result.command_display)},
+        {"exit_code", NumberAsJson(result.exit_code)},
+        {"stdout", QuoteJson(result.stdout_text)},
+        {"stderr", QuoteJson(result.stderr_text)},
+        {"last_message_file", QuoteJson(output_file.string())},
+    });
+    AgentResult agent_result{
         .success = result.success,
         .summary = result.success ? final_message : "Codex CLI task failed.",
-        .structured_output_json = MakeJsonObject({
-            {"agent", QuoteJson("codex_cli")},
-            {"command", QuoteJson(result.command_display)},
-            {"exit_code", NumberAsJson(result.exit_code)},
-            {"stdout", QuoteJson(result.stdout_text)},
-            {"stderr", QuoteJson(result.stderr_text)},
-            {"last_message_file", QuoteJson(output_file.string())},
-        }),
+        .structured_output_json = legacy_output,
         .artifacts = {
             AgentArtifact{
                 .type = "text",
@@ -155,6 +158,18 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
         .error_code = result.error_code,
         .error_message = result.error_message,
     };
+    agent_result.structured_output_json = BuildNormalizedAgentResultJson(NormalizedAgentResultInput{
+        .agent_name = "codex_cli",
+        .success = agent_result.success,
+        .summary = agent_result.summary,
+        .structured_output_json = legacy_output,
+        .artifacts = agent_result.artifacts,
+        .duration_ms = agent_result.duration_ms,
+        .estimated_cost = agent_result.estimated_cost,
+        .error_code = agent_result.error_code,
+        .error_message = agent_result.error_message,
+    });
+    return agent_result;
 }
 
 AgentResult CodexCliAgent::run_task_in_session(const std::string& session_id, const AgentTask& task) {

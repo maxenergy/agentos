@@ -1,5 +1,7 @@
 #include "memory/lesson_store.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -166,6 +168,10 @@ std::optional<LessonRecord> LessonStore::record_failure(const TaskRequest& task,
     return save(std::move(lesson));
 }
 
+void LessonStore::compact() const {
+    flush();
+}
+
 std::string LessonStore::BuildLessonId(const TaskRequest& task, const TaskRunResult& result) {
     return task.task_type + "|" +
            NonEmptyOr(result.route_target, route_target_kind_name(result.route_kind)) + "|" +
@@ -204,11 +210,7 @@ void LessonStore::flush() const {
         return;
     }
 
-    if (!store_path_.parent_path().empty()) {
-        std::filesystem::create_directories(store_path_.parent_path());
-    }
-
-    std::ofstream output(store_path_, std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& lesson : lessons_) {
         output
             << EncodeField(lesson.lesson_id) << kDelimiter
@@ -221,6 +223,8 @@ void LessonStore::flush() const {
             << EncodeField(lesson.summary)
             << '\n';
     }
+
+    WriteFileAtomically(store_path_, output.str());
 }
 
 }  // namespace agentos

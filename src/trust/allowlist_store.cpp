@@ -1,6 +1,9 @@
 #include "trust/allowlist_store.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <algorithm>
+#include <exception>
 #include <fstream>
 #include <sstream>
 #include <utility>
@@ -42,6 +45,14 @@ std::vector<std::string> SplitLine(const std::string& line) {
         parts.push_back(std::move(item));
     }
     return parts;
+}
+
+long long ParseLongLong(const std::string& value, const long long fallback) {
+    try {
+        return std::stoll(value);
+    } catch (const std::exception&) {
+        return fallback;
+    }
 }
 
 }  // namespace
@@ -104,25 +115,27 @@ void AllowlistStore::load() {
             .label = parts[2],
             .trust_level = ParseTrustLevel(parts[3]),
             .permissions = SplitPermissions(parts[4]),
+            .paired_epoch_ms = parts.size() > 5 ? ParseLongLong(parts[5], 0) : 0,
+            .last_seen_epoch_ms = parts.size() > 6 ? ParseLongLong(parts[6], 0) : 0,
         });
     }
 }
 
 void AllowlistStore::flush() const {
-    if (!store_path_.parent_path().empty()) {
-        std::filesystem::create_directories(store_path_.parent_path());
-    }
-
-    std::ofstream output(store_path_, std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& peer : peers_) {
         output
             << peer.identity_id << kDelimiter
             << peer.device_id << kDelimiter
             << peer.label << kDelimiter
             << ToString(peer.trust_level) << kDelimiter
-            << JoinPermissions(peer.permissions)
+            << JoinPermissions(peer.permissions) << kDelimiter
+            << peer.paired_epoch_ms << kDelimiter
+            << peer.last_seen_epoch_ms
             << '\n';
     }
+
+    WriteFileAtomically(store_path_, output.str());
 }
 
 }  // namespace agentos

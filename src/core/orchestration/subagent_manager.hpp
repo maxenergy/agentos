@@ -38,7 +38,7 @@ public:
 
 private:
     std::vector<std::string> select_agent_candidates(const TaskRequest& task) const;
-    TaskStepRecord run_one(const TaskRequest& task, const std::string& agent_name) const;
+    TaskStepRecord run_one(const TaskRequest& task, const std::string& agent_name, const std::string& role) const;
 
     AgentRegistry& agent_registry_;
     PolicyEngine& policy_engine_;

@@ -224,22 +224,25 @@ Gemini 是第一阶段最适合自己实现标准 OAuth 的 provider。
 
 ## 9. 当前实现状态与缺口
 
+> 注意：当前 Browser OAuth 已支持 `oauth-login` 单命令编排 PKCE start、可选系统浏览器打开、一次性 loopback callback、token exchange 和 managed session 持久化；底层 `oauth-start` / `oauth-listen` / `oauth-complete` 仍可脚本化单独使用。`runtime/auth_oauth_providers.tsv` 可覆盖或补充 provider OAuth defaults。它仍不是完整产品级多 provider 登录 UX。非 Windows 平台的 `SecureTokenStore` 也仍是 `env-ref-only` dev fallback，不应当被视为系统级安全存储。
+
 已实现：
 
 - AuthManager / ProviderAdapter / SessionStore / SecureTokenStore / CredentialBroker
 - OpenAI / Anthropic / Gemini / Qwen provider descriptor
 - API key mode，当前以环境变量引用保存，不落明文 key
-- `auth credential-store` 明确展示当前 env-ref-only dev fallback
+- `auth credential-store` 明确展示当前 credential backend；Windows 为 Credential Manager，其他平台为 env-ref-only dev fallback
 - workspace 默认 profile 映射
+- `set_default=true` 可在 login / OAuth completion 成功后立即把 profile 设为 provider 默认值
 - Codex CLI / Claude CLI session probe 与导入 fixture 测试
-- `agentos auth providers/status/login/logout/refresh/probe`
-- Browser OAuth / PKCE 显式 defer，当前返回 `BrowserOAuthNotImplemented`
+- `agentos auth providers/profiles/status/oauth-defaults/oauth-config-validate/oauth-start/oauth-login/oauth-callback/oauth-listen/oauth-complete/oauth-token-request/oauth-refresh-request/login/logout/refresh/probe`
+- Gemini browser OAuth passthrough 已通过 Gemini CLI OAuth 文件导入；无可导入会话时返回 `BrowserOAuthUnavailable`
+- Browser OAuth PKCE 基础设施：S256 challenge、authorization URL 构建、`oauth-defaults` provider 默认 OAuth 配置查询、repo-local `runtime/auth_oauth_providers.tsv` OAuth defaults 覆盖与 `oauth-config-validate` 诊断、`oauth-start open_browser=true` 系统默认浏览器启动尝试、`oauth-login` 单命令 start/listen/token-exchange/session-persist 编排、一次性 localhost callback listener、callback URL query 解析、callback state/code/error 校验、authorization-code / refresh-token request form-body 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、provider adapter 参数化原生 login/refresh 编排、Gemini Google OAuth 默认 endpoint/scope
 
 未实现或仍需补齐：
 
-- Browser OAuth / PKCE
-- Cloud ADC / cloud credentials
-- 真实 OAuth token refresh 交换
-- 系统 Keychain / Credential Store 集成
-- 多账号 profile 的完整选择策略
+- 更多 provider-specific OAuth discovery、完整多 provider 交互式登录 UX 与配置校验诊断
+- 非 Windows 系统 Keychain / Credential Store 集成
+- Native cloud provider token exchange beyond Google ADC/gcloud passthrough
+- 更完整的多账号 profile 选择策略
 - 更完整的状态测试和失败路径测试

@@ -1,5 +1,7 @@
 #include "trust/identity_manager.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -157,11 +159,7 @@ void IdentityManager::load() {
 }
 
 void IdentityManager::flush() const {
-    if (!store_path_.parent_path().empty()) {
-        std::filesystem::create_directories(store_path_.parent_path());
-    }
-
-    std::ofstream output(store_path_, std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& identity : identities_) {
         output
             << EncodeField(identity.identity_id) << kDelimiter
@@ -169,6 +167,8 @@ void IdentityManager::flush() const {
             << EncodeField(identity.label)
             << '\n';
     }
+
+    WriteFileAtomically(store_path_, output.str());
 }
 
 }  // namespace agentos
