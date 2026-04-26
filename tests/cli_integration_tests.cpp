@@ -362,6 +362,8 @@ void TestPluginsCommand() {
         "plugins lifecycle summary should count persistent plugins");
     Expect(persistent_lifecycle.output.find("max_persistent_sessions=3") != std::string::npos,
         "plugins lifecycle summary should report workspace-configured persistent session cap");
+    Expect(persistent_lifecycle.output.find("pool_size=1") != std::string::npos,
+        "plugins lifecycle should include the per-plugin pool_size manifest field");
 
     const auto invalid_lifecycle_workspace = FreshWorkspace("plugins_lifecycle_invalid");
     std::filesystem::create_directories(invalid_lifecycle_workspace / "runtime" / "plugin_specs");
@@ -488,6 +490,36 @@ void TestPluginsCommand() {
         "startup plugin diagnostic audit should include the source");
     Expect(invalid_audit.find("unsupported plugin protocol") != std::string::npos,
         "startup plugin diagnostic audit should include the skip reason");
+
+    const auto sessions_workspace = FreshWorkspace("plugins_sessions");
+    const auto sessions = RunAgentos(sessions_workspace, {"plugins", "sessions"});
+    Expect(sessions.exit_code == 0, "plugins sessions should exit zero with no live sessions");
+    Expect(sessions.output.find("plugin_sessions_summary total=0 active=0") != std::string::npos,
+        "plugins sessions should print an empty session summary on a fresh workspace");
+
+    const auto session_close_missing = RunAgentos(sessions_workspace, {"plugins", "session-close"});
+    Expect(session_close_missing.exit_code == 2,
+        "plugins session-close without a name should exit with usage code 2");
+    Expect(session_close_missing.output.find("missing required plugin name") != std::string::npos,
+        "plugins session-close should explain when name is missing");
+
+    const auto session_restart_missing = RunAgentos(sessions_workspace, {"plugins", "session-restart"});
+    Expect(session_restart_missing.exit_code == 2,
+        "plugins session-restart without a name should exit with usage code 2");
+    Expect(session_restart_missing.output.find("missing required plugin name") != std::string::npos,
+        "plugins session-restart should explain when name is missing");
+
+    const auto session_close_unknown = RunAgentos(sessions_workspace, {"plugins", "session-close", "name=does_not_exist"});
+    Expect(session_close_unknown.exit_code == 0,
+        "plugins session-close should exit zero when there is nothing to close");
+    Expect(session_close_unknown.output.find("plugin_session_close name=does_not_exist closed=0") != std::string::npos,
+        "plugins session-close should report zero closes for an unknown plugin");
+
+    const auto session_restart_unknown = RunAgentos(sessions_workspace, {"plugins", "session-restart", "name=does_not_exist"});
+    Expect(session_restart_unknown.exit_code == 0,
+        "plugins session-restart should exit zero when there are no live sessions");
+    Expect(session_restart_unknown.output.find("plugin_session_restart name=does_not_exist restarted=0") != std::string::npos,
+        "plugins session-restart should report zero restarts for an unknown plugin");
 }
 
 void TestCliSpecsCommand() {
