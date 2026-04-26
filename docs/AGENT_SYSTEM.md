@@ -214,17 +214,22 @@ AgentRouter 负责根据任务特征选择最合适代理。
 当前代码已具备以下 MVP：
 
 - AgentRegistry 可注册并列出多个 `IAgentAdapter`
-- Router 可基于健康状态与历史评分选择单一默认 agent
+- Router 可基于健康状态、历史评分与 lessons 选择单一默认 agent
 - SubagentManager 支持显式 agent 列表的 `sequential` / `parallel` 编排
+- SubagentManager 在 agents 为空时可基于 enabled、capability、历史统计与 lessons 自动选择候选
+- SubagentManager 支持 `auto_decompose=true`，先调用具备 `decomposition` capability 的规划 agent，将其 `plan_steps[].action` 映射到各 role / agent 的 subtask objective
+- Codex CLI、Gemini、Anthropic、Qwen 与 local_planner adapter 会输出 `agent_result.v1` normalized result，包含 `summary`、`content`、`model`、`artifacts`、`metrics`、`tool_calls`、`provider_metadata` 与 `raw_output`
+- SubagentManager 会在每个 `TaskStepRecord` 保留 agent 的 structured output / artifacts，并在整体 `output_json.agent_outputs[].normalized` 聚合各 agent 的 normalized output
 - SubagentManager 复用 `PolicyEngine`、`AuditLogger`、`MemoryManager`
+- WorkspaceSession 已支持基础 open / run / close 生命周期
+- parallel 模式已支持并发上限与 estimated-cost budget 检查
 - CLI 已支持 `agentos subagents run agents=<agent[,agent]> mode=<sequential|parallel>`
 
 仍待补充：
 
-- 自动多代理候选选择
-- 任务拆分与角色分配
-- WorkspaceSession
-- 更完整的成本、并发与失败重试控制
+- 更复杂的模型驱动任务拆分
+- 更完整的 session health / idle timeout 管理
+- 更完整的失败重试控制
 
 ---
 

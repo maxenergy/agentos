@@ -245,14 +245,14 @@ public:
 
 流程：
 
-1. 生成 state 和 PKCE verifier
-2. 启动 localhost callback server
+1. 生成 state 和 PKCE verifier（`auth/oauth_pkce` 已提供 S256 challenge 与 authorization URL 构建）
+2. 启动 localhost callback server（已提供一次性 loopback listener）
 3. 打开浏览器
 4. 用户登录授权
-5. callback 收到 code
-6. 校验 state
-7. 交换 access/refresh token
-8. 写入 SecureTokenStore 和 SessionStore
+5. callback 收到 code（已提供一次性 listener 与 callback URL query 解析）
+6. 校验 state（`auth/oauth_pkce` 已提供 callback URL / state / code / error 校验）
+7. 交换 access/refresh token（已提供 authorization-code 与 refresh-token request 构建、curl-backed HTTP exchange helper、token response 解析）
+8. 写入 SecureTokenStore 和 SessionStore（已提供 token response 到 managed AuthSession 的持久化 helper；provider 级 login/refresh 编排待接入）
 
 ## 6.2 API Key
 流程：
@@ -351,6 +351,8 @@ agentos auth logout gemini
 
 ## 11. 当前实现状态与缺口
 
+> 注意：当前原生 OAuth 已支持 `oauth-login` 单命令编排 PKCE start、可选系统浏览器打开、loopback callback、token exchange 与 managed session 持久化；调用方仍可显式使用 `oauth-defaults`、`oauth-start`、`oauth-listen` / `oauth-callback`、`oauth-complete` 或在 `auth login ... mode=browser_oauth` 中传入 callback/token 参数。`runtime/auth_oauth_providers.tsv` 可覆盖或补充 provider OAuth defaults。它仍不是完整产品级多 provider 登录流；更多 provider discovery、配置校验诊断与非 Windows 系统 credential store 仍是开放项。
+
 已实现：
 
 - `AuthManager`
@@ -360,17 +362,20 @@ agentos auth logout gemini
 - `CredentialBroker`
 - OpenAI / Anthropic / Gemini / Qwen provider adapter
 - API key env-ref 模式
-- credential store status 明确标记当前为 `env-ref-only` dev fallback，未接入系统 Keychain
+- credential store status 明确标记当前后端；Windows 使用 Credential Manager，其他平台仍为 `env-ref-only` dev fallback
 - workspace default profile mapping (`runtime/auth_profiles.tsv`)
+- profile listing through `auth profiles [provider]`
+- `set_default=true` on login / OAuth completion commands for one-step default profile selection
+- repo-local OAuth defaults mapping (`runtime/auth_oauth_providers.tsv`) with `auth oauth-config-validate` diagnostics
 - Codex / Claude CLI session passthrough probe 与导入 fixture 测试
 - `auth refresh` 命令、AuthManager refresh 入口与 Adapter refresh 覆盖已接入
-- Browser OAuth / PKCE 在 MVP 中显式 defer，调用会返回 `BrowserOAuthNotImplemented`
+- Gemini browser OAuth passthrough 已通过 Gemini CLI OAuth 文件导入；无可导入会话时返回 `BrowserOAuthUnavailable`
 
 关键偏差：
 
-- `SecureTokenStore` 当前不是系统 Keychain，只解析 env ref；CLI 会通过 `auth credential-store` 明确标记为 dev fallback。
-- OAuth / PKCE、真实 refresh token 交换、cloud credentials 仍是设计目标，不是当前实现。
-- workspace profile 选择已支持 provider 默认 profile 映射，但更完整的多账号策略仍需补齐。
+- `SecureTokenStore` 在 Windows 上可写入/读取/删除 Windows Credential Manager 托管 token，同时继续支持 env ref；非 Windows 平台当前仍为 `env-ref-only` dev fallback，CLI 会通过 `auth credential-store` 明确标记当前后端。
+- 原生 OAuth 的 PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、single-command `oauth-login`、`oauth-defaults` provider discovery、repo-local OAuth defaults 覆盖、`oauth-config-validate` 配置诊断、`oauth-start open_browser=true` 系统默认浏览器启动、Gemini Google OAuth 默认 endpoint/scope，以及 provider adapter 在给定 callback/token 参数时的原生 login/refresh 编排已落地；剩余主要是更多 provider discovery、完整多 provider 交互 UX 与非 Windows 系统 credential store。Google ADC 已支持通过 gcloud passthrough mint bearer token。
+- workspace profile 选择已支持 provider 默认 profile 映射、`auth profiles [provider]` profile 发现，以及 login / OAuth completion 的 `set_default=true` 一步式默认 profile 选择；更完整的多账号策略仍需补齐。
 - CLI session passthrough 只做探测与导入，不直接读取或复制外部 CLI token。
 
 下一步以 `plan.md` 的 Auth Completion 阶段为准。

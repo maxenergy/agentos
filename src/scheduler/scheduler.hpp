@@ -22,6 +22,7 @@ struct ScheduledTask {
     int retry_count = 0;
     int retry_backoff_seconds = 0;
     std::string missed_run_policy = "run-once";
+    std::string cron_expression;
     TaskRequest task;
 };
 
@@ -57,8 +58,12 @@ public:
     [[nodiscard]] std::vector<ScheduledTask> due(long long now_epoch_ms) const;
     [[nodiscard]] std::vector<SchedulerExecutionRecord> run_history() const;
     static long long NowEpochMs();
+    static bool IsCronExpressionValid(const std::string& expression);
+    static std::optional<long long> NextCronRunEpochMs(const std::string& expression, long long after_epoch_ms);
 
     std::vector<SchedulerRunRecord> run_due(AgentLoop& loop, long long now_epoch_ms = NowEpochMs());
+    void compact_tasks() const;
+    void compact_history() const;
 
     [[nodiscard]] const std::filesystem::path& store_path() const;
     [[nodiscard]] const std::filesystem::path& history_path() const;

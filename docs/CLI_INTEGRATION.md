@@ -107,7 +107,11 @@ CLI 必须包装成 Skill，而不是让模型任意拼 shell。
   "permissions": ["filesystem.read", "process.spawn"],
   "timeout_ms": 3000,
   "output_limit_bytes": 1048576,
-  "env_allowlist": []
+  "env_allowlist": [],
+  "memory_limit_bytes": 0,
+  "max_processes": 0,
+  "cpu_time_limit_seconds": 0,
+  "file_descriptor_limit": 0
 }
 ```
 
@@ -186,16 +190,28 @@ public:
 - `CliSpec.timeout_ms` 已用于强制进程超时
 - `CliSpec.output_limit_bytes` 已用于 stdout/stderr 捕获限流
 - `CliSpec.env_allowlist` 已用于子进程环境白名单
+- Windows 下 `CliSpec.max_processes` / `CliSpec.memory_limit_bytes` / `CliSpec.cpu_time_limit_seconds` 会通过 Job Object 强制
+- POSIX 平台下 `CliSpec.max_processes` / `CliSpec.memory_limit_bytes` / `CliSpec.cpu_time_limit_seconds` / `CliSpec.file_descriptor_limit` 会在子进程内通过 `setrlimit` 尽力强制
 - `cwd` 参数必须解析到当前 workspace 内
 - Windows batch / cmd 启动已通过受控 `CreateProcess` 路径执行
 - `runtime/cli_specs/*.tsv` 可声明 repo-local 外部 CLI specs，并在启动时注册为 `CliSkillInvoker`
+- TSV loader 会保留空字段，因此 `required_args` 等可选列为空时不会导致后续列错位
+- `agentos cli-specs validate` 会输出已加载 spec 与 skipped spec 诊断，并在存在无效 spec 时返回非零
 - `jq_transform` 已作为内置 CLI skill 接入，使用 `jq -c <filter> <path>` 转换 workspace 内 JSON 文件
 
 ### 8.6 资源限制
-长期建议增加：
-- CPU 限制
-- 内存限制
-- 文件句柄限制
+当前已实现：
+- Windows Job Object `max_processes`
+- Windows Job Object `memory_limit_bytes`
+- Windows Job Object `cpu_time_limit_seconds`
+- POSIX `setrlimit(RLIMIT_NPROC)` `max_processes`
+- POSIX `setrlimit(RLIMIT_AS)` `memory_limit_bytes`
+- POSIX `setrlimit(RLIMIT_CPU)` `cpu_time_limit_seconds`
+- POSIX `setrlimit(RLIMIT_NOFILE)` `file_descriptor_limit`
+
+后续仍建议补充：
+- Windows 文件句柄限制
+- 更细粒度的跨平台 sandbox / cgroup / job lifecycle 策略
 
 ---
 

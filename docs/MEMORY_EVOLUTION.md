@@ -167,6 +167,13 @@ Workflow 不是简单回放，而是带有可解释结构的程序性记忆。
 - trigger_task_type
 - ordered_steps
 - required_inputs
+- input_equals
+- input_number_gte
+- input_number_lte
+- input_bool
+- input_regex
+- input_any
+- input_expr
 - source
 - use_count
 - success_count
@@ -175,7 +182,11 @@ Workflow 不是简单回放，而是带有可解释结构的程序性记忆。
 - avg_duration_ms
 - score
 
-当前可通过 `agentos memory promote-workflow <candidate_name> required_inputs=path,content` 将候选固化为启用的 workflow 定义，并通过 `agentos run workflow_run workflow=<name> ...` 执行持久定义。Router 也会在没有显式 `target` 时，对 enabled 且 `trigger_task_type` / `required_inputs` 匹配的 workflow 按 score 优先选择并路由到 `workflow_run`。
+当前可通过 `agentos memory promote-workflow <candidate_name> required_inputs=path,content input_equals=mode=workflow input_number_gte=priority=5 input_number_lte=size=10 input_bool=approved=true input_regex=branch=release/.* input_any=equals:mode=workflow|equals:mode=automated input_expr="equals:mode=workflow&&(exists:ticket||regex:branch=release/.*)"` 将候选固化为启用的 workflow 定义，并通过 `agentos run workflow_run workflow=<name> ...` 执行持久定义。Router 也会在没有显式 `target` 时，对 enabled 且 `trigger_task_type` / `required_inputs` / `input_equals` / 数值范围 / 布尔输入 / 正则输入 / `input_any` 复合 OR 条件 / `input_expr` 嵌套布尔表达式匹配的 workflow 按 score 优先选择并路由到 `workflow_run`。
+
+`agentos memory validate-workflows` 会校验已持久化 workflow 定义的基础字段、条件格式、数值/布尔条件、正则表达式、`input_any` atom 和 `input_expr` 语法；`promote-workflow` 保存前也会执行同一套校验，避免错误定义进入 `workflows.tsv`。
+
+`agentos memory stored-workflows` 可列出持久化 workflow，并支持 `enabled`、`trigger_task_type` / `trigger`、`source`、`name_contains` 过滤。`agentos memory show-workflow <workflow_name>` 会输出单个持久化 workflow 的启用状态、trigger、步骤、统计数据和所有 applicability 条件；`agentos memory update-workflow <workflow_name> ...` 可原地修改名称、trigger、步骤、启用状态和 applicability 条件，传入空列表值可清空对应条件，并在保存前运行同一套 workflow 定义校验；`agentos memory clone-workflow <workflow_name> new_name=<stored_name>` 可复制已有 workflow 作为后续编辑基础；`agentos memory set-workflow-enabled <workflow_name> enabled=true|false` 可切换 workflow 是否参与 Router 自动选择；`agentos memory remove-workflow <workflow_name>` 可删除持久化 workflow 定义。`agentos memory explain-workflow <workflow_name> task_type=<task_type> key=value ...` 会输出 workflow 级 `applicable=true|false`，并逐项列出 trigger、required input、条件组和表达式的匹配结果，用于调试某个 workflow 为什么会被 Router 选中或跳过。
 
 当前实现还提供 `runtime/memory/lessons.tsv` LessonStore 骨架，用于按 `task_type` / `target_name` / `error_code` 聚合重复失败：
 

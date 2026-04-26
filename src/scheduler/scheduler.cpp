@@ -1,11 +1,15 @@
 #include "scheduler/scheduler.hpp"
 
 #include "core/loop/agent_loop.hpp"
+#include "utils/atomic_file.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <fstream>
 #include <map>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -119,6 +123,36 @@ std::string SerializeInputs(const StringMap& inputs) {
     return output.str();
 }
 
+std::vector<std::string> ParseStringList(const std::string& value) {
+    std::vector<std::string> items;
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const auto delimiter = value.find('&', start);
+        const auto item = delimiter == std::string::npos
+            ? value.substr(start)
+            : value.substr(start, delimiter - start);
+        if (!item.empty()) {
+            items.push_back(DecodeField(item));
+        }
+        if (delimiter == std::string::npos) {
+            break;
+        }
+        start = delimiter + 1;
+    }
+    return items;
+}
+
+std::string SerializeStringList(const std::vector<std::string>& items) {
+    std::ostringstream output;
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        if (index != 0) {
+            output << '&';
+        }
+        output << EncodeField(items[index], true);
+    }
+    return output.str();
+}
+
 int ParseInt(const std::string& value, const int fallback) {
     try {
         return std::stoi(value);
@@ -151,12 +185,237 @@ std::string NormalizeMissedRunPolicy(const std::string& value) {
 }
 
 bool ShouldSkipMissedIntervalRun(const ScheduledTask& scheduled_task, const long long now_epoch_ms) {
-    if (scheduled_task.missed_run_policy != "skip" || scheduled_task.interval_seconds <= 0) {
+    if (scheduled_task.missed_run_policy != "skip" || scheduled_task.interval_seconds <= 0 || !scheduled_task.cron_expression.empty()) {
         return false;
     }
 
     const auto interval_ms = static_cast<long long>(scheduled_task.interval_seconds) * 1000LL;
     return now_epoch_ms >= scheduled_task.next_run_epoch_ms + interval_ms;
+}
+
+struct CronSchedule {
+    std::set<int> minutes;
+    std::set<int> hours;
+    std::set<int> days_of_month;
+    std::set<int> months;
+    std::set<int> days_of_week;
+    bool day_of_month_wildcard = false;
+    bool day_of_week_wildcard = false;
+};
+
+std::vector<std::string> SplitWhitespace(const std::string& value) {
+    std::vector<std::string> fields;
+    std::istringstream input(value);
+    std::string field;
+    while (input >> field) {
+        fields.push_back(field);
+    }
+    return fields;
+}
+
+std::string NormalizeCronAlias(const std::string& expression) {
+    if (expression == "@hourly") {
+        return "0 * * * *";
+    }
+    if (expression == "@daily" || expression == "@midnight") {
+        return "0 0 * * *";
+    }
+    if (expression == "@weekly") {
+        return "0 0 * * 0";
+    }
+    if (expression == "@monthly") {
+        return "0 0 1 * *";
+    }
+    if (expression == "@yearly" || expression == "@annually") {
+        return "0 0 1 1 *";
+    }
+    return expression;
+}
+
+std::optional<int> ParseStrictInt(const std::string& value) {
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    std::size_t consumed = 0;
+    try {
+        const auto parsed = std::stoi(value, &consumed);
+        if (consumed != value.size()) {
+            return std::nullopt;
+        }
+        return parsed;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+bool AddCronRange(std::set<int>& output, const int start, const int end, const int step, const int min_value, const int max_value) {
+    if (step <= 0 || start < min_value || end > max_value || start > end) {
+        return false;
+    }
+    for (int value = start; value <= end; value += step) {
+        output.insert(value);
+    }
+    return true;
+}
+
+bool ParseCronFieldPart(std::set<int>& output, const std::string& part, const int min_value, const int max_value) {
+    if (part.empty()) {
+        return false;
+    }
+
+    auto base = part;
+    int step = 1;
+    if (const auto slash = part.find('/'); slash != std::string::npos) {
+        base = part.substr(0, slash);
+        const auto parsed_step = ParseStrictInt(part.substr(slash + 1));
+        if (!parsed_step.has_value()) {
+            return false;
+        }
+        step = *parsed_step;
+    }
+
+    if (base == "*") {
+        return AddCronRange(output, min_value, max_value, step, min_value, max_value);
+    }
+
+    if (const auto dash = base.find('-'); dash != std::string::npos) {
+        const auto start = ParseStrictInt(base.substr(0, dash));
+        const auto end = ParseStrictInt(base.substr(dash + 1));
+        if (!start.has_value() || !end.has_value()) {
+            return false;
+        }
+        return AddCronRange(output, *start, *end, step, min_value, max_value);
+    }
+
+    const auto single = ParseStrictInt(base);
+    if (!single.has_value() || step != 1 || *single < min_value || *single > max_value) {
+        return false;
+    }
+    output.insert(*single);
+    return true;
+}
+
+std::optional<std::set<int>> ParseCronField(const std::string& field, const int min_value, const int max_value) {
+    std::set<int> output;
+    std::size_t start = 0;
+    while (start <= field.size()) {
+        const auto delimiter = field.find(',', start);
+        const auto part = delimiter == std::string::npos
+            ? field.substr(start)
+            : field.substr(start, delimiter - start);
+        if (!ParseCronFieldPart(output, part, min_value, max_value)) {
+            return std::nullopt;
+        }
+        if (delimiter == std::string::npos) {
+            break;
+        }
+        start = delimiter + 1;
+    }
+    if (output.empty()) {
+        return std::nullopt;
+    }
+    return output;
+}
+
+std::optional<CronSchedule> ParseCronExpression(const std::string& expression) {
+    const auto fields = SplitWhitespace(NormalizeCronAlias(expression));
+    if (fields.size() != 5) {
+        return std::nullopt;
+    }
+
+    const auto minutes = ParseCronField(fields[0], 0, 59);
+    const auto hours = ParseCronField(fields[1], 0, 23);
+    const auto days_of_month = ParseCronField(fields[2], 1, 31);
+    const auto months = ParseCronField(fields[3], 1, 12);
+    const auto days_of_week = ParseCronField(fields[4], 0, 7);
+    if (!minutes.has_value() || !hours.has_value() || !days_of_month.has_value() ||
+        !months.has_value() || !days_of_week.has_value()) {
+        return std::nullopt;
+    }
+
+    auto normalized_days_of_week = *days_of_week;
+    if (normalized_days_of_week.contains(7)) {
+        normalized_days_of_week.insert(0);
+        normalized_days_of_week.erase(7);
+    }
+
+    return CronSchedule{
+        .minutes = *minutes,
+        .hours = *hours,
+        .days_of_month = *days_of_month,
+        .months = *months,
+        .days_of_week = std::move(normalized_days_of_week),
+        .day_of_month_wildcard = fields[2] == "*",
+        .day_of_week_wildcard = fields[4] == "*",
+    };
+}
+
+std::tm LocalTimeFromEpochMs(const long long epoch_ms) {
+    const std::time_t seconds = static_cast<std::time_t>(epoch_ms / 1000LL);
+    std::tm output{};
+#ifdef _WIN32
+    localtime_s(&output, &seconds);
+#else
+    localtime_r(&seconds, &output);
+#endif
+    return output;
+}
+
+long long EpochMsFromLocalTime(std::tm value) {
+    value.tm_sec = 0;
+    value.tm_isdst = -1;
+    return static_cast<long long>(std::mktime(&value)) * 1000LL;
+}
+
+long long RoundUpToNextMinute(const long long epoch_ms) {
+    return ((epoch_ms / 60000LL) + 1LL) * 60000LL;
+}
+
+bool CronMatches(const CronSchedule& schedule, const std::tm& value) {
+    const int minute = value.tm_min;
+    const int hour = value.tm_hour;
+    const int day_of_month = value.tm_mday;
+    const int month = value.tm_mon + 1;
+    const int day_of_week = value.tm_wday;
+
+    const bool day_of_month_matches = schedule.days_of_month.contains(day_of_month);
+    const bool day_of_week_matches = schedule.days_of_week.contains(day_of_week);
+    const bool day_matches = (!schedule.day_of_month_wildcard && !schedule.day_of_week_wildcard)
+        ? (day_of_month_matches || day_of_week_matches)
+        : (day_of_month_matches && day_of_week_matches);
+
+    return schedule.minutes.contains(minute) &&
+           schedule.hours.contains(hour) &&
+           schedule.months.contains(month) &&
+           day_matches;
+}
+
+std::optional<long long> ComputeNextCronRunEpochMs(const std::string& expression, const long long after_epoch_ms) {
+    const auto schedule = ParseCronExpression(expression);
+    if (!schedule.has_value()) {
+        return std::nullopt;
+    }
+
+    auto candidate = RoundUpToNextMinute(after_epoch_ms);
+    constexpr int kMaxSearchMinutes = 366 * 24 * 60;
+    for (int index = 0; index < kMaxSearchMinutes; ++index) {
+        const auto local_time = LocalTimeFromEpochMs(candidate);
+        if (CronMatches(*schedule, local_time)) {
+            return EpochMsFromLocalTime(local_time);
+        }
+        candidate += 60000LL;
+    }
+
+    return std::nullopt;
+}
+
+bool ShouldSkipMissedCronRun(const ScheduledTask& scheduled_task, const long long now_epoch_ms) {
+    if (scheduled_task.missed_run_policy != "skip" || scheduled_task.cron_expression.empty()) {
+        return false;
+    }
+
+    const auto next_after_original = ComputeNextCronRunEpochMs(scheduled_task.cron_expression, scheduled_task.next_run_epoch_ms);
+    return next_after_original.has_value() && now_epoch_ms >= *next_after_original;
 }
 
 }  // namespace
@@ -173,6 +432,9 @@ Scheduler::Scheduler(std::filesystem::path store_path)
 ScheduledTask Scheduler::save(ScheduledTask scheduled_task) {
     remove(scheduled_task.schedule_id);
     scheduled_task.missed_run_policy = NormalizeMissedRunPolicy(scheduled_task.missed_run_policy);
+    if (!scheduled_task.cron_expression.empty() && scheduled_task.next_run_epoch_ms <= 0) {
+        scheduled_task.next_run_epoch_ms = ComputeNextCronRunEpochMs(scheduled_task.cron_expression, NowEpochMs()).value_or(0);
+    }
     scheduled_tasks_.push_back(std::move(scheduled_task));
     flush();
     return scheduled_tasks_.back();
@@ -261,9 +523,18 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
             changed = true;
             continue;
         }
+        if (ShouldSkipMissedCronRun(scheduled_task, now_epoch_ms)) {
+            scheduled_task.next_run_epoch_ms =
+                ComputeNextCronRunEpochMs(scheduled_task.cron_expression, now_epoch_ms).value_or(now_epoch_ms + 60000LL);
+            changed = true;
+            continue;
+        }
 
         auto task = scheduled_task.task;
         task.task_id = scheduled_task.schedule_id + ".run-" + std::to_string(scheduled_task.run_count + 1);
+        if (task.idempotency_key.empty()) {
+            task.idempotency_key = task.task_id;
+        }
         if (task.objective.empty()) {
             task.objective = "Scheduled task " + scheduled_task.schedule_id;
         }
@@ -278,6 +549,12 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
             scheduled_task.retry_count += 1;
             const auto backoff_ms = static_cast<long long>(scheduled_task.retry_backoff_seconds) * 1000LL;
             scheduled_task.next_run_epoch_ms = now_epoch_ms + (backoff_ms > 0 ? backoff_ms : 1000LL);
+            rescheduled = true;
+        } else if (!scheduled_task.cron_expression.empty() &&
+            (scheduled_task.max_runs == 0 || scheduled_task.run_count < scheduled_task.max_runs)) {
+            scheduled_task.retry_count = 0;
+            scheduled_task.next_run_epoch_ms =
+                ComputeNextCronRunEpochMs(scheduled_task.cron_expression, now_epoch_ms).value_or(now_epoch_ms + 60000LL);
             rescheduled = true;
         } else if (scheduled_task.interval_seconds > 0 &&
             (scheduled_task.max_runs == 0 || scheduled_task.run_count < scheduled_task.max_runs)) {
@@ -319,6 +596,31 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
     return records;
 }
 
+void Scheduler::compact_tasks() const {
+    flush();
+}
+
+void Scheduler::compact_history() const {
+    std::ostringstream output;
+    for (const auto& record : run_history()) {
+        output
+            << EncodeField(record.schedule_id) << kDelimiter
+            << EncodeField(record.task_id) << kDelimiter
+            << record.started_epoch_ms << kDelimiter
+            << record.completed_epoch_ms << kDelimiter
+            << record.run_count << kDelimiter
+            << (record.success ? "1" : "0") << kDelimiter
+            << (record.rescheduled ? "1" : "0") << kDelimiter
+            << EncodeField(record.route_kind) << kDelimiter
+            << EncodeField(record.route_target) << kDelimiter
+            << EncodeField(record.error_code) << kDelimiter
+            << EncodeField(record.error_message) << kDelimiter
+            << record.duration_ms
+            << '\n';
+    }
+    WriteFileAtomically(history_path_, output.str());
+}
+
 const std::filesystem::path& Scheduler::store_path() const {
     return store_path_;
 }
@@ -330,6 +632,14 @@ const std::filesystem::path& Scheduler::history_path() const {
 long long Scheduler::NowEpochMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+bool Scheduler::IsCronExpressionValid(const std::string& expression) {
+    return ParseCronExpression(expression).has_value();
+}
+
+std::optional<long long> Scheduler::NextCronRunEpochMs(const std::string& expression, const long long after_epoch_ms) {
+    return ComputeNextCronRunEpochMs(expression, after_epoch_ms);
 }
 
 void Scheduler::load() {
@@ -363,6 +673,8 @@ void Scheduler::load() {
             .budget_limit = ParseDouble(parts[16], 0.0),
             .allow_high_risk = parts[17] == "1",
             .allow_network = parts[18] == "1",
+            .approval_id = parts.size() >= 25 ? parts[24] : "",
+            .permission_grants = parts.size() >= 26 ? ParseStringList(parts[25]) : std::vector<std::string>{},
         };
 
         scheduled_tasks_.push_back(ScheduledTask{
@@ -376,17 +688,14 @@ void Scheduler::load() {
             .retry_count = parts.size() >= 23 ? ParseInt(parts[21], 0) : 0,
             .retry_backoff_seconds = parts.size() >= 23 ? ParseInt(parts[22], 0) : 0,
             .missed_run_policy = parts.size() >= 24 ? NormalizeMissedRunPolicy(parts[23]) : "run-once",
+            .cron_expression = parts.size() >= 27 ? parts[26] : "",
             .task = std::move(task),
         });
     }
 }
 
 void Scheduler::flush() const {
-    if (!store_path_.parent_path().empty()) {
-        std::filesystem::create_directories(store_path_.parent_path());
-    }
-
-    std::ofstream output(store_path_, std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& scheduled_task : scheduled_tasks_) {
         const auto& task = scheduled_task.task;
         output
@@ -413,17 +722,18 @@ void Scheduler::flush() const {
             << scheduled_task.max_retries << kDelimiter
             << scheduled_task.retry_count << kDelimiter
             << scheduled_task.retry_backoff_seconds << kDelimiter
-            << EncodeField(NormalizeMissedRunPolicy(scheduled_task.missed_run_policy))
+            << EncodeField(NormalizeMissedRunPolicy(scheduled_task.missed_run_policy)) << kDelimiter
+            << EncodeField(task.approval_id) << kDelimiter
+            << EncodeField(SerializeStringList(task.permission_grants)) << kDelimiter
+            << EncodeField(scheduled_task.cron_expression)
             << '\n';
     }
+
+    WriteFileAtomically(store_path_, output.str());
 }
 
 void Scheduler::append_execution_record(const SchedulerExecutionRecord& record) const {
-    if (!history_path_.parent_path().empty()) {
-        std::filesystem::create_directories(history_path_.parent_path());
-    }
-
-    std::ofstream output(history_path_, std::ios::binary | std::ios::app);
+    std::ostringstream output;
     output
         << EncodeField(record.schedule_id) << kDelimiter
         << EncodeField(record.task_id) << kDelimiter
@@ -436,8 +746,8 @@ void Scheduler::append_execution_record(const SchedulerExecutionRecord& record) 
         << EncodeField(record.route_target) << kDelimiter
         << EncodeField(record.error_code) << kDelimiter
         << EncodeField(record.error_message) << kDelimiter
-        << record.duration_ms
-        << '\n';
+        << record.duration_ms;
+    AppendLineToFile(history_path_, output.str());
 }
 
 }  // namespace agentos

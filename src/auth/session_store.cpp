@@ -1,5 +1,7 @@
 #include "auth/session_store.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -102,6 +104,10 @@ void SessionStore::remove(const AuthProviderId provider, const std::string& prof
     flush();
 }
 
+void SessionStore::compact() const {
+    flush();
+}
+
 const std::filesystem::path& SessionStore::store_path() const {
     return store_path_;
 }
@@ -146,11 +152,7 @@ void SessionStore::load() {
 }
 
 void SessionStore::flush() const {
-    if (!store_path_.parent_path().empty()) {
-        std::filesystem::create_directories(store_path_.parent_path());
-    }
-
-    std::ofstream output(store_path_, std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& session : sessions_) {
         output
             << session.session_id << kDelimiter
@@ -168,7 +170,8 @@ void SessionStore::flush() const {
             << MetadataToString(session.metadata)
             << '\n';
     }
+
+    WriteFileAtomically(store_path_, output.str());
 }
 
 }  // namespace agentos
-

@@ -14,6 +14,13 @@ struct WorkflowDefinition {
     std::string trigger_task_type;
     std::vector<std::string> ordered_steps;
     std::vector<std::string> required_inputs;
+    std::vector<std::string> input_equals;
+    std::vector<std::string> input_number_gte;
+    std::vector<std::string> input_number_lte;
+    std::vector<std::string> input_bool;
+    std::vector<std::string> input_regex;
+    std::vector<std::string> input_any;
+    std::vector<std::string> input_expr;
     std::string source = "manual";
     bool enabled = true;
     int use_count = 0;
@@ -34,6 +41,7 @@ public:
     [[nodiscard]] std::optional<WorkflowDefinition> find(const std::string& name) const;
     [[nodiscard]] std::vector<WorkflowDefinition> list() const;
     [[nodiscard]] const std::filesystem::path& store_path() const;
+    void compact() const;
 
     [[nodiscard]] static WorkflowDefinition FromCandidate(const WorkflowCandidate& candidate);
 

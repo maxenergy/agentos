@@ -16,6 +16,7 @@ public:
     std::optional<AuthSession> find(AuthProviderId provider, const std::string& profile_name) const;
     std::vector<AuthSession> list() const;
     void remove(AuthProviderId provider, const std::string& profile_name);
+    void compact() const;
 
     [[nodiscard]] const std::filesystem::path& store_path() const;
 
@@ -28,4 +29,3 @@ private:
 };
 
 }  // namespace agentos
-

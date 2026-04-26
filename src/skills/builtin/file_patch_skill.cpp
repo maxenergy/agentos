@@ -36,7 +36,7 @@ SkillManifest FilePatchSkill::manifest() const {
         .version = "0.1.0",
         .description = "Apply a simple find/replace patch inside the active workspace.",
         .capabilities = {"filesystem", "patch"},
-        .input_schema_json = R"({"type":"object","required":["path","find","replace"]})",
+        .input_schema_json = R"({"type":"object","properties":{"path":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"}},"required":["path","find","replace"]})",
         .output_schema_json = R"({"type":"object","required":["path","replacements"]})",
         .risk_level = "medium",
         .permissions = {"filesystem.write"},
@@ -95,4 +95,3 @@ bool FilePatchSkill::healthy() const {
 }
 
 }  // namespace agentos
-

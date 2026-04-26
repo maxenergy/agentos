@@ -1,5 +1,6 @@
 #include "auth/provider_adapters.hpp"
 
+#include "auth/oauth_pkce.hpp"
 #include "utils/command_utils.hpp"
 #include "utils/json_utils.hpp"
 
@@ -31,6 +32,14 @@ std::string OptionOrDefault(
 
 std::chrono::system_clock::time_point LongLivedSessionExpiry() {
     return std::chrono::system_clock::now() + std::chrono::hours(24 * 365);
+}
+
+bool HasNativeOAuthCompletionOptions(const std::map<std::string, std::string>& options) {
+    return options.contains("callback_url") &&
+           options.contains("state") &&
+           options.contains("code_verifier") &&
+           options.contains("redirect_uri") &&
+           options.contains("client_id");
 }
 
 AuthStatus MissingSessionStatus(const AuthProviderDescriptor& descriptor, const std::string& profile_name) {
@@ -108,6 +117,93 @@ bool CodexAuthFileLooksAvailable() {
     return first_chunk.find("\"auth_mode\"") != std::string::npos;
 }
 
+bool GeminiOAuthFileLooksAvailable() {
+    const auto home = HomeDirectory();
+    if (!home.has_value()) {
+        return false;
+    }
+
+    const auto auth_file = *home / ".gemini" / "oauth_creds.json";
+    std::ifstream input(auth_file, std::ios::binary);
+    if (!input) {
+        return false;
+    }
+
+    std::string first_chunk(4096, '\0');
+    input.read(first_chunk.data(), static_cast<std::streamsize>(first_chunk.size()));
+    first_chunk.resize(static_cast<std::size_t>(input.gcount()));
+
+    return first_chunk.find("access_token") != std::string::npos ||
+           first_chunk.find("refresh_token") != std::string::npos;
+}
+
+bool GoogleAdcLooksAvailable() {
+#ifdef _WIN32
+    char* raw_credentials_file = nullptr;
+    std::size_t credentials_file_size = 0;
+    if (_dupenv_s(&raw_credentials_file, &credentials_file_size, "GOOGLE_APPLICATION_CREDENTIALS") == 0 &&
+        raw_credentials_file != nullptr) {
+        const std::filesystem::path credentials_file(raw_credentials_file);
+        std::free(raw_credentials_file);
+        if (std::filesystem::exists(credentials_file)) {
+            return true;
+        }
+    }
+#else
+    const char* credentials_file = std::getenv("GOOGLE_APPLICATION_CREDENTIALS");
+    if (credentials_file && std::filesystem::exists(credentials_file)) {
+        return true;
+    }
+#endif
+
+    const auto home = HomeDirectory();
+    if (home.has_value()) {
+        const auto posix_adc_file = *home / ".config" / "gcloud" / "application_default_credentials.json";
+        if (std::filesystem::exists(posix_adc_file)) {
+            return true;
+        }
+    }
+
+#ifdef _WIN32
+    char* raw_appdata = nullptr;
+    std::size_t appdata_size = 0;
+    if (_dupenv_s(&raw_appdata, &appdata_size, "APPDATA") == 0 && raw_appdata != nullptr) {
+        const std::filesystem::path appdata(raw_appdata);
+        std::free(raw_appdata);
+        const auto windows_adc_file = appdata / "gcloud" / "application_default_credentials.json";
+        if (std::filesystem::exists(windows_adc_file)) {
+            return true;
+        }
+    }
+#endif
+
+    return false;
+}
+
+AuthSession MakeCloudAdcSession(
+    const AuthProviderId provider,
+    const std::string& provider_name,
+    const std::string& profile_name) {
+    return {
+        .session_id = MakeAuthSessionId(provider, AuthMode::cloud_adc, profile_name),
+        .provider = provider,
+        .mode = AuthMode::cloud_adc,
+        .profile_name = profile_name,
+        .account_label = "google-application-default-credentials",
+        .managed_by_agentos = false,
+        .managed_by_external_cli = true,
+        .refresh_supported = true,
+        .headless_compatible = true,
+        .access_token_ref = "external-cli:gcloud-adc",
+        .expires_at = LongLivedSessionExpiry(),
+        .metadata = {
+            {"provider", provider_name},
+            {"credential_source", "google_adc"},
+            {"cli", "gcloud"},
+        },
+    };
+}
+
 }  // namespace
 
 StaticAuthProviderAdapter::StaticAuthProviderAdapter(
@@ -150,7 +246,55 @@ AuthSession StaticAuthProviderAdapter::login(const AuthMode mode, const std::map
         probed_session->session_id = MakeAuthSessionId(descriptor_.provider, AuthMode::cli_session_passthrough, profile_name);
         session = *probed_session;
     } else if (mode == AuthMode::browser_oauth) {
-        throw std::runtime_error("BrowserOAuthNotImplemented");
+        if (HasNativeOAuthCompletionOptions(options)) {
+            if (!cli_host_) {
+                throw std::runtime_error("NativeOAuthUnavailable");
+            }
+            const auto callback = ValidateOAuthCallbackUrl(OAuthPkceStart{
+                .provider = descriptor_.provider,
+                .profile_name = profile_name,
+                .state = options.at("state"),
+                .code_verifier = options.at("code_verifier"),
+                .redirect_uri = options.at("redirect_uri"),
+            }, options.at("callback_url"));
+            const auto defaults = OAuthDefaultsForProvider(descriptor_.provider);
+            const auto token_endpoint = OptionOrDefault(options, "token_endpoint", defaults.token_endpoint);
+            session = CompleteOAuthLogin(
+                *cli_host_,
+                session_store_,
+                token_store_,
+                OAuthLoginOrchestrationInput{
+                    .start = OAuthPkceStart{
+                        .provider = descriptor_.provider,
+                        .profile_name = profile_name,
+                        .state = options.at("state"),
+                        .code_verifier = options.at("code_verifier"),
+                        .redirect_uri = options.at("redirect_uri"),
+                    },
+                    .callback = callback,
+                    .token_endpoint = token_endpoint,
+                    .client_id = options.at("client_id"),
+                    .account_label = OptionOrDefault(options, "account_label", descriptor_.provider_name + ":" + profile_name),
+                },
+                workspace_path_);
+        } else {
+            auto probed_session = probe_cli_session();
+            if (!probed_session.has_value()) {
+                throw std::runtime_error("BrowserOAuthUnavailable");
+            }
+            probed_session->mode = AuthMode::browser_oauth;
+            probed_session->profile_name = profile_name;
+            probed_session->session_id = MakeAuthSessionId(descriptor_.provider, AuthMode::browser_oauth, profile_name);
+            session = *probed_session;
+        }
+    } else if (mode == AuthMode::cloud_adc) {
+        if (descriptor_.provider != AuthProviderId::gemini) {
+            throw std::runtime_error("UnsupportedAuthMode");
+        }
+        if ((!CommandExists("gcloud") && !CommandExists("gcloud.cmd")) || !GoogleAdcLooksAvailable()) {
+            throw std::runtime_error("CloudAdcUnavailable");
+        }
+        session = MakeCloudAdcSession(descriptor_.provider, descriptor_.provider_name, profile_name);
     } else {
         throw std::runtime_error("UnsupportedAuthMode");
     }
@@ -174,6 +318,22 @@ AuthStatus StaticAuthProviderAdapter::status(const std::string& profile_name) {
 AuthSession StaticAuthProviderAdapter::refresh(const AuthSession& session) {
     if (!session.refresh_supported) {
         throw std::runtime_error("RefreshUnsupported");
+    }
+    if (session.metadata.contains("credential_source") &&
+        session.metadata.at("credential_source") == "oauth_pkce" &&
+        session.metadata.contains("token_endpoint") &&
+        session.metadata.contains("client_id") &&
+        cli_host_) {
+        return RefreshOAuthSession(
+            *cli_host_,
+            session_store_,
+            token_store_,
+            OAuthRefreshOrchestrationInput{
+                .existing_session = session,
+                .token_endpoint = session.metadata.at("token_endpoint"),
+                .client_id = session.metadata.at("client_id"),
+            },
+            workspace_path_);
     }
 
     auto refreshed = session;
@@ -345,15 +505,48 @@ GeminiAuthProviderAdapter::GeminiAuthProviderAdapter(SessionStore& session_store
           AuthProviderDescriptor{
               .provider = AuthProviderId::gemini,
               .provider_name = "gemini",
-              .supported_modes = {AuthMode::api_key, AuthMode::browser_oauth, AuthMode::cloud_adc},
+              .supported_modes = {AuthMode::api_key, AuthMode::browser_oauth, AuthMode::cli_session_passthrough, AuthMode::cloud_adc},
               .browser_login_supported = true,
               .headless_supported = true,
               .refresh_token_supported = true,
+              .cli_session_passthrough_supported = true,
           },
           session_store,
           token_store,
           nullptr,
           {}) {}
+
+GeminiAuthProviderAdapter::GeminiAuthProviderAdapter(
+    SessionStore& session_store,
+    SecureTokenStore& token_store,
+    const CliHost& cli_host,
+    std::filesystem::path workspace_path)
+    : StaticAuthProviderAdapter(
+          AuthProviderDescriptor{
+              .provider = AuthProviderId::gemini,
+              .provider_name = "gemini",
+              .supported_modes = {AuthMode::api_key, AuthMode::browser_oauth, AuthMode::cli_session_passthrough, AuthMode::cloud_adc},
+              .browser_login_supported = true,
+              .headless_supported = true,
+              .refresh_token_supported = true,
+              .cli_session_passthrough_supported = true,
+          },
+          session_store,
+          token_store,
+          &cli_host,
+          std::move(workspace_path)) {}
+
+std::optional<AuthSession> GeminiAuthProviderAdapter::probe_cli_session() {
+    if (!CommandExists("gemini") && !CommandExists("gemini.cmd")) {
+        return std::nullopt;
+    }
+
+    if (GeminiOAuthFileLooksAvailable()) {
+        return MakeCliSession(AuthProviderId::gemini, "gemini", "default", "gemini-cli-oauth", "gemini", "oauth-file-present");
+    }
+
+    return std::nullopt;
+}
 
 std::string GeminiAuthProviderAdapter::default_api_key_env() const {
     return "GEMINI_API_KEY";

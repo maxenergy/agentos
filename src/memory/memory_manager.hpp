@@ -36,7 +36,9 @@ public:
     [[nodiscard]] const WorkflowStore& workflow_store() const;
     [[nodiscard]] LessonStore& lesson_store();
     [[nodiscard]] const LessonStore& lesson_store() const;
+    [[nodiscard]] const std::filesystem::path& storage_dir() const;
     void refresh_workflow_store() const;
+    void compact_logs() const;
 
 private:
     static double UpdateAverage(double current_average, int previous_count, double sample);

@@ -1,5 +1,7 @@
 #include "auth/auth_profile_store.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -106,6 +108,10 @@ std::vector<AuthProfileMapping> AuthProfileStore::list() const {
     return mappings_;
 }
 
+void AuthProfileStore::compact() const {
+    flush();
+}
+
 const std::filesystem::path& AuthProfileStore::store_path() const {
     return store_path_;
 }
@@ -131,17 +137,15 @@ void AuthProfileStore::load() {
 }
 
 void AuthProfileStore::flush() const {
-    if (!store_path_.parent_path().empty()) {
-        std::filesystem::create_directories(store_path_.parent_path());
-    }
-
-    std::ofstream output(store_path_, std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& mapping : mappings_) {
         output
             << EncodeField(ToString(mapping.provider)) << kDelimiter
             << EncodeField(mapping.profile_name)
             << '\n';
     }
+
+    WriteFileAtomically(store_path_, output.str());
 }
 
 }  // namespace agentos

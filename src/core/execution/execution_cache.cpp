@@ -1,6 +1,9 @@
 #include "core/execution/execution_cache.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <vector>
 
@@ -84,6 +87,10 @@ RouteTargetKind ParseRouteTargetKind(const std::string& value) {
     return RouteTargetKind::none;
 }
 
+void AppendFingerprintField(std::ostringstream& output, const std::string& key, const std::string& value) {
+    output << EncodeField(key) << '=' << EncodeField(value) << '\n';
+}
+
 }  // namespace
 
 ExecutionCache::ExecutionCache(std::filesystem::path cache_path)
@@ -101,12 +108,36 @@ std::optional<TaskRunResult> ExecutionCache::find(const std::string& idempotency
         return std::nullopt;
     }
 
-    auto result = it->second;
+    auto result = it->second.result;
+    result.from_cache = true;
+    return result;
+}
+
+std::optional<TaskRunResult> ExecutionCache::find(
+    const std::string& idempotency_key,
+    const std::string& input_fingerprint) const {
+    if (idempotency_key.empty() || input_fingerprint.empty()) {
+        return std::nullopt;
+    }
+
+    const auto it = entries_.find(idempotency_key);
+    if (it == entries_.end() || it->second.input_fingerprint != input_fingerprint) {
+        return std::nullopt;
+    }
+
+    auto result = it->second.result;
     result.from_cache = true;
     return result;
 }
 
 void ExecutionCache::store(const std::string& idempotency_key, const TaskRunResult& result) {
+    store(idempotency_key, "", result);
+}
+
+void ExecutionCache::store(
+    const std::string& idempotency_key,
+    const std::string& input_fingerprint,
+    const TaskRunResult& result) {
     if (idempotency_key.empty() || !result.success) {
         return;
     }
@@ -114,12 +145,50 @@ void ExecutionCache::store(const std::string& idempotency_key, const TaskRunResu
     auto cached = result;
     cached.from_cache = false;
     cached.steps.clear();
-    entries_[idempotency_key] = std::move(cached);
+    entries_[idempotency_key] = Entry{
+        .input_fingerprint = input_fingerprint,
+        .result = std::move(cached),
+    };
+    flush();
+}
+
+void ExecutionCache::compact() const {
     flush();
 }
 
 const std::filesystem::path& ExecutionCache::cache_path() const {
     return cache_path_;
+}
+
+std::string ExecutionCache::fingerprint_for_task(const TaskRequest& task) {
+    std::ostringstream output;
+    AppendFingerprintField(output, "task_type", task.task_type);
+    AppendFingerprintField(output, "objective", task.objective);
+    AppendFingerprintField(output, "workspace_path", task.workspace_path.string());
+    AppendFingerprintField(output, "user_id", task.user_id);
+    AppendFingerprintField(output, "preferred_target", task.preferred_target.value_or(""));
+    AppendFingerprintField(output, "remote_trigger", task.remote_trigger ? "1" : "0");
+    AppendFingerprintField(output, "origin_identity_id", task.origin_identity_id);
+    AppendFingerprintField(output, "origin_device_id", task.origin_device_id);
+    AppendFingerprintField(output, "timeout_ms", std::to_string(task.timeout_ms));
+    AppendFingerprintField(output, "budget_limit", std::to_string(task.budget_limit));
+    AppendFingerprintField(output, "allow_high_risk", task.allow_high_risk ? "1" : "0");
+    AppendFingerprintField(output, "allow_network", task.allow_network ? "1" : "0");
+    AppendFingerprintField(output, "approval_id", task.approval_id);
+
+    std::map<std::string, std::string> sorted_inputs(task.inputs.begin(), task.inputs.end());
+    for (const auto& [key, value] : sorted_inputs) {
+        AppendFingerprintField(output, "input:" + key, value);
+    }
+    std::map<std::string, bool> grants;
+    for (const auto& grant : task.permission_grants) {
+        grants[grant] = true;
+    }
+    for (const auto& [grant, unused] : grants) {
+        (void)unused;
+        AppendFingerprintField(output, "grant", grant);
+    }
+    return output.str();
 }
 
 void ExecutionCache::load() {
@@ -140,16 +209,21 @@ void ExecutionCache::load() {
             continue;
         }
 
+        const bool has_fingerprint = parts.size() >= 10;
+        const std::size_t offset = has_fingerprint ? 1 : 0;
         TaskRunResult result;
-        result.success = parts[1] == "1";
-        result.route_kind = ParseRouteTargetKind(parts[2]);
-        result.route_target = parts[3];
-        result.duration_ms = std::stoi(parts[4]);
-        result.summary = parts[5];
-        result.output_json = parts[6];
-        result.error_code = parts[7];
-        result.error_message = parts[8];
-        entries_[parts[0]] = std::move(result);
+        result.success = parts[1 + offset] == "1";
+        result.route_kind = ParseRouteTargetKind(parts[2 + offset]);
+        result.route_target = parts[3 + offset];
+        result.duration_ms = std::stoi(parts[4 + offset]);
+        result.summary = parts[5 + offset];
+        result.output_json = parts[6 + offset];
+        result.error_code = parts[7 + offset];
+        result.error_message = parts[8 + offset];
+        entries_[parts[0]] = Entry{
+            .input_fingerprint = has_fingerprint ? parts[1] : "",
+            .result = std::move(result),
+        };
     }
 }
 
@@ -158,14 +232,12 @@ void ExecutionCache::flush() const {
         return;
     }
 
-    if (!cache_path_.parent_path().empty()) {
-        std::filesystem::create_directories(cache_path_.parent_path());
-    }
-
-    std::ofstream output(cache_path_, std::ios::binary | std::ios::trunc);
-    for (const auto& [key, result] : entries_) {
+    std::ostringstream output;
+    for (const auto& [key, entry] : entries_) {
+        const auto& result = entry.result;
         output
             << EncodeField(key) << kDelimiter
+            << EncodeField(entry.input_fingerprint) << kDelimiter
             << (result.success ? "1" : "0") << kDelimiter
             << EncodeField(route_target_kind_name(result.route_kind)) << kDelimiter
             << EncodeField(result.route_target) << kDelimiter
@@ -176,6 +248,8 @@ void ExecutionCache::flush() const {
             << EncodeField(result.error_message)
             << '\n';
     }
+
+    WriteFileAtomically(cache_path_, output.str());
 }
 
 }  // namespace agentos

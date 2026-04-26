@@ -1,5 +1,7 @@
 #include "memory/workflow_store.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -174,12 +176,23 @@ const std::filesystem::path& WorkflowStore::store_path() const {
     return store_path_;
 }
 
+void WorkflowStore::compact() const {
+    flush();
+}
+
 WorkflowDefinition WorkflowStore::FromCandidate(const WorkflowCandidate& candidate) {
     return {
         .name = candidate.name,
         .trigger_task_type = candidate.trigger_task_type,
         .ordered_steps = candidate.ordered_steps,
         .required_inputs = {},
+        .input_equals = {},
+        .input_number_gte = {},
+        .input_number_lte = {},
+        .input_bool = {},
+        .input_regex = {},
+        .input_any = {},
+        .input_expr = {},
         .source = "candidate",
         .enabled = false,
         .use_count = candidate.use_count,
@@ -210,6 +223,13 @@ void WorkflowStore::load() {
             .trigger_task_type = parts[2],
             .ordered_steps = ParseList(parts[3]),
             .required_inputs = parts.size() >= 12 ? ParseList(parts[11]) : std::vector<std::string>{},
+            .input_equals = parts.size() >= 13 ? ParseList(parts[12]) : std::vector<std::string>{},
+            .input_number_gte = parts.size() >= 14 ? ParseList(parts[13]) : std::vector<std::string>{},
+            .input_number_lte = parts.size() >= 15 ? ParseList(parts[14]) : std::vector<std::string>{},
+            .input_bool = parts.size() >= 16 ? ParseList(parts[15]) : std::vector<std::string>{},
+            .input_regex = parts.size() >= 17 ? ParseList(parts[16]) : std::vector<std::string>{},
+            .input_any = parts.size() >= 18 ? ParseList(parts[17]) : std::vector<std::string>{},
+            .input_expr = parts.size() >= 19 ? ParseList(parts[18]) : std::vector<std::string>{},
             .source = parts[4],
             .enabled = parts[1] == "1",
             .use_count = ParseInt(parts[5]),
@@ -227,11 +247,7 @@ void WorkflowStore::flush() const {
         return;
     }
 
-    if (!store_path_.parent_path().empty()) {
-        std::filesystem::create_directories(store_path_.parent_path());
-    }
-
-    std::ofstream output(store_path_, std::ios::binary | std::ios::trunc);
+    std::ostringstream output;
     for (const auto& workflow : workflows_) {
         output
             << EncodePercentField(workflow.name) << kDelimiter
@@ -245,9 +261,18 @@ void WorkflowStore::flush() const {
             << workflow.success_rate << kDelimiter
             << workflow.avg_duration_ms << kDelimiter
             << workflow.score << kDelimiter
-            << EncodePercentField(SerializeList(workflow.required_inputs))
+            << EncodePercentField(SerializeList(workflow.required_inputs)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.input_equals)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.input_number_gte)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.input_number_lte)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.input_bool)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.input_regex)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.input_any)) << kDelimiter
+            << EncodePercentField(SerializeList(workflow.input_expr))
             << '\n';
     }
+
+    WriteFileAtomically(store_path_, output.str());
 }
 
 }  // namespace agentos

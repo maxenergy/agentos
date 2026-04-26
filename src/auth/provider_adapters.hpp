@@ -61,8 +61,10 @@ protected:
 class GeminiAuthProviderAdapter final : public StaticAuthProviderAdapter {
 public:
     GeminiAuthProviderAdapter(SessionStore& session_store, SecureTokenStore& token_store);
+    GeminiAuthProviderAdapter(SessionStore& session_store, SecureTokenStore& token_store, const CliHost& cli_host, std::filesystem::path workspace_path);
 
 protected:
+    std::optional<AuthSession> probe_cli_session() override;
     std::string default_api_key_env() const override;
 };
 
@@ -75,4 +77,3 @@ protected:
 };
 
 }  // namespace agentos
-

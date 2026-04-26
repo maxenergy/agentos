@@ -170,6 +170,8 @@ struct TaskRequest {
     double budget_limit = 0.0;
     bool allow_high_risk = false;
     bool allow_network = false;
+    std::string approval_id;
+    std::vector<std::string> permission_grants;
 };
 
 struct TaskStepRecord {
@@ -179,6 +181,8 @@ struct TaskStepRecord {
     int duration_ms = 0;
     double estimated_cost = 0.0;
     std::string summary;
+    std::string structured_output_json;
+    std::vector<AgentArtifact> artifacts;
     std::string error_code;
     std::string error_message;
 };

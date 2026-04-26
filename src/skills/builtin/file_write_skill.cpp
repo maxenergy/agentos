@@ -14,7 +14,7 @@ SkillManifest FileWriteSkill::manifest() const {
         .version = "0.1.0",
         .description = "Write a text file inside the active workspace.",
         .capabilities = {"filesystem", "write"},
-        .input_schema_json = R"({"type":"object","required":["path","content"]})",
+        .input_schema_json = R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"mode":{"type":"string"}},"required":["path","content"]})",
         .output_schema_json = R"({"type":"object","required":["path","bytes_written"]})",
         .risk_level = "medium",
         .permissions = {"filesystem.write"},

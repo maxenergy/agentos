@@ -32,6 +32,7 @@ public:
     [[nodiscard]] const std::filesystem::path& store_path() const;
 
     std::optional<LessonRecord> record_failure(const TaskRequest& task, const TaskRunResult& result);
+    void compact() const;
 
 private:
     static std::string BuildLessonId(const TaskRequest& task, const TaskRunResult& result);
