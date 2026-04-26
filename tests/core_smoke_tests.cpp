@@ -20,7 +20,9 @@
 #include "hosts/cli/cli_spec_loader.hpp"
 #include "memory/memory_manager.hpp"
 #include "memory/workflow_store.hpp"
+#include "scheduler/cron.hpp"
 #include "scheduler/scheduler.hpp"
+#include "scheduler/timezone.hpp"
 #include "skills/builtin/file_patch_skill.hpp"
 #include "skills/builtin/file_read_skill.hpp"
 #include "skills/builtin/file_write_skill.hpp"
@@ -1411,6 +1413,328 @@ void TestSchedulerMissedIntervalSkipPolicy(const std::filesystem::path& workspac
     }
 }
 
+namespace {
+
+// Convert (Y, M, D, h, m, s) UTC components to a system_clock::time_point
+// without depending on platform timezone state. Uses the same algorithm as
+// scheduler/timezone.cpp internally; we reimplement here to keep the test
+// honest (so we are not just round-tripping through the implementation).
+std::chrono::system_clock::time_point UtcInstant(int year, unsigned month, unsigned day,
+                                                 int hour, int minute, int second) {
+    int y = year - (month <= 2 ? 1 : 0);
+    const long long era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);
+    const unsigned mp = month > 2 ? month - 3U : month + 9U;
+    const unsigned doy = (153U * mp + 2U) / 5U + day - 1U;
+    const unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    const long long days = era * 146097LL + static_cast<long long>(doe) - 719468LL;
+    const long long secs = days * 86400LL + hour * 3600LL + minute * 60LL + second;
+    return std::chrono::system_clock::time_point{std::chrono::seconds{secs}};
+}
+
+long long EpochMs(int year, unsigned month, unsigned day, int hour, int minute, int second) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        UtcInstant(year, month, day, hour, minute, second).time_since_epoch()).count();
+}
+
+}  // namespace
+
+void TestCronExpressionParsesAndAliasesExpand() {
+    Expect(agentos::CronExpression::Parse("*/15 * * * *").has_value(),
+           "cron parser should accept */15 * * * *");
+    Expect(agentos::CronExpression::Parse("0 9 * * 1-5").has_value(),
+           "cron parser should accept range and day-of-week");
+    Expect(agentos::CronExpression::Parse("@hourly").has_value(),
+           "cron parser should accept @hourly alias");
+    Expect(agentos::CronExpression::Parse("@daily").has_value(),
+           "cron parser should accept @daily alias");
+    Expect(agentos::CronExpression::Parse("@weekly").has_value(),
+           "cron parser should accept @weekly alias");
+    Expect(agentos::CronExpression::Parse("@monthly").has_value(),
+           "cron parser should accept @monthly alias");
+    Expect(agentos::CronExpression::Parse("@yearly").has_value(),
+           "cron parser should accept @yearly alias");
+    Expect(!agentos::CronExpression::Parse("99 * * * *").has_value(),
+           "cron parser should reject minute > 59");
+    Expect(!agentos::CronExpression::Parse("* * * * 8").has_value(),
+           "cron parser should reject day-of-week > 7");
+    Expect(!agentos::CronExpression::Parse("not a cron").has_value(),
+           "cron parser should reject non-cron text");
+}
+
+void TestCronInNonUtcTimezoneHitsCorrectUtcInstant() {
+    // 09:30 every day in Asia/Shanghai (UTC+08:00, no DST).
+    // From 2026-04-26 00:00 UTC, the next fire should be 2026-04-26 01:30 UTC
+    // (which is 2026-04-26 09:30 Shanghai).
+    const auto cron = agentos::CronExpression::Parse("30 9 * * *");
+    Expect(cron.has_value(), "cron 30 9 * * * should parse");
+    if (!cron.has_value()) return;
+
+    const auto tz = agentos::Timezone::Parse("Asia/Shanghai");
+    Expect(tz.has_value(), "Asia/Shanghai timezone should parse");
+    if (!tz.has_value()) return;
+
+    const auto after = UtcInstant(2026, 4, 26, 0, 0, 0);
+    const auto next = cron->next_after(after, *tz);
+    Expect(next.has_value(), "cron should compute a next fire");
+    if (next.has_value()) {
+        const auto expected = UtcInstant(2026, 4, 26, 1, 30, 0);
+        Expect(*next == expected, "cron 30 9 * * * in Asia/Shanghai should fire at 01:30 UTC");
+    }
+
+    // Same cron but in America/New_York. From 2026-04-26 00:00 UTC, the next
+    // fire should be 2026-04-26 13:30 UTC (which is 09:30 EDT in April,
+    // UTC-04:00). Today's date 2026-04-26 is during DST.
+    const auto tz_ny = agentos::Timezone::Parse("America/New_York");
+    Expect(tz_ny.has_value(), "America/New_York timezone should parse");
+    if (!tz_ny.has_value()) return;
+
+    const auto next_ny = cron->next_after(after, *tz_ny);
+    Expect(next_ny.has_value(), "cron in NY tz should compute a next fire");
+    if (next_ny.has_value()) {
+        const auto expected_ny = UtcInstant(2026, 4, 26, 13, 30, 0);
+        Expect(*next_ny == expected_ny,
+               "cron 30 9 * * * in America/New_York during DST should fire at 13:30 UTC");
+    }
+
+    // A fixed-offset zone "UTC+08:00" should match Asia/Shanghai exactly.
+    const auto tz_off = agentos::Timezone::Parse("UTC+08:00");
+    Expect(tz_off.has_value(), "UTC+08:00 should parse");
+    if (tz_off.has_value()) {
+        const auto next_off = cron->next_after(after, *tz_off);
+        Expect(next_off.has_value() && *next_off == UtcInstant(2026, 4, 26, 1, 30, 0),
+               "cron 30 9 * * * with UTC+08:00 should match Asia/Shanghai");
+    }
+}
+
+void TestCronSpringForwardGapSkipped() {
+    // 2026 US spring-forward: the second Sunday of March is 2026-03-08.
+    // At 02:00 EST the wall clock jumps to 03:00 EDT. So local 02:30 on
+    // 2026-03-08 in America/New_York does not exist.
+    //
+    // A cron firing daily at 02:30 should skip the gap on 2026-03-08 and
+    // fire at the first valid wall-clock minute after the gap, which is
+    // 03:00 EDT == 07:00 UTC.
+    const auto cron = agentos::CronExpression::Parse("30 2 * * *");
+    Expect(cron.has_value(), "30 2 * * * should parse");
+    if (!cron.has_value()) return;
+
+    const auto tz = agentos::Timezone::Parse("America/New_York");
+    Expect(tz.has_value(), "NY tz should parse");
+    if (!tz.has_value()) return;
+
+    // Start the search just after 2026-03-08 00:00 UTC (i.e. 03-07 19:00 EST).
+    const auto after = UtcInstant(2026, 3, 8, 0, 0, 0);
+    const auto next = cron->next_after(after, *tz);
+    Expect(next.has_value(), "spring-forward gap should still produce a next fire");
+    if (next.has_value()) {
+        // First valid post-gap instant is 2026-03-08 07:00 UTC (03:00 EDT).
+        const auto expected = UtcInstant(2026, 3, 8, 7, 0, 0);
+        Expect(*next == expected,
+               "cron 30 2 * * * on spring-forward day should fire at 03:00 EDT (07:00 UTC)");
+    }
+
+    // The very next fire (after that one) must be the next day's 02:30 EDT,
+    // which is 06:30 UTC on 2026-03-09 (post-DST offset of -4h).
+    if (next.has_value()) {
+        const auto next2 = cron->next_after(*next, *tz);
+        Expect(next2.has_value(), "cron should produce a next fire after gap");
+        if (next2.has_value()) {
+            const auto expected2 = UtcInstant(2026, 3, 9, 6, 30, 0);
+            Expect(*next2 == expected2,
+                   "next fire after gap day should be 02:30 EDT next day = 06:30 UTC");
+        }
+    }
+}
+
+void TestCronFallBackHourFiresOnce() {
+    // 2026 US fall-back: first Sunday of November is 2026-11-01.
+    // At 02:00 EDT the wall clock jumps back to 01:00 EST. So local 01:30
+    // on 2026-11-01 in America/New_York happens twice: first at 05:30 UTC
+    // (still EDT, UTC-04), then at 06:30 UTC (now EST, UTC-05).
+    //
+    // A cron firing daily at 01:30 should fire ONCE on 2026-11-01: at the
+    // FIRST occurrence (05:30 UTC), and the very next fire should be the
+    // following day's 01:30 EST (= 06:30 UTC on 2026-11-02), NOT 06:30 UTC
+    // on 2026-11-01 (the second occurrence of 01:30 local).
+    const auto cron = agentos::CronExpression::Parse("30 1 * * *");
+    Expect(cron.has_value(), "30 1 * * * should parse");
+    if (!cron.has_value()) return;
+
+    const auto tz = agentos::Timezone::Parse("America/New_York");
+    Expect(tz.has_value(), "NY tz should parse");
+    if (!tz.has_value()) return;
+
+    // Start just before 01:30 EDT on fall-back day: 2026-11-01 04:00 UTC
+    // (= 2026-11-01 00:00 EDT).
+    const auto after = UtcInstant(2026, 11, 1, 4, 0, 0);
+    const auto first = cron->next_after(after, *tz);
+    Expect(first.has_value(), "fall-back day fire should compute");
+    if (first.has_value()) {
+        const auto expected_first = UtcInstant(2026, 11, 1, 5, 30, 0);
+        Expect(*first == expected_first,
+               "first fire of 01:30 local on fall-back day should be 05:30 UTC (EDT)");
+    }
+
+    if (first.has_value()) {
+        const auto second = cron->next_after(*first, *tz);
+        Expect(second.has_value(), "next fire after fall-back occurrence should compute");
+        if (second.has_value()) {
+            // The second (later-UTC) occurrence of 01:30 local would be
+            // 06:30 UTC on the same day (2026-11-01). We MUST NOT fire there.
+            const auto forbidden = UtcInstant(2026, 11, 1, 6, 30, 0);
+            Expect(*second != forbidden,
+                   "fall-back fold must not fire twice (06:30 UTC same day forbidden)");
+            // It should be the next day's 01:30 EST = 06:30 UTC on 2026-11-02.
+            const auto expected_second = UtcInstant(2026, 11, 2, 6, 30, 0);
+            Expect(*second == expected_second,
+                   "next fire after fall-back should be next day at 01:30 EST = 06:30 UTC");
+        }
+    }
+}
+
+void TestSchedulerCronTaskReschedulesUsingTimezone(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "scheduler_cron_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    const auto store_path = isolated_workspace / "scheduler_cron" / "tasks.tsv";
+    agentos::Scheduler scheduler(store_path);
+
+    // Schedule a cron task firing daily at 09:30 Shanghai. The save() call
+    // computes next_run_epoch_ms forward from now; we verify it lands on a
+    // 09:30 Shanghai (= 01:30 UTC) wall-clock minute.
+    auto saved = scheduler.save(agentos::ScheduledTask{
+        .schedule_id = "cron-daily-shanghai",
+        .enabled = true,
+        .next_run_epoch_ms = EpochMs(2026, 4, 25, 23, 0, 0),  // 23:00 UTC start
+        .interval_seconds = 0,
+        .max_runs = 0,
+        .run_count = 0,
+        .max_retries = 0,
+        .retry_count = 0,
+        .retry_backoff_seconds = 0,
+        .missed_run_policy = "run-once",
+        .cron_expression = "30 9 * * *",
+        .timezone_name = "Asia/Shanghai",
+        .task = agentos::TaskRequest{
+            .task_id = "",
+            .task_type = "write_file",
+            .objective = "cron daily Shanghai",
+            .workspace_path = isolated_workspace,
+            .user_id = "local-user",
+            .idempotency_key = "cron-shanghai-1",
+            .inputs = {{"path", "runtime/cron-shanghai.txt"}, {"content", "shanghai"}},
+            .timeout_ms = 5000,
+        },
+    });
+
+    // Expected: 2026-04-26 01:30 UTC (= 09:30 Shanghai).
+    const auto expected_first = EpochMs(2026, 4, 26, 1, 30, 0);
+    Expect(saved.next_run_epoch_ms == expected_first,
+           "cron save should snap next_run to 01:30 UTC for 09:30 Asia/Shanghai");
+
+    // Run at the exact fire time. Should fire once and reschedule for the
+    // next day's fire (2026-04-27 01:30 UTC).
+    const auto fire_now = EpochMs(2026, 4, 26, 1, 30, 0);
+    const auto records = scheduler.run_due(runtime.loop, fire_now);
+    Expect(records.size() == 1, "cron task should fire at scheduled time");
+    Expect(!records.empty() && records.front().rescheduled,
+           "cron task should be rescheduled, not disabled");
+
+    const auto stored = scheduler.find("cron-daily-shanghai");
+    Expect(stored.has_value(), "cron task should remain in scheduler");
+    if (stored.has_value()) {
+        const auto expected_next = EpochMs(2026, 4, 27, 1, 30, 0);
+        Expect(stored->next_run_epoch_ms == expected_next,
+               "cron task next_run should advance to next day's 01:30 UTC");
+        Expect(stored->run_count == 1, "cron task run_count should advance");
+    }
+
+    // Reload and verify cron + timezone persist.
+    agentos::Scheduler reloaded(store_path);
+    const auto reloaded_task = reloaded.find("cron-daily-shanghai");
+    Expect(reloaded_task.has_value(), "cron task should reload");
+    if (reloaded_task.has_value()) {
+        Expect(reloaded_task->cron_expression == "30 9 * * *",
+               "cron expression should persist");
+        Expect(reloaded_task->timezone_name == "Asia/Shanghai",
+               "timezone should persist");
+    }
+}
+
+void TestSchedulerLoadsLegacyTsvWithoutTimezone(const std::filesystem::path& workspace) {
+    // Backward-compat: older runtime/scheduler/tasks.tsv rows did not have
+    // cron_expression and timezone_name columns (they ended at
+    // missed_run_policy, the 24th tab-separated field). The scheduler must
+    // still load them, defaulting both new fields to empty (-> UTC).
+    const auto isolated_workspace = workspace / "scheduler_legacy_tsv_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    const auto dir = isolated_workspace / "scheduler_legacy";
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "tasks.tsv";
+
+    // Write a legacy row by hand: 24 tab-separated fields.
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << "legacy-once" << '\t'  // schedule_id
+            << "1" << '\t'              // enabled
+            << "1000" << '\t'           // next_run_epoch_ms
+            << "0" << '\t'              // interval_seconds
+            << "1" << '\t'              // max_runs
+            << "0" << '\t'              // run_count
+            << "write_file" << '\t'     // task_type
+            << "legacy task" << '\t'    // objective
+            << "" << '\t'               // workspace_path
+            << "local-user" << '\t'     // user_id
+            << "legacy-key" << '\t'     // idempotency_key
+            << "0" << '\t'              // remote_trigger
+            << "" << '\t'               // origin_identity
+            << "" << '\t'               // origin_device
+            << "" << '\t'               // preferred_target
+            << "5000" << '\t'           // timeout_ms
+            << "0" << '\t'              // budget_limit
+            << "0" << '\t'              // allow_high_risk
+            << "0" << '\t'              // allow_network
+            << "path=runtime/legacy.txt&content=legacy" << '\t'  // inputs
+            << "0" << '\t'              // max_retries
+            << "0" << '\t'              // retry_count
+            << "0" << '\t'              // retry_backoff_seconds
+            << "run-once"               // missed_run_policy
+            << '\n';
+    }
+
+    agentos::Scheduler scheduler(path);
+    const auto loaded = scheduler.find("legacy-once");
+    Expect(loaded.has_value(), "legacy TSV row should load");
+    if (loaded.has_value()) {
+        Expect(loaded->cron_expression.empty(),
+               "legacy row should default cron_expression to empty");
+        Expect(loaded->timezone_name.empty(),
+               "legacy row should default timezone_name to empty (treated as UTC)");
+        Expect(loaded->missed_run_policy == "run-once",
+               "legacy missed_run_policy should be preserved");
+        Expect(loaded->task.idempotency_key == "legacy-key",
+               "legacy idempotency_key should be preserved");
+    }
+}
+
+void TestTimezoneFixedOffsetParsing() {
+    Expect(agentos::Timezone::Parse("UTC").has_value(), "UTC should parse");
+    Expect(agentos::Timezone::Parse("").has_value(), "empty -> UTC");
+    Expect(agentos::Timezone::Parse("UTC+08:00").has_value(), "UTC+08:00 should parse");
+    Expect(agentos::Timezone::Parse("UTC-05:00").has_value(), "UTC-05:00 should parse");
+    Expect(agentos::Timezone::Parse("GMT+9").has_value(), "GMT+9 should parse");
+    Expect(agentos::Timezone::Parse("UTC+05:30").has_value(), "half-hour offset should parse");
+    Expect(!agentos::Timezone::Parse("garbage/zone").has_value(),
+           "unknown zone should fail to parse");
+    Expect(!agentos::Timezone::Parse("UTC+99:00").has_value(),
+           "out-of-range offset should fail");
+}
+
 void TestSubagentManagerSequentialRun(const std::filesystem::path& workspace) {
     TestRuntime runtime(workspace);
     RegisterCore(runtime);
@@ -2114,6 +2438,13 @@ int main() {
     TestSchedulerSkipsDisabledTask(workspace);
     TestSchedulerMissedIntervalRunsOnceFromCurrentTime(workspace);
     TestSchedulerMissedIntervalSkipPolicy(workspace);
+    TestCronExpressionParsesAndAliasesExpand();
+    TestTimezoneFixedOffsetParsing();
+    TestCronInNonUtcTimezoneHitsCorrectUtcInstant();
+    TestCronSpringForwardGapSkipped();
+    TestCronFallBackHourFiresOnce();
+    TestSchedulerCronTaskReschedulesUsingTimezone(workspace);
+    TestSchedulerLoadsLegacyTsvWithoutTimezone(workspace);
     TestSubagentManagerSequentialRun(workspace);
     TestSubagentManagerParallelRun(workspace);
     TestSubagentManagerParallelConcurrencyLimit(workspace);

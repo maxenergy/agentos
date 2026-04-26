@@ -1,6 +1,8 @@
 #include "scheduler/scheduler.hpp"
 
 #include "core/loop/agent_loop.hpp"
+#include "scheduler/cron.hpp"
+#include "scheduler/timezone.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -159,6 +161,31 @@ bool ShouldSkipMissedIntervalRun(const ScheduledTask& scheduled_task, const long
     return now_epoch_ms >= scheduled_task.next_run_epoch_ms + interval_ms;
 }
 
+// Resolve the timezone name on a ScheduledTask, falling back to UTC when
+// the field is empty or unrecognized. Unrecognized names should normally be
+// rejected at insertion time; this fallback exists for forward-compat.
+Timezone ResolveTimezoneOrUtc(const std::string& name) {
+    if (name.empty()) return Timezone::Utc();
+    auto parsed = Timezone::Parse(name);
+    if (!parsed) return Timezone::Utc();
+    return *parsed;
+}
+
+// Compute the next epoch-ms for a cron-based ScheduledTask, given the
+// reference instant `after_epoch_ms`. Returns 0 if no next time can be
+// computed (cron parse failure or no fire within search horizon).
+long long NextCronEpochMs(const ScheduledTask& scheduled_task, long long after_epoch_ms) {
+    auto cron = CronExpression::Parse(scheduled_task.cron_expression);
+    if (!cron) return 0;
+    const Timezone tz = ResolveTimezoneOrUtc(scheduled_task.timezone_name);
+    const auto after_tp = std::chrono::system_clock::time_point{
+        std::chrono::milliseconds{after_epoch_ms}};
+    const auto next = cron->next_after(after_tp, tz);
+    if (!next) return 0;
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        next->time_since_epoch()).count();
+}
+
 }  // namespace
 
 Scheduler::Scheduler(std::filesystem::path store_path)
@@ -173,6 +200,28 @@ Scheduler::Scheduler(std::filesystem::path store_path)
 ScheduledTask Scheduler::save(ScheduledTask scheduled_task) {
     remove(scheduled_task.schedule_id);
     scheduled_task.missed_run_policy = NormalizeMissedRunPolicy(scheduled_task.missed_run_policy);
+
+    // Normalize timezone string: empty -> "UTC"; recognized names are kept
+    // verbatim; unrecognized names raise no error here (for forward compat
+    // with future zones), but resolve as UTC at evaluation time.
+    if (!scheduled_task.timezone_name.empty()) {
+        if (auto parsed = Timezone::Parse(scheduled_task.timezone_name); parsed) {
+            scheduled_task.timezone_name = parsed->name();
+        }
+    }
+
+    // If a cron expression is supplied and next_run_epoch_ms is unset
+    // (treated as "now"), compute the first fire from current time.
+    if (!scheduled_task.cron_expression.empty()) {
+        const auto reference_ms = scheduled_task.next_run_epoch_ms > 0
+            ? scheduled_task.next_run_epoch_ms - 1
+            : NowEpochMs();
+        const auto first = NextCronEpochMs(scheduled_task, reference_ms);
+        if (first > 0) {
+            scheduled_task.next_run_epoch_ms = first;
+        }
+    }
+
     scheduled_tasks_.push_back(std::move(scheduled_task));
     flush();
     return scheduled_tasks_.back();
@@ -261,6 +310,22 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
             changed = true;
             continue;
         }
+        // For cron-driven tasks under "skip" policy, if more than one
+        // scheduled fire has been missed (i.e. the *next* cron occurrence
+        // after the recorded next_run is also in the past), advance to the
+        // next future fire rather than firing the stale one.
+        if (scheduled_task.missed_run_policy == "skip" &&
+            !scheduled_task.cron_expression.empty()) {
+            const auto follow_up = NextCronEpochMs(scheduled_task, scheduled_task.next_run_epoch_ms);
+            if (follow_up > 0 && follow_up <= now_epoch_ms) {
+                const auto future = NextCronEpochMs(scheduled_task, now_epoch_ms);
+                if (future > 0) {
+                    scheduled_task.next_run_epoch_ms = future;
+                    changed = true;
+                    continue;
+                }
+            }
+        }
 
         auto task = scheduled_task.task;
         task.task_id = scheduled_task.schedule_id + ".run-" + std::to_string(scheduled_task.run_count + 1);
@@ -274,13 +339,24 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
         scheduled_task.run_count += 1;
 
         bool rescheduled = false;
+        const bool can_recur = scheduled_task.max_runs == 0 ||
+            scheduled_task.run_count < scheduled_task.max_runs;
+
         if (!result.success && scheduled_task.retry_count < scheduled_task.max_retries) {
             scheduled_task.retry_count += 1;
             const auto backoff_ms = static_cast<long long>(scheduled_task.retry_backoff_seconds) * 1000LL;
             scheduled_task.next_run_epoch_ms = now_epoch_ms + (backoff_ms > 0 ? backoff_ms : 1000LL);
             rescheduled = true;
-        } else if (scheduled_task.interval_seconds > 0 &&
-            (scheduled_task.max_runs == 0 || scheduled_task.run_count < scheduled_task.max_runs)) {
+        } else if (!scheduled_task.cron_expression.empty() && can_recur) {
+            scheduled_task.retry_count = 0;
+            const auto next_ms = NextCronEpochMs(scheduled_task, now_epoch_ms);
+            if (next_ms > 0) {
+                scheduled_task.next_run_epoch_ms = next_ms;
+                rescheduled = true;
+            } else {
+                scheduled_task.enabled = false;
+            }
+        } else if (scheduled_task.interval_seconds > 0 && can_recur) {
             scheduled_task.retry_count = 0;
             scheduled_task.next_run_epoch_ms = now_epoch_ms + (static_cast<long long>(scheduled_task.interval_seconds) * 1000LL);
             rescheduled = true;
@@ -376,6 +452,8 @@ void Scheduler::load() {
             .retry_count = parts.size() >= 23 ? ParseInt(parts[21], 0) : 0,
             .retry_backoff_seconds = parts.size() >= 23 ? ParseInt(parts[22], 0) : 0,
             .missed_run_policy = parts.size() >= 24 ? NormalizeMissedRunPolicy(parts[23]) : "run-once",
+            .cron_expression = parts.size() >= 25 ? parts[24] : std::string{},
+            .timezone_name = parts.size() >= 26 ? parts[25] : std::string{},
             .task = std::move(task),
         });
     }
@@ -413,7 +491,9 @@ void Scheduler::flush() const {
             << scheduled_task.max_retries << kDelimiter
             << scheduled_task.retry_count << kDelimiter
             << scheduled_task.retry_backoff_seconds << kDelimiter
-            << EncodeField(NormalizeMissedRunPolicy(scheduled_task.missed_run_policy))
+            << EncodeField(NormalizeMissedRunPolicy(scheduled_task.missed_run_policy)) << kDelimiter
+            << EncodeField(scheduled_task.cron_expression) << kDelimiter
+            << EncodeField(scheduled_task.timezone_name)
             << '\n';
     }
 }

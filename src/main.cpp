@@ -18,7 +18,9 @@
 #include "hosts/cli/cli_skill_invoker.hpp"
 #include "hosts/cli/cli_spec_loader.hpp"
 #include "memory/memory_manager.hpp"
+#include "scheduler/cron.hpp"
 #include "scheduler/scheduler.hpp"
+#include "scheduler/timezone.hpp"
 #include "skills/builtin/file_patch_skill.hpp"
 #include "skills/builtin/file_read_skill.hpp"
 #include "skills/builtin/file_write_skill.hpp"
@@ -456,6 +458,10 @@ bool IsReservedScheduleOption(const std::string& key) {
         "due",
         "delay_seconds",
         "recurrence",
+        "cron",
+        "cron_expression",
+        "timezone",
+        "tz",
         "interval_seconds",
         "max_runs",
         "max_retries",
@@ -547,17 +553,31 @@ ScheduledTask BuildScheduledTaskFromOptions(
         }
     }
 
+    std::string cron_expression;
+    if (options.contains("cron")) cron_expression = options.at("cron");
+    else if (options.contains("cron_expression")) cron_expression = options.at("cron_expression");
+
+    std::string timezone_name;
+    if (options.contains("timezone")) timezone_name = options.at("timezone");
+    else if (options.contains("tz")) timezone_name = options.at("tz");
+
+    const auto effective_max_runs = !cron_expression.empty()
+        ? (options.contains("max_runs") ? ParseIntOption(options, "max_runs", 0) : 0)
+        : max_runs;
+
     return ScheduledTask{
         .schedule_id = schedule_id,
         .enabled = true,
         .next_run_epoch_ms = ParseDueEpochMs(options),
         .interval_seconds = interval_seconds,
-        .max_runs = max_runs,
+        .max_runs = effective_max_runs,
         .run_count = 0,
         .max_retries = ParseIntOption(options, "max_retries", 0),
         .retry_count = 0,
         .retry_backoff_seconds = ParseIntOption(options, "retry_backoff_seconds", 0),
         .missed_run_policy = options.contains("missed_run_policy") ? options.at("missed_run_policy") : "run-once",
+        .cron_expression = cron_expression,
+        .timezone_name = timezone_name,
         .task = std::move(task),
     };
 }
@@ -633,7 +653,12 @@ void PrintScheduledTask(const ScheduledTask& task) {
         << " max_retries=" << task.max_retries
         << " retry_count=" << task.retry_count
         << " retry_backoff_seconds=" << task.retry_backoff_seconds
-        << " missed_run_policy=" << task.missed_run_policy
+        << " missed_run_policy=" << task.missed_run_policy;
+    if (!task.cron_expression.empty()) {
+        std::cout << " cron=\"" << task.cron_expression << "\"";
+    }
+    std::cout << " timezone=" << (task.timezone_name.empty() ? "UTC" : task.timezone_name);
+    std::cout
         << " task_type=" << task.task.task_type
         << " objective=\"" << task.task.objective << "\""
         << '\n';
@@ -835,7 +860,7 @@ void PrintUsage() {
         << "  agentos memory stored-workflows\n"
         << "  agentos memory lessons\n"
         << "  agentos memory promote-workflow <candidate_name> [workflow=<stored_name>] [required_inputs=a,b]\n"
-        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m] [missed_run_policy=run-once|skip] key=value ...\n"
+        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m | cron=\"*/5 * * * *\"] [timezone=UTC|America/New_York|UTC+08:00] [missed_run_policy=run-once|skip] key=value ...\n"
         << "  agentos schedule list\n"
         << "  agentos schedule history\n"
         << "  agentos schedule run-due\n"
@@ -1026,6 +1051,18 @@ int RunScheduleCommand(
         }
         if (!IsValidMissedRunPolicy(scheduled_task.missed_run_policy)) {
             std::cerr << "missed_run_policy must be run-once or skip\n";
+            return 1;
+        }
+        if (!scheduled_task.cron_expression.empty() &&
+            !CronExpression::Parse(scheduled_task.cron_expression).has_value()) {
+            std::cerr << "InvalidCronExpression: cron must be a 5-field expression "
+                         "or one of @hourly/@daily/@weekly/@monthly/@yearly\n";
+            return 1;
+        }
+        if (!scheduled_task.timezone_name.empty() &&
+            !Timezone::Parse(scheduled_task.timezone_name).has_value()) {
+            std::cerr << "TimezoneUnknown: timezone must be UTC, an offset like "
+                         "UTC+08:00, or a recognized IANA name (see docs/ROADMAP.md)\n";
             return 1;
         }
 

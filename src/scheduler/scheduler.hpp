@@ -22,6 +22,13 @@ struct ScheduledTask {
     int retry_count = 0;
     int retry_backoff_seconds = 0;
     std::string missed_run_policy = "run-once";
+    // Optional five-field (or @alias) cron expression. When non-empty,
+    // takes precedence over interval_seconds for computing the next run.
+    std::string cron_expression;
+    // IANA-style zone or fixed offset, e.g. "America/New_York", "UTC+08:00",
+    // "UTC". Empty defaults to UTC. Used for cron evaluation; intervals are
+    // timezone-insensitive (they are wall-clock-agnostic durations).
+    std::string timezone_name;
     TaskRequest task;
 };
 

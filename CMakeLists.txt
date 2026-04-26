@@ -33,7 +33,9 @@ add_library(agentos_core
     src/memory/lesson_store.cpp
     src/memory/memory_manager.cpp
     src/memory/workflow_store.cpp
+    src/scheduler/cron.cpp
     src/scheduler/scheduler.cpp
+    src/scheduler/timezone.cpp
     src/core/router/router.cpp
     src/core/router/router_components.cpp
     src/core/loop/agent_loop.cpp
