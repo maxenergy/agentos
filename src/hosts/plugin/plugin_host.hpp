@@ -3,6 +3,8 @@
 #include "core/models.hpp"
 #include "hosts/cli/cli_host.hpp"
 
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -38,6 +40,7 @@ struct PluginSpec {
     std::string lifecycle_mode = "oneshot";
     int startup_timeout_ms = 3000;
     int idle_timeout_ms = 30000;
+    int pool_size = 1;
     std::filesystem::path source_file;
     int source_line_number = 0;
 };
@@ -103,6 +106,18 @@ struct PluginHostOptionsLoadResult {
 PluginHostOptionsLoadResult LoadPluginHostOptionsWithDiagnostics(const std::filesystem::path& workspace_path);
 PluginHostOptions LoadPluginHostOptions(const std::filesystem::path& workspace_path);
 
+struct PluginSessionInfo {
+    std::string plugin_name;
+    std::string workspace_path;
+    std::string binary;
+    std::int64_t pid = 0;
+    std::int64_t started_at_unix_ms = 0;
+    std::int64_t last_used_at_unix_ms = 0;
+    int idle_for_ms = 0;
+    int request_count = 0;
+    bool alive = false;
+};
+
 class PluginHost {
 public:
     explicit PluginHost(const CliHost& cli_host, PluginHostOptions options = {});
@@ -111,6 +126,9 @@ public:
     PluginRunResult run(const PluginRunRequest& request) const;
     std::size_t active_session_count() const;
     std::size_t close_all_sessions() const;
+    std::size_t close_sessions_for_plugin(const std::string& plugin_name) const;
+    std::size_t restart_sessions_for_plugin(const std::string& plugin_name) const;
+    std::vector<PluginSessionInfo> list_sessions() const;
 
 private:
     const CliHost& cli_host_;

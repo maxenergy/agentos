@@ -239,7 +239,8 @@ PluginSpecParseResult ParsePluginSpecLine(const std::string& line) {
         !AssignIntField(fields, 17, "file_descriptor_limit", 0, 0, spec.file_descriptor_limit, field_error) ||
         !AssignIntField(fields, 19, "health_timeout_ms", spec.timeout_ms, 1, spec.health_timeout_ms, field_error) ||
         !AssignIntField(fields, 22, "startup_timeout_ms", spec.timeout_ms, 1, spec.startup_timeout_ms, field_error) ||
-        !AssignIntField(fields, 23, "idle_timeout_ms", 30000, 1, spec.idle_timeout_ms, field_error)) {
+        !AssignIntField(fields, 23, "idle_timeout_ms", 30000, 1, spec.idle_timeout_ms, field_error) ||
+        !AssignIntField(fields, 24, "pool_size", 1, 1, spec.pool_size, field_error)) {
         return {
             .spec = std::nullopt,
             .error_message = field_error,
@@ -329,7 +330,8 @@ PluginSpecParseResult ParsePluginSpecJsonManifest(const std::string& manifest) {
         !AssignJsonIntField(trimmed, "file_descriptor_limit", 0, 0, spec.file_descriptor_limit, field_error) ||
         !AssignJsonIntField(trimmed, "health_timeout_ms", spec.timeout_ms, 1, spec.health_timeout_ms, field_error) ||
         !AssignJsonIntField(trimmed, "startup_timeout_ms", spec.timeout_ms, 1, spec.startup_timeout_ms, field_error) ||
-        !AssignJsonIntField(trimmed, "idle_timeout_ms", 30000, 1, spec.idle_timeout_ms, field_error)) {
+        !AssignJsonIntField(trimmed, "idle_timeout_ms", 30000, 1, spec.idle_timeout_ms, field_error) ||
+        !AssignJsonIntField(trimmed, "pool_size", 1, 1, spec.pool_size, field_error)) {
         return {
             .spec = std::nullopt,
             .error_message = field_error,

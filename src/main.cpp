@@ -620,6 +620,9 @@ void PrintUsage() {
         << "  agentos plugins health\n"
         << "  agentos plugins lifecycle\n"
         << "  agentos plugins inspect name=<plugin_name> [health=true]\n"
+        << "  agentos plugins sessions\n"
+        << "  agentos plugins session-restart name=<plugin_name>\n"
+        << "  agentos plugins session-close name=<plugin_name>\n"
         << "  agentos memory summary\n"
         << "  agentos memory stats\n"
         << "  agentos memory workflows\n"
@@ -804,7 +807,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (argc >= 2 && std::string(argv[1]) == "plugins") {
-        return RunPluginsCommand(workspace, BuiltinSkillNames(), argc, argv);
+        return RunPluginsCommand(workspace, BuiltinSkillNames(), argc, argv, &runtime.plugin_host);
     }
 
     if (argc >= 2 && std::string(argv[1]) == "auth") {

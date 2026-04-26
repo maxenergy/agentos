@@ -67,8 +67,12 @@ struct PersistentPluginSession {
     PluginSpec spec;
     std::filesystem::path workspace_path;
     int next_request_id = 1;
+    int request_count = 0;
     std::string stderr_text;
+    std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
+    std::chrono::system_clock::time_point started_at_wall = std::chrono::system_clock::now();
     std::chrono::steady_clock::time_point last_used_at = std::chrono::steady_clock::now();
+    std::chrono::system_clock::time_point last_used_at_wall = std::chrono::system_clock::now();
 
 #ifdef _WIN32
     HANDLE process = nullptr;
@@ -165,6 +169,10 @@ struct PersistentPluginSession {
         auto session = std::make_unique<PersistentPluginSession>();
         session->spec = spec;
         session->workspace_path = workspace_path;
+        session->started_at = std::chrono::steady_clock::now();
+        session->started_at_wall = std::chrono::system_clock::now();
+        session->last_used_at = session->started_at;
+        session->last_used_at_wall = session->started_at_wall;
         const auto args = RenderPersistentArgs(spec, {}, workspace_path);
 
 #ifdef _WIN32
@@ -301,13 +309,21 @@ struct PersistentPluginSession {
 #endif
     }
 
+    std::int64_t pid_value() const {
+#ifdef _WIN32
+        return process == nullptr ? 0 : static_cast<std::int64_t>(GetProcessId(process));
+#else
+        return child_pid > 0 ? static_cast<std::int64_t>(child_pid) : 0;
+#endif
+    }
+
     bool idle_expired(const int idle_timeout_ms) const {
         return ElapsedMs(last_used_at) >= idle_timeout_ms;
     }
 
     bool wait_until_started(const int timeout_ms) const {
-        const auto started_at = std::chrono::steady_clock::now();
-        while (ElapsedMs(started_at) < timeout_ms) {
+        const auto wait_started_at = std::chrono::steady_clock::now();
+        while (ElapsedMs(wait_started_at) < timeout_ms) {
             if (!alive()) {
                 return false;
             }
@@ -368,10 +384,10 @@ struct PersistentPluginSession {
 
     std::optional<std::string> read_response_line(const int timeout_ms, bool& timed_out) {
         std::string line;
-        const auto started_at = std::chrono::steady_clock::now();
+        const auto read_started_at = std::chrono::steady_clock::now();
         while (true) {
             drain_stderr();
-            if (ElapsedMs(started_at) >= timeout_ms) {
+            if (ElapsedMs(read_started_at) >= timeout_ms) {
                 timed_out = true;
                 return std::nullopt;
             }
@@ -419,23 +435,25 @@ struct PersistentPluginSession {
     }
 
     PluginRunResult request(const StringMap& arguments) {
-        const auto started_at = std::chrono::steady_clock::now();
+        const auto request_started_at = std::chrono::steady_clock::now();
         if (!alive()) {
             return {
                 .success = false,
-                .duration_ms = ElapsedMs(started_at),
+                .duration_ms = ElapsedMs(request_started_at),
                 .error_code = "PluginLifecycleUnavailable",
                 .error_message = "persistent plugin process is not running",
             };
         }
 
         const auto request_json = JsonRpcRequestForPlugin(spec, arguments, next_request_id++);
+        ++request_count;
         last_used_at = std::chrono::steady_clock::now();
+        last_used_at_wall = std::chrono::system_clock::now();
         if (!write_line(request_json)) {
             close();
             return {
                 .success = false,
-                .duration_ms = ElapsedMs(started_at),
+                .duration_ms = ElapsedMs(request_started_at),
                 .error_code = "PluginLifecycleWriteFailed",
                 .error_message = "failed to write JSON-RPC request to persistent plugin",
             };
@@ -448,7 +466,7 @@ struct PersistentPluginSession {
             return {
                 .success = false,
                 .timed_out = timed_out,
-                .duration_ms = ElapsedMs(started_at),
+                .duration_ms = ElapsedMs(request_started_at),
                 .stderr_text = stderr_text,
                 .error_code = timed_out ? "Timeout" : "PluginLifecycleReadFailed",
                 .error_message = timed_out
