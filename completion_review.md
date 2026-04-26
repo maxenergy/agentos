@@ -311,7 +311,7 @@ runtime/
 
 ### ⚠️ 需要关注的方面
 
-1. **结构化 JSON 依赖仍未接入**: 当前仍靠本地 `json_utils` 和专用解析/校验路径支撑 schema、provider 与 plugin 协议，继续扩关键字前应评估 nlohmann/json 等依赖。
+1. **结构化 JSON 依赖仍未接入**: 当前仍靠本地 `json_utils` 和专用解析/校验路径支撑 schema、provider 与 plugin 协议。决策已写入 [`docs/ADR-JSON-001.md`](docs/ADR-JSON-001.md)（Status: Proposed，推荐 nlohmann/json + 分阶段迁移；尚未执行任何代码或构建系统修改），转为 ✅ 需在该 ADR 的迁移阶段全部落地后。
 2. **TSV 作为 MVP 存储后端**: 对复杂查询和跨进程并发仍有固有限制；已有 atomic write、append-intent recovery、prepare/commit/recover 和 ADR-STORAGE-001，SQLite 仍按边界延后。
 3. **Auth 交互 UX 仍需产品化**: 已有 `oauth-login` 单命令 PKCE/token exchange/session persistence 和可选浏览器启动，但尚不是完整产品级多 provider login 流。
 4. **Plugin 隔离仍是路径约束级别**: `sandbox_mode=workspace|none` 能限制路径参数，但不是 OS sandbox/cgroup/job 完整隔离。
@@ -399,3 +399,4 @@ Documentation       ██████████████████░░
 - 成立：auto_decompose 过去主要覆盖 happy path，已补充 planner 失败与 planner 输出缺少 `plan_steps[].action` 的负面路径测试。
 - 已大部分完成：拆分 `main.cpp`、拆分 `plugin_host.cpp`、收敛 PolicyEngine 构造、抽 shared step lifecycle、抽 LessonHintProvider 均已落地；仍待评估引入结构化 JSON 依赖。
 - 2026-04-26：补齐 Plugin Host per-plugin process pool 与 admin UX——`PluginSpec.pool_size` 受全局 `max_persistent_sessions` 约束、`PluginHost::list_sessions/close_sessions_for_plugin/restart_sessions_for_plugin`，并新增 `agentos plugins sessions / session-restart / session-close` 子命令、TSV/JSON manifest pool_size 解析及 pool/admin 回归测试。
+- 2026-04-26：纳入 `docs/ADR-JSON-001.md`（Status: Proposed），明确 nlohmann/json 推荐与分阶段迁移路径；尚未执行任何代码或构建系统修改。

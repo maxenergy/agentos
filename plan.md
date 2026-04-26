@@ -251,6 +251,23 @@ Current review: AgentOS is a runnable local MVP, not a production-complete syste
 - [x] Add tests for logout, status reload, and missing env refs.
 - [x] Add CLI session import behavior tests with controllable CLI fixtures.
 
+## Post-Review Work
+
+Tracking items raised by `completion_review.md` that fall outside the original
+Phase A–I plan. These are research / decision items rather than direct
+implementation tasks.
+
+- [ ] **Structured JSON dependency** — `completion_review.md` §6 ⚠️ flags that
+  the repo still uses hand-rolled `json_utils` and bespoke parse/validate
+  paths for schema, provider, and plugin protocols. Decision recorded in
+  [`docs/ADR-JSON-001.md`](docs/ADR-JSON-001.md) (Status: Proposed,
+  recommends nlohmann/json with a phased migration plan; no code changes
+  applied yet). Resolves only after the migration phases in that ADR are
+  executed.
+- [ ] **Storage backend boundary** — already tracked under Phase H; the
+  long-form decision is captured in `ADR-STORAGE-001` (TSV remains MVP,
+  SQLite deferred).
+
 ## Progress Log
 
 - 2026-04-23: Reviewed current code/docs completion and created this plan.
@@ -463,3 +480,4 @@ Current review: AgentOS is a runnable local MVP, not a production-complete syste
 - 2026-04-25: Added filters to `memory stored-workflows` for enabled state, trigger task type, source, and name substring.
 - 2026-04-26: Refactored `SecureTokenStore` around an `ISecureTokenBackend` abstraction and added macOS Keychain (Security framework) and Linux Secret Service (libsecret, optional CMake dependency) backends with an in-memory test backend so unit tests never touch the real keychain. `auth credential-store` now reports `windows-credential-manager` / `macos-keychain` / `linux-secret-service` / `env-ref-only` per platform.
 - 2026-04-26: Broadened OAuth provider discovery: added `origin` (builtin/config/stub/none) and `note` metadata to `OAuthProviderDefaults`, registered stub entries for `openai` / `anthropic` / `qwen`, and extended `auth oauth-config-validate` with `--all` to enumerate every registered provider in one shot.
+- 2026-04-26: Authored `docs/ADR-JSON-001.md` (Proposed) recommending nlohmann/json adoption with a phased migration plan. No code or build-system changes yet.
