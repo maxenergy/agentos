@@ -42,21 +42,121 @@ std::string ReadEnv(const std::string& name) {
 #endif
 }
 
-// Reads `access_token` from a JSON file, e.g. ~/.gemini/oauth_creds.json.
-// Returns empty string when file/field is missing or malformed.
-std::string ReadOAuthFileAccessToken(const std::filesystem::path& path) {
+// Returns the mid-section of a JWT (the base64url-encoded claims) decoded
+// into a JSON value. Empty json on any parse/format failure.
+nlohmann::json DecodeJwtClaims(const std::string& jwt) {
+    const auto first_dot = jwt.find('.');
+    if (first_dot == std::string::npos) return {};
+    const auto second_dot = jwt.find('.', first_dot + 1);
+    if (second_dot == std::string::npos) return {};
+    std::string payload = jwt.substr(first_dot + 1, second_dot - first_dot - 1);
+    // base64url -> base64
+    for (auto& c : payload) {
+        if (c == '-') c = '+';
+        else if (c == '_') c = '/';
+    }
+    while (payload.size() % 4) payload += '=';
+    // Decode base64. nlohmann doesn't ship base64 — implement minimally.
+    static const std::string kAlphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string decoded;
+    int val = 0;
+    int bits = -8;
+    for (const char c : payload) {
+        if (c == '=') break;
+        const auto idx = kAlphabet.find(c);
+        if (idx == std::string::npos) return {};
+        val = (val << 6) | static_cast<int>(idx);
+        bits += 6;
+        if (bits >= 0) {
+            decoded += static_cast<char>((val >> bits) & 0xFF);
+            bits -= 8;
+        }
+    }
+    try {
+        return nlohmann::json::parse(decoded);
+    } catch (...) {
+        return {};
+    }
+}
+
+struct OAuthFileContents {
+    std::string access_token;
+    std::string refresh_token;
+    std::string client_id;        // extracted from id_token's `azp` claim
+    long long expiry_date_ms = 0; // unix ms; 0 means unknown
+    nlohmann::json raw;            // full parsed file, used to re-serialize on refresh
+    std::string error;             // populated if read failed
+};
+
+OAuthFileContents ReadOAuthFile(const std::filesystem::path& path) {
+    OAuthFileContents out;
     std::ifstream in(path);
-    if (!in) return {};
+    if (!in) {
+        out.error = "oauth_file path is not readable: " + path.string();
+        return out;
+    }
     std::stringstream buf;
     buf << in.rdbuf();
     try {
-        const auto j = nlohmann::json::parse(buf.str());
-        if (j.contains("access_token") && j["access_token"].is_string()) {
-            return j["access_token"].get<std::string>();
-        }
-    } catch (...) {
+        out.raw = nlohmann::json::parse(buf.str());
+    } catch (const std::exception& e) {
+        out.error = std::string("oauth_file is not valid JSON: ") + e.what();
+        return out;
     }
-    return {};
+    if (out.raw.contains("access_token") && out.raw["access_token"].is_string()) {
+        out.access_token = out.raw["access_token"].get<std::string>();
+    }
+    if (out.raw.contains("refresh_token") && out.raw["refresh_token"].is_string()) {
+        out.refresh_token = out.raw["refresh_token"].get<std::string>();
+    }
+    if (out.raw.contains("expiry_date") && out.raw["expiry_date"].is_number_integer()) {
+        out.expiry_date_ms = out.raw["expiry_date"].get<long long>();
+    }
+    if (out.raw.contains("id_token") && out.raw["id_token"].is_string()) {
+        const auto claims = DecodeJwtClaims(out.raw["id_token"].get<std::string>());
+        if (claims.is_object() && claims.contains("azp") && claims["azp"].is_string()) {
+            out.client_id = claims["azp"].get<std::string>();
+        }
+    }
+    if (out.access_token.empty()) {
+        out.error = "oauth_file is missing access_token field";
+    }
+    return out;
+}
+
+long long NowEpochMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+// We don't refresh OAuth tokens ourselves: the Google flow that the
+// gemini CLI uses requires a client_secret bundled inside the CLI's
+// own binary, so a refresh request from outside the CLI gets back
+// "invalid_request: client_secret is missing." Instead, detect
+// expiry and surface a clear "re-run gemini auth login" instruction
+// — letting the CLI that owns the credentials refresh them.
+//
+// Returns true when the saved token is fresh enough to use, false
+// when expiry has passed (with `contents.error` populated).
+bool ValidateOAuthFreshness(OAuthFileContents& contents) {
+    if (contents.expiry_date_ms == 0) {
+        // Unknown expiry — assume the file owner manages freshness.
+        return true;
+    }
+    constexpr long long kRefreshSkewMs = 60 * 1000;  // 1 min slack
+    const auto now_ms = NowEpochMs();
+    if (contents.expiry_date_ms - now_ms > kRefreshSkewMs) {
+        return true;
+    }
+    contents.error =
+        "oauth_file access_token has expired (expiry was " +
+        std::to_string(contents.expiry_date_ms) +
+        " ms epoch). Re-run the CLI that owns this credentials file "
+        "(e.g. `gemini auth login` for ~/.gemini/oauth_creds.json) "
+        "to mint a fresh token, then try again.";
+    return false;
 }
 
 // "Hello" -> "User: Hello" for chat-style task_type. Other task_types get
@@ -268,8 +368,19 @@ bool MainAgent::healthy() const {
         (config->project_id.empty() || config->location.empty())) {
         return false;
     }
-    const auto token = ResolveToken(*config);
-    return token.error_code.empty() && !token.token.empty();
+    // Quick token presence check WITHOUT going through ResolveToken,
+    // because ResolveToken triggers a network refresh on near-expiry
+    // OAuth files — we don't want `agentos agents` to spend 30s on
+    // a Google round-trip just to print a health column. The actual
+    // refresh happens lazily at first run_task() call.
+    if (!config->api_key_env.empty()) {
+        return !ReadEnv(config->api_key_env).empty();
+    }
+    if (!config->oauth_file.empty()) {
+        const auto contents = ReadOAuthFile(config->oauth_file);
+        return contents.error.empty() && !contents.access_token.empty();
+    }
+    return false;
 }
 
 MainAgent::TokenResolution MainAgent::ResolveToken(const MainAgentConfig& config) const {
@@ -283,13 +394,14 @@ MainAgent::TokenResolution MainAgent::ResolveToken(const MainAgentConfig& config
         return {value, {}, {}};
     }
     if (!config.oauth_file.empty()) {
-        const auto value = ReadOAuthFileAccessToken(config.oauth_file);
-        if (value.empty()) {
-            return {{}, "AuthUnavailable",
-                    "main-agent oauth_file=" + config.oauth_file +
-                        " is missing or has no access_token field"};
+        auto contents = ReadOAuthFile(config.oauth_file);
+        if (!contents.error.empty()) {
+            return {{}, "AuthUnavailable", contents.error};
         }
-        return {value, {}, {}};
+        if (!ValidateOAuthFreshness(contents)) {
+            return {{}, "AuthExpired", contents.error};
+        }
+        return {contents.access_token, {}, {}};
     }
     return {{}, "AuthUnavailable",
             "main-agent has neither api_key_env nor oauth_file configured"};
