@@ -256,6 +256,14 @@ void RunChatPrompt(const std::string& prompt,
         .workspace_path = workspace,
     };
     task.preferred_target = target;
+    // Chat hits an external LLM CLI/REST round-trip, which routinely takes
+    // 10–30s. The TaskRequest default of 5000ms makes "hi" time out before
+    // the provider even responds, so chat dispatches use a 2-minute ceiling
+    // unless the underlying agent has already been given a tighter task
+    // timeout from somewhere upstream.
+    if (task.timeout_ms <= 5000) {
+        task.timeout_ms = 120000;
+    }
 
     std::cout << "(routing to " << target << ")\n";
     auto task_cancel = InstallSignalCancellation();
