@@ -187,6 +187,7 @@ runtime/
 > **Adapter author checklist（新增 `AgentInvocation` 字段时必读）**：每一个 `*FromInvocation` / `InvocationTo*` projection helper 都必须同步显式拷贝 / 编码新字段——一旦遗漏，V2 sync 模式（`on_event == null`）就会丢失该字段。当前需要同步的字段：`task_id`, `task_type`(从 `context["task_type"]` 解析), `objective`, `workspace_path`, `auth_profile`, `context_json`(从 `invocation.context` 编码), `constraints_json`(从 `invocation.constraints` 编码), `timeout_ms`, `budget_limit`(=`budget_limit_usd`)。`session_id` / `resume_session_id` / `attachments` / `cancel` 由 `invoke()` 直接消费，不通过 projection。
 >
 > 四个 projection helper 已从 `private static` 提升为 `public static`，以便 `tests/agent_provider_tests.cpp::TestV2ToLegacyProjectionPropagatesAllFields` 直接对每个 adapter 验证完整字段映射；它配合 `TestRunAuthProfileOverride` 端到端覆盖，构成这条契约的双重回归屏障。
+> 2026-04-27 resident-mode parity: Interactive REPL (`src/cli/interactive_commands.cpp::BuildTaskFromTokens`) 与 HTTP API (`src/cli/serve_commands.cpp::BuildTaskFromJson`) 之前没有显式处理 `profile=` / `auth_profile=`，REPL 把它们错误归入 `task.inputs`、HTTP API 完全忽略；两个入口现在都把它写到 `TaskRequest.auth_profile`，与 `agentos run` / `schedule add` / `subagents run` 的语义保持一致。
 
 ---
 

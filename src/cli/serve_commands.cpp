@@ -121,6 +121,11 @@ TaskRequest BuildTaskFromJson(const nlohmann::json& body,
     if (body.contains("approval_id")) {
         task.approval_id = body["approval_id"].get<std::string>();
     }
+    if (body.contains("profile") && body["profile"].is_string()) {
+        task.auth_profile = body["profile"].get<std::string>();
+    } else if (body.contains("auth_profile") && body["auth_profile"].is_string()) {
+        task.auth_profile = body["auth_profile"].get<std::string>();
+    }
     if (body.contains("permission_grants")) {
         for (const auto& grant : body["permission_grants"]) {
             task.permission_grants.push_back(grant.get<std::string>());

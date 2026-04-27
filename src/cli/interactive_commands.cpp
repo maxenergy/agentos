@@ -99,6 +99,8 @@ TaskRequest BuildTaskFromTokens(const std::vector<std::string>& tokens,
             task.allow_high_risk = value == "true";
         } else if (key == "approval_id") {
             task.approval_id = value;
+        } else if (key == "profile" || key == "auth_profile") {
+            task.auth_profile = value;
         } else if (key == "permission_grants" || key == "grants") {
             task.permission_grants = SplitCommaList(value);
         } else if (key == "timeout_ms") {
@@ -170,6 +172,7 @@ void PrintHelp() {
         << "  run read_file path=README.md\n"
         << "  run write_file path=runtime/note.txt content=hello idempotency_key=demo\n"
         << "  run analysis target=local_planner objective=Plan_next_steps\n"
+        << "  run analysis target=qwen profile=work objective=Use_a_non_default_auth_profile\n"
         << "\n";
 }
 
