@@ -251,7 +251,7 @@ runtime/
 | http_fetch | ✅ | http_fetch_skill.cpp |
 | workflow_run | ✅ | 含 stored workflow 执行 |
 | CLI Host | ✅ | + 外部 spec + 资源限制 |
-| 1 个二级代理接入 | ✅ | 实际 5 个 adapter |
+| 1 个二级代理接入 | ✅ | 实际 6 个 adapter |
 | 认证子系统基础版 | ✅ | 多 provider + 多模式 |
 | 任务事件日志 | ✅ | task_log.tsv + step_log.tsv |
 | Workflow 自动生成骨架 | ✅ | candidate + scoring + promotion |
@@ -272,7 +272,7 @@ runtime/
 
 | 缺口 | 所属模块 | 影响 |
 |------|---------|------|
-| OAuth provider-specific UX/config | Auth | PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed exchange helper、response 解析、managed AuthSession persistence helper、single-command `oauth-login`、scriptable oauth-complete、Gemini Google OAuth 默认 endpoint/scope、repo-local `runtime/auth_oauth_providers.tsv` defaults 覆盖、`oauth-config-validate`、`oauth-defaults` 和参数化 provider adapter 原生 login/refresh 已落地，但仍缺更广泛 provider discovery 和完整多 provider 交互式 login UX |
+| OAuth provider-specific UX/config | Auth | PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed exchange helper、response 解析、managed AuthSession persistence helper、single-command `oauth-login`、scriptable oauth-complete、Gemini Google OAuth 默认 endpoint/scope、OpenAI PKCE 默认 endpoint/scope、repo-local `runtime/auth_oauth_providers.tsv` defaults 覆盖、`oauth-config-validate`、`oauth-defaults` 和参数化 provider adapter 原生 login/refresh 已落地，但仍缺更广泛 provider discovery（如 Anthropic）和完整多 provider 交互式 login UX |
 | 非 Windows 系统 credential store 集成 | Auth | Windows 已接入 Credential Manager；macOS/Linux 仍为 env-ref-only dev fallback |
 <!-- 2026-04-26 update: 上一行已过期；macOS Keychain 与 Linux Secret Service（libsecret 可选 CMake 依赖）后端均已落地，仅在 Linux 缺失 libsecret 时退化为 env-ref-only。该行的真实剩余项是“非 Windows 平台运行时环境验证 + 多账号策略对接”。 -->
 | Plugin 进程池与 lifecycle admin UX | Plugin Host | persistent `json-rpc-v0` session manager 已实现 MVP，并覆盖 crash/restart、session close、idle restart、LRU eviction 与 lifecycle_event；模块拆分、workspace-configurable session cap、plugin_host config diagnostics、`plugins inspect name=<plugin> [health=true]` 和 `plugins lifecycle` 已完成；新增 `PluginSpec.pool_size` 每 plugin 进程池上限（受全局 `max_persistent_sessions` 约束）和 `agentos plugins sessions` / `session-restart` / `session-close` 运行时 session admin 命令，剩余主要是 daemon 化跨进程 session 共享与更细的 OS 级隔离策略 |
