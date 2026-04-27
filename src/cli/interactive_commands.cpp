@@ -231,7 +231,12 @@ std::string ResolveChatTarget(const AgentRegistry& agent_registry) {
         }
     }
 
-    for (const auto& candidate : {"gemini", "anthropic", "openai", "qwen", "codex_cli", "local_planner"}) {
+    // Chat-shaped providers come first (they answer plain prompts directly).
+    // codex_cli and local_planner are agentic / planning-shaped — they often
+    // return zero plain-text content for a chat-style "hi" — so they sit at
+    // the end as last resorts so the chat path doesn't silently land on
+    // them when a real chat provider is just one `auth login` away.
+    for (const auto& candidate : {"gemini", "anthropic", "openai", "qwen", "local_planner", "codex_cli"}) {
         if (const auto found = try_target(candidate); !found.empty()) {
             return found;
         }
@@ -317,13 +322,33 @@ void RunChatPrompt(const std::string& prompt,
     // `tail runtime/audit.log` away. `run` (verbose) remains the path for
     // users who want the full JSON dump.
     if (result.success) {
-        std::cout << result.summary;
-        if (!result.summary.empty() && result.summary.back() != '\n') {
-            std::cout << '\n';
-        }
         long duration_ms = 0;
         for (const auto& step : result.steps) {
             duration_ms += step.duration_ms;
+        }
+        if (result.summary.empty()) {
+            // Some adapters (notably codex_cli) finish successfully without
+            // producing user-facing text — they emit structured events
+            // instead. For an interactive chat session that's effectively
+            // useless, so call it out explicitly and steer the user toward
+            // a chat-shaped provider instead of leaving them staring at
+            // a silent prompt.
+            std::cout << "(no text reply from " << target;
+            if (duration_ms > 0) {
+                std::cout << ", " << duration_ms << "ms";
+            }
+            std::cout << ")\n";
+            std::cout
+                << "Hint: " << target << " is an agentic tool, not a chat model.\n"
+                << "      Set AGENTOS_CHAT_TARGET=gemini (or anthropic/openai/qwen)\n"
+                << "      and ensure that provider is healthy via `agents`.\n"
+                << "      Full structured output is in the audit log:\n"
+                << "      " << audit_logger.log_path().string() << "\n\n";
+            return;
+        }
+        std::cout << result.summary;
+        if (result.summary.back() != '\n') {
+            std::cout << '\n';
         }
         std::cout << "(via " << target;
         if (duration_ms > 0) {

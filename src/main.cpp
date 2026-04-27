@@ -748,15 +748,17 @@ void PrintUsage() {
 
 // Resolve the agentos workspace.
 //
-// Default: current working directory. Override: AGENTOS_WORKSPACE env var.
-// When an override is set but doesn't point at a directory, fall back to
-// cwd with a warning rather than silently using a bad path.
+// Resolution order:
+//   1. AGENTOS_WORKSPACE env var (must point at a directory).
+//   2. Walk up from cwd looking for a directory that already contains
+//      runtime/auth_sessions.tsv — if cwd is e.g. <repo>/build/, this
+//      finds <repo>/ and reuses its auth/audit/scheduler state instead
+//      of creating a fresh empty runtime/ alongside the binary.
+//   3. Fall back to cwd.
 //
 // This matters because `runtime/` (auth sessions, audit logs, scheduler
-// state, etc.) is resolved relative to the workspace. Launching the binary
-// from a different cwd than where state was previously persisted will look
-// like every agent suddenly went unhealthy. Setting AGENTOS_WORKSPACE
-// once (e.g. to the repo root) avoids that footgun.
+// state) is resolved relative to the workspace. Launching the binary
+// from build/ used to look like every authed agent went unhealthy.
 std::filesystem::path ResolveWorkspace() {
     namespace fs = std::filesystem;
     std::string env_value;
@@ -779,8 +781,31 @@ std::filesystem::path ResolveWorkspace() {
             return candidate;
         }
         std::cerr << "AGENTOS_WORKSPACE=" << env_value
-                  << " is not a directory; falling back to current working directory.\n";
+                  << " is not a directory; falling back to auto-detection.\n";
     }
+
+    std::error_code ec;
+    fs::path cursor = fs::current_path(ec);
+    if (!ec) {
+        const fs::path start = cursor;
+        for (int i = 0; i < 8; ++i) {
+            const fs::path marker = cursor / "runtime" / "auth_sessions.tsv";
+            if (fs::exists(marker, ec)) {
+                if (cursor != start) {
+                    std::cerr << "agentos: using workspace " << cursor.string()
+                              << " (found existing runtime/auth_sessions.tsv via parent walk; "
+                              << "set AGENTOS_WORKSPACE to override)\n";
+                }
+                return cursor;
+            }
+            const fs::path parent = cursor.parent_path();
+            if (parent == cursor) {
+                break;
+            }
+            cursor = parent;
+        }
+    }
+
     return fs::current_path();
 }
 
