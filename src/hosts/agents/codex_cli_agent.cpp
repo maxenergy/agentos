@@ -984,6 +984,10 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
 }
 
 std::string CodexCliAgent::BuildPrompt(const AgentTask& task) {
+    if (task.task_type == "chat") {
+        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + task.objective;
+    }
+
     std::ostringstream prompt;
     prompt
         << "You are running as a secondary expert agent inside AgentOS.\n"
@@ -1005,6 +1009,11 @@ std::string CodexCliAgent::BuildPrompt(const AgentTask& task) {
 }
 
 std::string CodexCliAgent::BuildPromptV2(const AgentInvocation& invocation) {
+    if (const auto it = invocation.context.find("task_type");
+        it != invocation.context.end() && it->second == "chat") {
+        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + invocation.objective;
+    }
+
     std::ostringstream prompt;
     prompt
         << "You are running as a secondary expert agent inside AgentOS.\n"

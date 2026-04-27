@@ -569,6 +569,15 @@ std::string GeminiAgent::BuildPrompt(const AgentTask& task) {
         return task.objective;
     }
 
+    // Chat mode skips the agent-orchestration preamble so the user's
+    // message reaches the model verbatim. Without this, "hello" gets
+    // wrapped in 6 lines of "You are running as a model provider agent
+    // inside AgentOS / Task id / Workspace / Context JSON ..." and the
+    // model answers in a stilted "I am ready to assist" register.
+    if (task.task_type == "chat") {
+        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + task.objective;
+    }
+
     std::ostringstream prompt;
     prompt
         << "You are running as a model provider agent inside AgentOS.\n"

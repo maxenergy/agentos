@@ -311,8 +311,33 @@ void RunChatPrompt(const std::string& prompt,
     }
     std::cout << std::endl;  // terminate the heartbeat dot line cleanly
 
-    PrintResult(result);
-    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
+    // Concise chat output: print just the assistant reply plus a one-line
+    // route/duration trailer. The full structured agent_result.v1 JSON is
+    // still written to the audit log, so deeper inspection is one
+    // `tail runtime/audit.log` away. `run` (verbose) remains the path for
+    // users who want the full JSON dump.
+    if (result.success) {
+        std::cout << result.summary;
+        if (!result.summary.empty() && result.summary.back() != '\n') {
+            std::cout << '\n';
+        }
+        long duration_ms = 0;
+        for (const auto& step : result.steps) {
+            duration_ms += step.duration_ms;
+        }
+        std::cout << "(via " << target;
+        if (duration_ms > 0) {
+            std::cout << ", " << duration_ms << "ms";
+        }
+        std::cout << ")\n\n";
+    } else {
+        std::cerr << "chat failed (" << target << "): "
+                  << (result.error_code.empty() ? "<no error_code>" : result.error_code);
+        if (!result.error_message.empty()) {
+            std::cerr << " — " << result.error_message;
+        }
+        std::cerr << "\naudit_log: " << audit_logger.log_path().string() << '\n';
+    }
 }
 
 }  // namespace

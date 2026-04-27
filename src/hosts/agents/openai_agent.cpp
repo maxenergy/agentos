@@ -945,6 +945,9 @@ std::string OpenAiAgent::BuildPrompt(const AgentTask& task) {
     if (StartsWithCaseInsensitive(task.objective, "return exactly:")) {
         return task.objective;
     }
+    if (task.task_type == "chat") {
+        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + task.objective;
+    }
 
     std::ostringstream prompt;
     prompt
@@ -969,6 +972,10 @@ std::string OpenAiAgent::BuildPrompt(const AgentTask& task) {
 std::string OpenAiAgent::BuildPromptV2(const AgentInvocation& invocation) {
     if (StartsWithCaseInsensitive(invocation.objective, "return exactly:")) {
         return invocation.objective;
+    }
+    if (const auto it = invocation.context.find("task_type");
+        it != invocation.context.end() && it->second == "chat") {
+        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + invocation.objective;
     }
     std::ostringstream prompt;
     prompt

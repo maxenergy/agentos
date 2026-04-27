@@ -1158,6 +1158,12 @@ std::string AnthropicAgent::ModelNameFromConstraints(const StringMap& constraint
 }
 
 std::string AnthropicAgent::BuildPrompt(const AgentTask& task) {
+    // Chat mode skips the agent-orchestration preamble so a user message
+    // reaches the model verbatim instead of being wrapped in scaffolding.
+    if (task.task_type == "chat") {
+        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + task.objective;
+    }
+
     std::ostringstream prompt;
     prompt
         << "You are running as a model provider agent inside AgentOS.\n"
@@ -1179,6 +1185,11 @@ std::string AnthropicAgent::BuildPrompt(const AgentTask& task) {
 }
 
 std::string AnthropicAgent::BuildPromptV2(const AgentInvocation& invocation) {
+    if (const auto it = invocation.context.find("task_type");
+        it != invocation.context.end() && it->second == "chat") {
+        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + invocation.objective;
+    }
+
     std::ostringstream prompt;
     prompt
         << "You are running as a model provider agent inside AgentOS.\n"
