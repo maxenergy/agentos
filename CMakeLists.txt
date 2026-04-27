@@ -31,6 +31,7 @@ add_library(agentos_core
     src/cli/cli_specs_commands.cpp
     src/cli/diagnostics_commands.cpp
     src/cli/interactive_commands.cpp
+    src/cli/main_agent_commands.cpp
     src/cli/serve_commands.cpp
     src/cli/memory_commands.cpp
     src/cli/plugins_commands.cpp
@@ -79,6 +80,7 @@ add_library(agentos_core
     src/memory/memory_manager.cpp
     src/memory/workflow_store.cpp
     src/memory/workflow_validation.cpp
+    src/storage/main_agent_store.cpp
     src/storage/storage_export.cpp
     src/storage/storage_policy.cpp
     src/storage/storage_transaction.cpp
@@ -94,6 +96,7 @@ add_library(agentos_core
     src/hosts/agents/codex_cli_agent.cpp
     src/hosts/agents/gemini_agent.cpp
     src/hosts/agents/anthropic_agent.cpp
+    src/hosts/agents/main_agent.cpp
     src/hosts/agents/qwen_agent.cpp
     src/hosts/agents/openai_agent.cpp
     src/hosts/cli/cli_host.cpp

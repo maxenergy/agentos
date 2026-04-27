@@ -9,6 +9,7 @@
 #include "cli/cli_specs_commands.hpp"
 #include "cli/diagnostics_commands.hpp"
 #include "cli/interactive_commands.hpp"
+#include "cli/main_agent_commands.hpp"
 #include "cli/serve_commands.hpp"
 #include "cli/memory_commands.hpp"
 #include "cli/plugins_commands.hpp"
@@ -30,6 +31,7 @@
 #include "hosts/agents/codex_cli_agent.hpp"
 #include "hosts/agents/gemini_agent.hpp"
 #include "hosts/agents/local_planning_agent.hpp"
+#include "hosts/agents/main_agent.hpp"
 #include "hosts/agents/openai_agent.hpp"
 #include "hosts/agents/qwen_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
@@ -43,6 +45,7 @@
 #include "skills/builtin/file_write_skill.hpp"
 #include "skills/builtin/http_fetch_skill.hpp"
 #include "skills/builtin/workflow_run_skill.hpp"
+#include "storage/main_agent_store.hpp"
 #include "storage/storage_version_store.hpp"
 #include "storage/storage_export.hpp"
 #include "storage/storage_policy.hpp"
@@ -84,6 +87,7 @@ struct Runtime {
     SecureTokenStore token_store;
     CredentialBroker credential_broker;
     AuthManager auth_manager;
+    MainAgentStore main_agent_store;
     ExecutionCache execution_cache;
     Router router;
     IdentityManager identity_manager;
@@ -107,6 +111,7 @@ struct Runtime {
           plugin_host(cli_host, LoadPluginHostOptions(workspace)),
           credential_broker(session_store, token_store),
           auth_manager(session_store, &auth_profile_store),
+          main_agent_store(workspace / "runtime" / "main_agent.tsv"),
           execution_cache(workspace / "runtime" / "execution_cache.tsv"),
           identity_manager(workspace / "runtime" / "trust" / "identities.tsv"),
           allowlist_store(workspace / "runtime" / "trust" / "allowlist.tsv"),
@@ -828,6 +833,8 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeJqTransformSpec(), runtime.cli_host));
     RegisterExternalCliSpecs(runtime, workspace);
     RegisterPluginSpecs(runtime, workspace);
+    runtime.agent_registry.register_agent(std::make_shared<MainAgent>(
+        runtime.cli_host, runtime.main_agent_store, workspace));
     runtime.agent_registry.register_agent(std::make_shared<LocalPlanningAgent>());
     runtime.agent_registry.register_agent(std::make_shared<GeminiAgent>(
         runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
@@ -938,6 +945,10 @@ int main(int argc, char* argv[]) {
 
     if (argc >= 2 && std::string(argv[1]) == "auth") {
         return RunAuthCommand(runtime.auth_manager, runtime.session_store, runtime.token_store, runtime.cli_host, workspace, argc, argv);
+    }
+
+    if (argc >= 2 && std::string(argv[1]) == "main-agent") {
+        return RunMainAgentCommand(runtime.main_agent_store, argc, argv);
     }
 
     if (argc >= 2 && std::string(argv[1]) == "memory") {

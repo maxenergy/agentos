@@ -257,6 +257,7 @@ std::vector<StorageVersionEntry> DefaultStorageVersionEntries() {
         {"auth_profiles", "tsv", "1", "runtime/auth_profiles.tsv"},
         {"execution_cache", "tsv", "1", "runtime/execution_cache.tsv"},
         {"plugin_host", "tsv", "1", "runtime/plugin_host.tsv"},
+        {"main_agent", "tsv", "1", "runtime/main_agent.tsv"},
         {"trust_identities", "tsv", "1", "runtime/trust/identities.tsv"},
         {"trust_allowlist", "tsv", "1", "runtime/trust/allowlist.tsv"},
         {"trust_invites", "tsv", "1", "runtime/trust/invites.tsv"},

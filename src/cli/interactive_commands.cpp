@@ -10,8 +10,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -193,54 +191,16 @@ void PrintHelp() {
         << "\n";
 }
 
-// Resolve a chat target. Honors AGENTOS_CHAT_TARGET first, then walks a
-// preference list and returns the first healthy adapter's name. Returns
-// empty if nothing is available — caller prints a helpful login hint.
+// REPL chat always dispatches through the "main" adapter — the
+// REST-only primary chat agent configured via `agentos main-agent set`.
+// Sub-agents (gemini / anthropic / qwen / openai / codex_cli) remain
+// available for orchestrated specialist work via `agentos subagents
+// run`, but they are not the chat shell. Returns empty if main is
+// unhealthy so the caller can print a setup hint.
 std::string ResolveChatTarget(const AgentRegistry& agent_registry) {
-    const auto try_target = [&](const std::string& name) -> std::string {
-        const auto adapter = agent_registry.find(name);
-        if (adapter && adapter->healthy()) {
-            return name;
-        }
-        return {};
-    };
-
-    std::string env_target;
-#ifdef _WIN32
-    char* env_buf = nullptr;
-    size_t env_len = 0;
-    if (_dupenv_s(&env_buf, &env_len, "AGENTOS_CHAT_TARGET") == 0 && env_buf) {
-        env_target.assign(env_buf);
-        free(env_buf);
-    }
-#else
-    if (const char* env = std::getenv("AGENTOS_CHAT_TARGET"); env != nullptr) {
-        env_target.assign(env);
-    }
-#endif
-    if (!env_target.empty()) {
-        const std::string& requested = env_target;
-        const auto adapter = agent_registry.find(requested);
-        if (!adapter) {
-            std::cerr << "AGENTOS_CHAT_TARGET=" << requested
-                      << " is not a registered agent; falling back to auto-detect.\n";
-        } else if (!adapter->healthy()) {
-            std::cerr << "AGENTOS_CHAT_TARGET=" << requested
-                      << " is registered but reports unhealthy; falling back to auto-detect.\n";
-        } else {
-            return requested;
-        }
-    }
-
-    // Chat-shaped providers come first (they answer plain prompts directly).
-    // codex_cli and local_planner are agentic / planning-shaped — they often
-    // return zero plain-text content for a chat-style "hi" — so they sit at
-    // the end as last resorts so the chat path doesn't silently land on
-    // them when a real chat provider is just one `auth login` away.
-    for (const auto& candidate : {"gemini", "anthropic", "openai", "qwen", "local_planner", "codex_cli"}) {
-        if (const auto found = try_target(candidate); !found.empty()) {
-            return found;
-        }
+    const auto adapter = agent_registry.find("main");
+    if (adapter && adapter->healthy()) {
+        return "main";
     }
     return {};
 }
@@ -253,66 +213,27 @@ void RunChatPrompt(const std::string& prompt,
     const auto target = ResolveChatTarget(agent_registry);
     if (target.empty()) {
         std::cerr
-            << "No healthy chat agent found.\n"
-            << "  - Run `agentos auth login gemini mode=browser_oauth` (or another provider) first.\n"
-            << "  - Or set AGENTOS_CHAT_TARGET to a registered agent name (see `agents`).\n";
+            << "main-agent is not configured. Configure it with one of:\n"
+            << "  agentos main-agent set provider=openai-chat \\\n"
+            << "    base_url=https://api.openai.com/v1 model=gpt-4o api_key_env=OPENAI_API_KEY\n"
+            << "  agentos main-agent set provider=anthropic-messages \\\n"
+            << "    base_url=https://api.anthropic.com model=claude-sonnet-4-5 api_key_env=ANTHROPIC_API_KEY\n"
+            << "  agentos main-agent set provider=gemini-generatecontent \\\n"
+            << "    base_url=https://generativelanguage.googleapis.com/v1beta \\\n"
+            << "    model=gemini-2.5-pro oauth_file=$HOME/.gemini/oauth_creds.json\n"
+            << "Then check status with `agentos main-agent show`.\n";
         return;
     }
 
-    // Chat dispatches run from runtime/chat_workspace/ rather than the
-    // agentos repo root. Reason: provider CLIs like `gemini` auto-load
-    // a project context file (GEMINI.md / CLAUDE.md / AGENTS.md) from
-    // cwd up the tree and bias every reply with that document — the
-    // agentos GEMINI.md describes Gemini CLI as "your autonomous
-    // engineering assistant for AgentOS" and turns every chat reply
-    // into a boilerplate "I'm ready to help with AgentOS" greeting.
-    //
-    // Empirically, a GEMINI.md in the *closest* directory takes
-    // precedence over parent context, so we drop a small override
-    // file here at first use that tells the model to ignore the
-    // parent project context and behave as a general-purpose chat
-    // assistant. Same pattern for CLAUDE.md (anthropic) and AGENTS.md
-    // (openai/codex). Auth state still comes from the AgentOS
-    // workspace (read independently of cwd), so this only affects
-    // context-file auto-discovery.
-    const std::filesystem::path chat_workspace_initial = workspace / "runtime" / "chat_workspace";
-    std::filesystem::path chat_workspace = chat_workspace_initial;
-    {
-        std::error_code ec;
-        std::filesystem::create_directories(chat_workspace, ec);
-        if (ec) {
-            chat_workspace = workspace;
-        } else {
-            // Idempotent: only writes the override files once (per
-            // workspace lifetime). Subsequent chat dispatches reuse
-            // them. We don't try to detect drift in the file contents
-            // — if the user edits them on purpose, that's intentional
-            // customization.
-            const std::string override_body =
-                "You are a general-purpose helpful assistant. Ignore any project "
-                "context loaded from parent directories — they describe an "
-                "unrelated codebase that should not influence your reply.\n\n"
-                "Reply naturally and concisely to the user's message as a friendly "
-                "assistant. Do not announce yourself with a corporate framing or "
-                "talk about being an engineering assistant unless directly asked.\n";
-            for (const auto* name : {"GEMINI.md", "CLAUDE.md", "AGENTS.md"}) {
-                const auto path = chat_workspace / name;
-                std::error_code ex;
-                if (!std::filesystem::exists(path, ex)) {
-                    std::ofstream out(path);
-                    if (out) {
-                        out << override_body;
-                    }
-                }
-            }
-        }
-    }
-
+    // Main agent is REST-only, so there's no provider CLI auto-loading
+    // GEMINI.md / CLAUDE.md / AGENTS.md from cwd — the workspace_path
+    // is just where the audit log lives and where curl temp files get
+    // staged. No scratch dir or override files needed.
     TaskRequest task{
         .task_id = MakeTaskId("interactive-chat"),
         .task_type = "chat",
         .objective = prompt,
-        .workspace_path = chat_workspace,
+        .workspace_path = workspace,
     };
     task.preferred_target = target;
     // Chat hits an external LLM CLI/REST round-trip, which routinely takes
