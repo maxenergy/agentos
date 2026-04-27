@@ -7,12 +7,16 @@
 #include <windows.h>
 #endif
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace agentos {
@@ -265,9 +269,48 @@ void RunChatPrompt(const std::string& prompt,
         task.timeout_ms = 120000;
     }
 
-    std::cout << "(routing to " << target << ")\n";
+    std::cout << "(routing to " << target
+              << " — this can take 10–30s; Ctrl-C to cancel)" << std::endl;
     auto task_cancel = InstallSignalCancellation();
+
+    // Heartbeat thread so the user sees progress instead of a silent freeze.
+    // Most provider adapters here are sync wrappers without streaming events,
+    // so we fall back to printing a dot every 2s on the same line as the
+    // routing message, then erase the dots when the result arrives. This
+    // is purely cosmetic — the real work is happening on the calling thread.
+    std::atomic<bool> done{false};
+    std::mutex cv_m;
+    std::condition_variable cv;
+    std::thread heartbeat([&] {
+        int dots = 0;
+        while (true) {
+            std::unique_lock<std::mutex> lk(cv_m);
+            if (cv.wait_for(lk, std::chrono::seconds(2), [&] { return done.load(); })) {
+                break;
+            }
+            std::cout << "." << std::flush;
+            ++dots;
+            if (dots >= 30) {
+                // After ~60s, switch to a more explicit "still waiting" line
+                // on a new line so the user knows it's not just spinning.
+                std::cout << " still waiting (provider response can be slow)..." << std::endl;
+                dots = 0;
+            }
+        }
+    });
+
     const auto result = loop.run(task, std::move(task_cancel));
+
+    {
+        std::lock_guard<std::mutex> lk(cv_m);
+        done = true;
+    }
+    cv.notify_all();
+    if (heartbeat.joinable()) {
+        heartbeat.join();
+    }
+    std::cout << std::endl;  // terminate the heartbeat dot line cleanly
+
     PrintResult(result);
     std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
 }
