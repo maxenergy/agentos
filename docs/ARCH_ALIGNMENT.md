@@ -46,7 +46,7 @@ Auth System
 - 基础结构: ✅ AuthManager / ProviderAdapter / SessionStore / CredentialBroker
 - Profile mapping: ✅ runtime/auth_profiles.tsv provider 默认 profile 映射已实现
 - Gemini CLI OAuth passthrough: ✅ 可导入已登录的 `gemini` CLI 浏览器 OAuth 会话
-- Native OAuth: 🚧 已支持 PKCE start/callback/listen/token exchange/session persistence、`oauth-login` 单命令编排、Gemini Google OAuth 默认配置、`runtime/auth_oauth_providers.tsv` repo-local defaults 覆盖、含 origin/note 元数据的 `oauth-defaults`、`oauth-config-validate [--all]` 全 provider 诊断，以及 `openai`/`anthropic`/`qwen` 的 stub provider discovery 条目；OpenAI / Anthropic 公网 PKCE endpoints 与多 provider 产品级登录 UX 仍待补齐
+- Native OAuth: 🚧 已支持 PKCE start/callback/listen/token exchange/session persistence、`oauth-login` 单命令编排、Gemini Google OAuth 默认配置、OpenAI PKCE 默认配置 (`auth.openai.com`)、`runtime/auth_oauth_providers.tsv` repo-local defaults 覆盖、含 origin/note 元数据的 `oauth-defaults`、`oauth-config-validate [--all]` 全 provider 诊断；Gemini 和 OpenAI 为 `builtin` provider，`anthropic`/`qwen` 仍为 `stub` provider discovery 条目；Anthropic 公网 PKCE endpoints 与多 provider 产品级登录 UX 仍待补齐
 - Credential store: ✅ Windows Credential Manager / macOS Keychain (Security framework) / Linux Secret Service (libsecret 可选依赖) 已通过 `ISecureTokenBackend` 抽象接入；缺 libsecret 的 Linux 主机退化为 `env-ref-only` dev fallback；`SecureTokenStore::MakeInMemoryBackendForTesting()` 提供单元测试用内存后端，CI 中绝不触达真实 keychain
 - CLI session: 🚧 Codex / Claude passthrough probe 与导入已实现，并已有可控 fixture 测试覆盖
 
@@ -422,6 +422,7 @@ score: ✅ success_count / success_rate / failure_count / latency 综合评分
 * Claude: ✅ API-key/auth-session backed Messages adapter plus Claude CLI passthrough execution
 * Codex
 * Gemini: ✅ API-key/auth-session backed `generateContent` adapter
+* OpenAI: ✅ API-key/browser-OAuth backed Chat Completions adapter (`api.openai.com/v1/chat/completions`, sync + V2 SSE streaming, default gpt-4o)
 * Qwen: ✅ API-key/auth-session backed Alibaba Cloud Model Studio OpenAI-compatible Chat Completions adapter
 
 ---

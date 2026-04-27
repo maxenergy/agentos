@@ -196,16 +196,18 @@ public:
 ## 5. Provider 策略
 
 ## 5.1 OpenAI / Codex
-第一版支持：
+当前支持：
 
 - API Key
 - Codex CLI session passthrough
+- Browser OAuth (PKCE via `auth.openai.com`)
 
 设计建议：
 
-- AgentOS 不自行实现 ChatGPT 登录协议
+- `OpenAiAgent` 直接通过 `api.openai.com/v1/chat/completions` 调用 GPT-4o 等模型
 - 如果用户已经通过官方 Codex CLI 登录，则复用其 session 状态
 - 对程序化使用场景优先推荐 API key
+- Browser OAuth 通过 PKCE 流程支持 Codex/OpenAI Platform 登录
 
 ## 5.2 Gemini
 第一版支持：
@@ -388,7 +390,8 @@ agentos auth logout gemini
 关键偏差：
 
 - `SecureTokenStore` 通过 `ISecureTokenBackend` 抽象为多平台后端：Windows Credential Manager（`wincred:`）、macOS Keychain（`keychain:`）、Linux Secret Service via libsecret（`secret-service:`，可选依赖）。所有后端继续支持 `env:` 引用；缺失系统 keychain 时退化为 `env-ref-only` dev fallback。`auth credential-store` 命令打印当前后端标识，便于 ops 验证生产环境 token 落点。`SecureTokenStore::MakeInMemoryBackendForTesting()` 提供单元测试用的内存后端，CI 中绝不触达真实 keychain。
-- 原生 OAuth 的 PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、single-command `oauth-login`、`oauth-defaults` provider discovery（含 origin/note 元数据与 endpoint_status）、repo-local OAuth defaults 覆盖、`oauth-config-validate [--all]` 配置诊断与全 provider 审计、`oauth-start open_browser=true` 系统默认浏览器启动、Gemini Google OAuth 默认 endpoint/scope，以及 provider adapter 在给定 callback/token 参数时的原生 login/refresh 编排已落地。`OAuthProviderDefaults` 现在包含 `origin`(builtin/config/stub/none) 与 `note` 字段，`openai`/`anthropic`/`qwen` 已注册为 `stub` provider 并输出 `endpoint_status=deferred`，表示 AgentOS 不会伪造未公开的授权 / token endpoint；如需提前测试这些 provider，必须通过 `runtime/auth_oauth_providers.tsv` 提供 workspace override，届时状态变为 `available`。Google ADC 已支持通过 gcloud passthrough mint bearer token。
+- 原生 OAuth 的 PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、single-command `oauth-login`、`oauth-defaults` provider discovery（含 origin/note 元数据与 endpoint_status）、repo-local OAuth defaults 覆盖、`oauth-config-validate [--all]` 配置诊断与全 provider 审计、`oauth-start open_browser=true` 系统默认浏览器启动，以及 provider adapter 在给定 callback/token 参数时的原生 login/refresh 编排已落地。`OAuthProviderDefaults` 现在包含 `origin`(builtin/config/stub/none) 与 `note` 字段。Gemini 和 OpenAI 已注册为 `builtin` provider 并输出 `endpoint_status=available`（Gemini: Google OAuth 默认 endpoint/scope; OpenAI: `auth.openai.com/authorize` + `/oauth/token`）；`anthropic`/`qwen` 仍为 `stub` provider 并输出 `endpoint_status=deferred`。如需提前测试 stub provider，可通过 `runtime/auth_oauth_providers.tsv` 提供 workspace override。Google ADC 已支持通过 gcloud passthrough mint bearer token。
+- `OpenAiAgent` REST adapter 直接调用 `api.openai.com/v1/chat/completions`，支持同步和 V2 SSE streaming（默认 gpt-4o）。
 - workspace profile 选择已支持 provider 默认 profile 映射、`auth profiles [provider]` profile 发现，以及 login / OAuth completion 的 `set_default=true` 一步式默认 profile 选择；更完整的多账号策略仍需补齐。
 - CLI session passthrough 只做探测与导入，不直接读取或复制外部 CLI token。
 

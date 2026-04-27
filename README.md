@@ -90,7 +90,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 ## 开发计划
 
 当前完成度审查与后续 TODO 维护在 [plan.md](plan.md)。每完成一项能力，应同步更新该文件和相关 docs。
-当前状态是可运行的本地 MVP，不是生产级完成；Gemini 已支持复用 Gemini CLI 的浏览器 OAuth 登录态、原生 PKCE OAuth 登录、`oauth-defaults` OAuth 配置查询、repo-local `runtime/auth_oauth_providers.tsv` OAuth defaults 覆盖、`oauth-start open_browser=true` 系统浏览器启动尝试、`oauth-login` start/listen/token-exchange/session-persist 单命令编排和 Google OAuth 默认 endpoint/scope。OpenAI / Anthropic / Qwen 的公开 PKCE endpoint 仍作为 `stub` provider 延后，CLI 会输出 `endpoint_status=deferred`；如需测试可在 workspace TSV 中提供覆盖。Windows 已接入 Credential Manager，但生产化仍需补齐更完整的多 provider 交互式登录 UX、非 Windows credential store、存储事务/恢复和更完整的 agent orchestration。
+当前状态是可运行的本地 MVP，不是生产级完成；Gemini 和 OpenAI 已支持原生 PKCE OAuth 登录（Gemini: Google OAuth 默认 endpoint/scope; OpenAI: `auth.openai.com`），并各有原生 REST agent adapter（Gemini `generateContent`、OpenAI `api.openai.com/v1/chat/completions` 默认 gpt-4o）。Gemini 还支持复用 Gemini CLI 的浏览器 OAuth 登录态。`oauth-defaults` / `oauth-login` / `runtime/auth_oauth_providers.tsv` 等 PKCE 基础设施对所有 provider 可用。Anthropic / Qwen 的公开 PKCE endpoint 仍作为 `stub` provider 延后，CLI 会输出 `endpoint_status=deferred`；如需测试可在 workspace TSV 中提供覆盖。Windows 已接入 Credential Manager，但生产化仍需补齐更完整的多 provider 交互式登录 UX、非 Windows credential store、存储事务/恢复和更完整的 agent orchestration。
 仓库已包含 GitHub Actions CI，默认在 `push` 和 `pull_request` 上执行 Windows + Ubuntu 的 `configure/build/test`。
 
 ## 构建与运行
