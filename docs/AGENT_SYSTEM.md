@@ -22,10 +22,11 @@ AgentOS 不是只调用普通工具，它还需要在必要时借助“外部专
 - Claude Code
 - Codex CLI
 - Gemini CLI
+- OpenAI (via Chat Completions REST API)
 - Qwen Code
 - 一个实验位（可接未来新代理或自研代理）
 
-数量建议长期控制在 5 个以内。
+数量建议长期控制在 6 个以内。
 
 ---
 
@@ -172,7 +173,7 @@ returned on `AgentResult.usage`; `SubagentManager` and `AgentLoop` prefer
 positive.
 
 V1 and V2 coexist by design. Migrated adapters (`LocalPlanningAgent`,
-`CodexCliAgent`, `AnthropicAgent`, `QwenAgent`, `GeminiAgent`) inherit both
+`CodexCliAgent`, `AnthropicAgent`, `QwenAgent`, `OpenAiAgent`, `GeminiAgent`) inherit both
 interfaces — `profile()` / `healthy()` / `close_session(string)` share
 signatures across the two bases, so a single override satisfies both
 vtables. `SubagentManager::run_one` and `AgentLoop::run_agent_task`
@@ -217,6 +218,7 @@ AgentRouter 负责根据任务特征选择最合适代理。
 - Claude Code：编排、任务拆解、多步骤协调
 - Codex CLI：复杂代码推理、精准 patch
 - Gemini CLI：搜索、资料整合、外部研究
+- OpenAI：通用推理、代码生成、GPT-4o 默认模型
 - Qwen Code：低成本任务、批量草稿、回退路径
 
 ### 6.2 动态评分
@@ -247,7 +249,7 @@ AgentRouter 负责根据任务特征选择最合适代理。
 - SubagentManager 支持显式 agent 列表的 `sequential` / `parallel` 编排
 - SubagentManager 在 agents 为空时可基于 enabled、capability、历史统计与 lessons 自动选择候选
 - SubagentManager 支持 `auto_decompose=true`，先调用具备 `decomposition` capability 的规划 agent，将其 `plan_steps[].action` 映射到各 role / agent 的 subtask objective
-- Codex CLI、Gemini、Anthropic、Qwen 与 local_planner adapter 会输出 `agent_result.v1` normalized result，包含 `summary`、`content`、`model`、`artifacts`、`metrics`、`tool_calls`、`provider_metadata` 与 `raw_output`
+- Codex CLI、Gemini、Anthropic、OpenAI、Qwen 与 local_planner adapter 会输出 `agent_result.v1` normalized result，包含 `summary`、`content`、`model`、`artifacts`、`metrics`、`tool_calls`、`provider_metadata` 与 `raw_output`
 - SubagentManager 会在每个 `TaskStepRecord` 保留 agent 的 structured output / artifacts，并在整体 `output_json.agent_outputs[].normalized` 聚合各 agent 的 normalized output
 - SubagentManager 复用 `PolicyEngine`、`AuditLogger`、`MemoryManager`
 - WorkspaceSession 已支持基础 open / run / close 生命周期

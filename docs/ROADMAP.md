@@ -121,7 +121,8 @@ Delivered:
 - `gemini` authenticated `generateContent` adapter through existing auth sessions/default profile mapping
 - `anthropic` authenticated Messages adapter plus Claude CLI passthrough execution
 - `qwen` authenticated Alibaba Cloud Model Studio OpenAI-compatible Chat Completions adapter
-- normalized `agent_result.v1` structured output for Codex CLI, Gemini, Anthropic, Qwen, and local_planner, preserving raw provider output
+- `openai` authenticated Chat Completions adapter targeting `api.openai.com/v1/chat/completions` (sync + V2 SSE streaming, default gpt-4o)
+- normalized `agent_result.v1` structured output for Codex CLI, Gemini, Anthropic, OpenAI, Qwen, and local_planner, preserving raw provider output
 - Agent health listing
 - Router selection by health and basic historical score
 - WorkspaceSession abstraction
@@ -159,12 +160,13 @@ Delivered:
 - credential store status reports the active backend, including Windows Credential Manager or non-Windows env-ref dev fallback
 - reusable OAuth PKCE start/callback scaffolding with S256 challenge generation, authorization URL construction, OAuth defaults discovery through `oauth-defaults`, repo-local OAuth defaults overrides through `runtime/auth_oauth_providers.tsv`, `oauth-config-validate` diagnostics, optional system-browser launch through `oauth-start open_browser=true`, one-shot localhost callback listener, callback URL query parsing, state validation, authorization-code and refresh-token request form-body construction, curl-backed HTTP exchange helpers, token response parsing, managed AuthSession persistence helpers, single-command `oauth-login` orchestration, scriptable `oauth-complete` orchestration, and provider adapter parameterized native OAuth login/refresh completion
 - Gemini Google OAuth default authorization/token endpoints and default scopes for `oauth-defaults`, `oauth-start`, `oauth-complete`, and native browser OAuth adapter completion
+- OpenAI PKCE default authorization/token endpoints (`auth.openai.com/authorize` + `/oauth/token`) and default scopes; `OpenAiAuthProviderAdapter` supports `browser_oauth` mode with refresh token
 - Gemini browser-OAuth passthrough import via Gemini CLI OAuth state; unavailable imports return `BrowserOAuthUnavailable`
 - `agentos auth ...` command group, including `oauth-defaults` for provider OAuth discovery, `oauth-config-validate` for repo-local OAuth defaults diagnostics, `oauth-start` for scriptable PKCE authorization URL generation, `oauth-login` for single-command start/listen/token-exchange/session persistence, `oauth-callback` for callback URL parsing/state validation, `oauth-listen` for one-shot loopback callback capture, `oauth-complete` for scriptable callback-to-session completion, `oauth-token-request` for scriptable token request body generation, and `oauth-refresh-request` for scriptable refresh body generation
 
 Remaining:
 
-- Additional provider-specific OAuth discovery, configuration diagnostics, and fuller multi-provider interactive login UX
+- Additional provider-specific OAuth discovery (Anthropic remains deferred), fuller multi-provider interactive login UX
 - non-Windows system credential store integration
 - cloud credential modes
 
