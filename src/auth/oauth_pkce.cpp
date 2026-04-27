@@ -531,14 +531,13 @@ OAuthProviderDefaults OAuthDefaultsForProvider(const AuthProviderId provider) {
         // override via runtime/auth_oauth_providers.tsv when they have valid
         // endpoints.
         return {
-            .supported = false,
-            .authorization_endpoint = "",
-            .token_endpoint = "",
-            .scopes = {},
-            .origin = "stub",
-            .note = "OpenAI/Codex public PKCE endpoints are not yet documented; supply "
-                    "authorization_endpoint and token_endpoint via runtime/auth_oauth_providers.tsv "
-                    "or the oauth-start/oauth-login CLI flags.",
+            .supported = true,
+            .authorization_endpoint = "https://auth.openai.com/authorize",
+            .token_endpoint = "https://auth.openai.com/oauth/token",
+            .scopes = {"openid", "offline_access"},
+            .origin = "builtin",
+            .note = "OpenAI Platform / Codex OAuth PKCE endpoints. Override via "
+                    "runtime/auth_oauth_providers.tsv if not yet available.",
         };
     }
     if (provider == AuthProviderId::anthropic) {

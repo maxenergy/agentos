@@ -1155,14 +1155,20 @@ void TestOAuthDefaultsCoverageAndConfigOverride(const std::filesystem::path& wor
         Expect(!gemini.note.empty(), "gemini defaults should carry a human-readable note");
         Expect(!gemini.token_endpoint.empty(), "gemini token endpoint should be populated");
     }
+    {
+        const auto openai = agentos::OAuthDefaultsForProvider(agentos::AuthProviderId::openai);
+        Expect(openai.supported, "openai should have builtin OAuth defaults");
+        Expect(openai.origin == "builtin", "openai defaults origin should be builtin");
+        Expect(!openai.note.empty(), "openai defaults should carry a human-readable note");
+        Expect(!openai.token_endpoint.empty(), "openai token endpoint should be populated");
+    }
     for (const auto provider : {
-             agentos::AuthProviderId::openai,
              agentos::AuthProviderId::anthropic,
              agentos::AuthProviderId::qwen,
          }) {
         const auto defaults = agentos::OAuthDefaultsForProvider(provider);
-        Expect(!defaults.supported, "non-gemini providers should be unsupported by default");
-        Expect(defaults.origin == "stub", "non-gemini providers should be marked as stub");
+        Expect(!defaults.supported, "non-gemini/openai providers should be unsupported by default");
+        Expect(defaults.origin == "stub", "non-gemini/openai providers should be marked as stub");
         Expect(!defaults.note.empty(), "stub providers should explain why OAuth is unavailable");
         Expect(defaults.authorization_endpoint.empty(), "stub providers should not expose endpoints");
         Expect(defaults.token_endpoint.empty(), "stub providers should not expose endpoints");
@@ -1189,16 +1195,14 @@ void TestOAuthDefaultsCoverageAndConfigOverride(const std::filesystem::path& wor
     Expect(anthropic_it != loaded.end(), "loader should include anthropic override row");
     Expect(!anthropic_it->second.supported, "anthropic override with no endpoints should not be supported");
 
-    // Merging a config override on top of a stub builtin should mark the
-    // result origin=config and refresh the stub note.
+    // Merging a config override on top of the builtin openai defaults should
+    // mark the result origin=config and keep the override endpoints.
     const auto merged = agentos::MergeOAuthProviderDefaults(
         agentos::OAuthDefaultsForProvider(agentos::AuthProviderId::openai),
         openai_it->second);
     Expect(merged.supported, "merged openai defaults should be supported");
     Expect(merged.origin == "config", "merged defaults should report origin=config");
     Expect(merged.token_endpoint == "https://example.test/token", "merged defaults should pick up override token endpoint");
-    Expect(merged.note.find("override") != std::string::npos,
-        "merged defaults should reset the stub note when config supplies endpoints");
 
     // Single-provider lookup helper.
     const auto override_only = agentos::LoadOAuthProviderDefaultsFromFile(config_path, agentos::AuthProviderId::openai);

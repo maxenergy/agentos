@@ -30,6 +30,7 @@
 #include "hosts/agents/codex_cli_agent.hpp"
 #include "hosts/agents/gemini_agent.hpp"
 #include "hosts/agents/local_planning_agent.hpp"
+#include "hosts/agents/openai_agent.hpp"
 #include "hosts/agents/qwen_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
 #include "hosts/cli/cli_skill_invoker.hpp"
@@ -764,6 +765,8 @@ int main(int argc, char* argv[]) {
     runtime.agent_registry.register_agent(std::make_shared<AnthropicAgent>(
         runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
     runtime.agent_registry.register_agent(std::make_shared<QwenAgent>(
+        runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
+    runtime.agent_registry.register_agent(std::make_shared<OpenAiAgent>(
         runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
     runtime.agent_registry.register_agent(std::make_shared<CodexCliAgent>(runtime.cli_host, workspace));
     runtime.auth_manager.register_provider(std::make_shared<OpenAiAuthProviderAdapter>(

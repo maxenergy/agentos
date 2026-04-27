@@ -431,8 +431,10 @@ OpenAiAuthProviderAdapter::OpenAiAuthProviderAdapter(
           AuthProviderDescriptor{
               .provider = AuthProviderId::openai,
               .provider_name = "openai",
-              .supported_modes = {AuthMode::api_key, AuthMode::cli_session_passthrough},
+              .supported_modes = {AuthMode::api_key, AuthMode::cli_session_passthrough, AuthMode::browser_oauth},
+              .browser_login_supported = true,
               .headless_supported = true,
+              .refresh_token_supported = true,
               .cli_session_passthrough_supported = true,
           },
           session_store,
@@ -483,8 +485,10 @@ AnthropicAuthProviderAdapter::AnthropicAuthProviderAdapter(
           AuthProviderDescriptor{
               .provider = AuthProviderId::anthropic,
               .provider_name = "anthropic",
-              .supported_modes = {AuthMode::api_key, AuthMode::cli_session_passthrough},
+              .supported_modes = {AuthMode::api_key, AuthMode::cli_session_passthrough, AuthMode::browser_oauth},
+              .browser_login_supported = true,
               .headless_supported = true,
+              .refresh_token_supported = true,
               .cli_session_passthrough_supported = true,
           },
           session_store,

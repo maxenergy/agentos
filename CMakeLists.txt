@@ -95,6 +95,7 @@ add_library(agentos_core
     src/hosts/agents/gemini_agent.cpp
     src/hosts/agents/anthropic_agent.cpp
     src/hosts/agents/qwen_agent.cpp
+    src/hosts/agents/openai_agent.cpp
     src/hosts/cli/cli_host.cpp
     src/hosts/cli/cli_skill_invoker.cpp
     src/hosts/cli/cli_spec_loader.cpp
