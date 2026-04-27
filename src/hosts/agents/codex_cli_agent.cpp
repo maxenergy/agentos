@@ -737,11 +737,6 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
             "--skip-git-repo-check",
             "--color",
             "never",
-            "--output-last-message",
-            "{{output_file}}",
-            "-C",
-            "{{workspace_path}}",
-            "{{prompt}}",
         },
         .required_args = {"workspace_path", "output_file", "prompt"},
         .input_schema_json = R"({"type":"object","required":["prompt"]})",
@@ -753,6 +748,18 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
         .output_limit_bytes = 1024 * 1024,
         .env_allowlist = {"USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "CODEX_HOME"},
     };
+
+    if (task.auth_profile.has_value() && !task.auth_profile->empty()) {
+        spec.args_template.push_back("--profile");
+        spec.args_template.push_back(*task.auth_profile);
+    }
+    spec.args_template.insert(spec.args_template.end(), {
+        "--output-last-message",
+        "{{output_file}}",
+        "-C",
+        "{{workspace_path}}",
+        "{{prompt}}",
+    });
 
     const auto result = cli_host_.run(CliRunRequest{
         .spec = spec,
@@ -858,10 +865,14 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
             "--skip-git-repo-check",
             "--color", "never",
             "-C", workspace_path.string(),
-            "--",
-            *invocation.resume_session_id,
-            prompt,
         };
+        if (invocation.auth_profile.has_value() && !invocation.auth_profile->empty()) {
+            args.push_back("--profile");
+            args.push_back(*invocation.auth_profile);
+        }
+        args.push_back("--");
+        args.push_back(*invocation.resume_session_id);
+        args.push_back(prompt);
     } else {
         args = {
             "exec",
@@ -870,8 +881,12 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
             "--skip-git-repo-check",
             "--color", "never",
             "-C", workspace_path.string(),
-            prompt,
         };
+        if (invocation.auth_profile.has_value() && !invocation.auth_profile->empty()) {
+            args.push_back("--profile");
+            args.push_back(*invocation.auth_profile);
+        }
+        args.push_back(prompt);
     }
 
     bool abort_flag = false;

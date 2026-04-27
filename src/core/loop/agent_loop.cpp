@@ -220,6 +220,7 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task,
         .task_type = task.task_type,
         .objective = task.objective,
         .workspace_path = task.workspace_path.string(),
+        .auth_profile = task.auth_profile,
         .context_json = InputsAsJson(task.inputs),
         .constraints_json = AgentConstraintsAsJson(task),
         .timeout_ms = task.timeout_ms,
@@ -271,6 +272,7 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task,
         invocation.task_id = agent_task.task_id;
         invocation.objective = agent_task.objective;
         invocation.workspace_path = task.workspace_path;
+        invocation.auth_profile = task.auth_profile;
         invocation.context = {
             {"task_type", task.task_type},
             {"parent_task_id", task.task_id},

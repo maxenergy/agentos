@@ -263,6 +263,8 @@ TaskRequest BuildTaskFromArgs(const int argc, char* argv[], const std::filesyste
             task.origin_identity_id = value;
         } else if (key == "origin_device" || key == "origin_device_id") {
             task.origin_device_id = value;
+        } else if (key == "profile" || key == "auth_profile") {
+            task.auth_profile = value;
         } else if (key == "allow_network") {
             task.allow_network = value == "true";
         } else if (key == "allow_high_risk") {
@@ -512,6 +514,9 @@ ScheduledTask BuildScheduledTaskFromOptions(
         .task_type = task_type,
         .objective = options.contains("objective") ? options.at("objective") : ("Scheduled task: " + task_type),
         .workspace_path = workspace,
+        .auth_profile = options.contains("profile")
+            ? std::make_optional(options.at("profile"))
+            : (options.contains("auth_profile") ? std::make_optional(options.at("auth_profile")) : std::nullopt),
         .idempotency_key = options.contains("idempotency_key") ? options.at("idempotency_key") : "",
         .remote_trigger = ParseBoolOption(options, "remote", ParseBoolOption(options, "remote_trigger", false)),
         .origin_identity_id = options.contains("origin_identity")
@@ -652,14 +657,14 @@ void PrintUsage() {
         << "  agentos storage import src=<directory>\n"
         << "  agentos storage recover\n"
         << "  agentos storage compact [target=all|memory|scheduler|audit]\n"
-        << "  agentos schedule add task=<task_type> due=now [recurrence=every:5m|cron:<expr>] [cron=\"*/5 * * * *\"|@hourly|@daily|@weekly|@monthly|@yearly] [missed_run_policy=run-once|skip] key=value ...\n"
+        << "  agentos schedule add task=<task_type> due=now [profile=name] [recurrence=every:5m|cron:<expr>] [cron=\"*/5 * * * *\"|@hourly|@daily|@weekly|@monthly|@yearly] [missed_run_policy=run-once|skip] key=value ...\n"
         << "  agentos schedule list\n"
         << "  agentos schedule history\n"
         << "  agentos schedule run-due\n"
         << "  agentos schedule tick [iterations=1] [interval_ms=1000]\n"
         << "  agentos schedule daemon [iterations=0] [interval_ms=1000]\n"
         << "  agentos schedule remove id=<schedule_id>\n"
-        << "  agentos subagents run [agents=<agent[,agent]>] [mode=sequential|parallel] objective=text\n"
+        << "  agentos subagents run [agents=<agent[,agent]>] [mode=sequential|parallel] [profile=name] objective=text\n"
         << "  agentos trust identity-add identity=<id> [user=<user>] [label=name]\n"
         << "  agentos trust identities\n"
         << "  agentos trust identity-remove identity=<id>\n"
@@ -704,7 +709,7 @@ void PrintUsage() {
         << "  agentos auth default-profile <provider> profile=name\n"
         << "  agentos auth refresh <provider> [profile=name]\n"
         << "  agentos auth probe <provider>\n"
-        << "  agentos run <task_type> key=value ...\n\n"
+        << "  agentos run <task_type> [profile=name] key=value ...\n\n"
         << "Examples:\n"
         << "  agentos run read_file path=README.md\n"
         << "  agentos run write_file path=runtime/note.txt content=hello idempotency_key=demo-write-1\n"
@@ -733,6 +738,7 @@ void PrintUsage() {
         << "  agentos run read_file path=README.md permission_grants=filesystem.read\n"
         << "  agentos run custom_high_risk allow_high_risk=true approval_id=approval-123\n"
         << "  agentos run analysis target=codex_cli objective=Review_the_project_structure\n"
+        << "  agentos run analysis target=gemini profile=work objective=Use_a_non_default_auth_profile\n"
         << "  agentos run analysis target=local_planner objective=Design_the_next_phase\n";
 }
 

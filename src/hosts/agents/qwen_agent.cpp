@@ -452,7 +452,7 @@ AgentProfile QwenAgent::profile() const {
 }
 
 bool QwenAgent::healthy() const {
-    const auto session = credential_broker_.get_session(AuthProviderId::qwen, profile_name());
+    const auto session = credential_broker_.get_session(AuthProviderId::qwen, profile_name(std::nullopt));
     return session.has_value() && (CommandExists("curl") || CommandExists("curl.exe"));
 }
 
@@ -494,7 +494,7 @@ AgentResult QwenAgent::run_task(const AgentTask& task) {
         };
     }
 
-    const auto profile = profile_name();
+    const auto profile = profile_name(task.auth_profile);
     const auto session = credential_broker_.get_session(AuthProviderId::qwen, profile);
     if (!session.has_value()) {
         return {
@@ -680,7 +680,7 @@ AgentResult QwenAgent::invoke(const AgentInvocation& invocation,
     if (!CommandExists("curl") && !CommandExists("curl.exe")) {
         return fallback_to_sync();
     }
-    const auto profile = profile_name();
+    const auto profile = profile_name(invocation.auth_profile);
     const auto session = credential_broker_.get_session(AuthProviderId::qwen, profile);
     if (!session.has_value()) {
         return fallback_to_sync();
@@ -917,8 +917,8 @@ AgentResult QwenAgent::invoke(const AgentInvocation& invocation,
     return agent_result;
 }
 
-std::string QwenAgent::profile_name() const {
-    return profile_store_.default_profile(AuthProviderId::qwen).value_or("default");
+std::string QwenAgent::profile_name(const std::optional<std::string>& requested_profile) const {
+    return requested_profile.value_or(profile_store_.default_profile(AuthProviderId::qwen).value_or("default"));
 }
 
 std::string QwenAgent::model_name(const AgentTask& task) {
@@ -1044,6 +1044,19 @@ AgentTask QwenAgent::InvocationToTask(const AgentInvocation& invocation) {
     task.task_type = type_it == invocation.context.end() ? std::string{} : type_it->second;
     task.objective = invocation.objective;
     task.workspace_path = invocation.workspace_path.string();
+    task.auth_profile = invocation.auth_profile;
+
+    // Encode context as a flat JSON object so BuildPrompt's "Context JSON:"
+    // section continues to surface orchestrator-provided fields (task_type,
+    // parent_task_id, role, ...) when the V2 invoke path falls back to
+    // run_task in sync mode.
+    if (!invocation.context.empty()) {
+        nlohmann::ordered_json context_json;
+        for (const auto& [k, v] : invocation.context) {
+            context_json[k] = v;
+        }
+        task.context_json = context_json.dump();
+    }
 
     // Encode constraints as a flat JSON object so the legacy model_name parser
     // continues to find `"model":"..."` if the caller passed one.

@@ -41,8 +41,15 @@ public:
                        const AgentEventCallback& on_event = {}) override;
     std::optional<std::string> open_session(const StringMap& config) override;
 
+    // Pure projection helper: materializes the legacy AgentTask shape from a
+    // V2 AgentInvocation so run_task() can serve as the sync-mode body. Public
+    // for direct testing — see tests/agent_provider_tests.cpp's projection
+    // regression tests. Every field added to AgentInvocation must also be
+    // wired here (see docs/AGENT_SYSTEM.md §4.7 V2 adapter interface).
+    static AgentTask InvocationToTask(const AgentInvocation& invocation);
+
 private:
-    std::string profile_name() const;
+    std::string profile_name(const std::optional<std::string>& requested_profile = std::nullopt) const;
     static std::string model_name(const AgentTask& task);
     static std::string model_name_v2(const AgentInvocation& invocation);
     static std::string BuildPrompt(const AgentTask& task);
@@ -50,7 +57,6 @@ private:
     static std::string BuildRequestBody(const AgentTask& task);
     static std::string BuildRequestBodyV2(const AgentInvocation& invocation, bool stream);
     static std::string ExtractFirstMessageContent(const std::string& response_json);
-    static AgentTask InvocationToTask(const AgentInvocation& invocation);
 
     const CliHost& cli_host_;
     const CredentialBroker& credential_broker_;

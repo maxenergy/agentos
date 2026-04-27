@@ -81,6 +81,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` / `schedule daemon` 复用 AgentLoop 执行，支持 retry/backoff、missed-run policy、五字段 cron、`@hourly` / `@daily` / `@weekly` / `@monthly` / `@yearly` / `@annually` 别名，以及 day-of-month / day-of-week OR 语义，并记录独立 run history
 - Subagent Orchestration：显式或自动候选 agent 的 sequential / parallel 编排，支持 `roles=agent:role` 确定性角色分配、`subtasks=role_or_agent=objective;...` 或 `subtask_<agent|role>=...` 的 per-agent objective 分派；也支持 `auto_decompose=true` 调用具备 `decomposition` capability 的规划 agent 生成 plan_steps 并映射到 subtask objective；subagent step 会保留 agent structured output，并在总输出中聚合 `agent_outputs[].normalized` 的 `agent_result.v1` 结果；并发/成本限制与 WorkspaceSession 基础生命周期，复用 Policy / Audit / Memory
 - V2 Streaming Adapter：`IAgentAdapterV2::invoke(AgentInvocation, AgentEventCallback)` 与 legacy `IAgentAdapter` 共存；五个适配器（`local_planner` / `codex_cli` / `anthropic` / `qwen` / `gemini`）已双继承并实现 `invoke()`；`SubagentManager::run_one` 与 `AgentLoop::run_agent_task` 通过 `dynamic_cast<IAgentAdapterV2*>` 优先走 V2 路径，未迁移的适配器回退到 `run_task()`；`AgentResult.usage.cost_usd` 在非零时优先于 legacy `estimated_cost` 流入 `step.estimated_cost`。完整参考见 [docs/V2_ADAPTER_INTERFACE.md](docs/V2_ADAPTER_INTERFACE.md)
+- Agent auth profile override：`agentos run ... profile=<name>`、`schedule add ... profile=<name>`、`subagents run ... profile=<name>` 会把指定 auth profile 传入 provider agent，覆盖 provider 默认 profile。
 - Cooperative Cancellation：`src/utils/cancellation.{hpp,cpp}` 提供 `CancellationToken`（`cancel` / `is_cancelled` / `wait_for_cancel`，`notify_all` 唤醒所有等待者）；`src/utils/signal_cancellation.{hpp,cpp}` 提供进程级 `InstallSignalCancellation()`，幂等地注册 Windows `SetConsoleCtrlHandler` 与 POSIX `sigaction(SIGINT/SIGTERM)`，首次信号触发 token、二次信号还原 OS 默认处理并放行强制退出；`agentos run` 与 `agentos subagents run` 已绑定该 token 并贯穿 `AgentLoop::run` / `SubagentManager::run` / `AgentInvocation::cancel`，sequential 模式短路剩余 dispatch、parallel 模式向每个 future 传递 token，已取消步骤记为 `error_code=Cancelled`
 - Auth Login UX：`agentos auth login-interactive [provider=<id>]` 使用 stdin 提示驱动 provider 选择、mode 选择、API key env / profile / set_default 输入，提示文本会回显 `OAuthDefaultsForProvider` 的 `origin` / `note` 元数据；`browser_oauth` 选项会重定向到 `agentos auth oauth-login <provider>` 而非内嵌 PKCE
 - Interactive REPL：`agentos interactive` 提供 stdin 交互式命令循环（run/agents/skills/status/memory/schedule），默认无参数运行即进入 REPL
@@ -236,6 +237,7 @@ build\agentos.exe auth refresh qwen profile=default
 build\agentos.exe run jq_transform filter=. path=runtime/data.json
 build\agentos.exe run http_fetch url=https://example.com allow_network=true
 build\agentos.exe run analysis target=gemini objective=Explain_the_current_workspace
+build\agentos.exe run analysis target=gemini profile=work objective=Use_a_non_default_auth_profile
 build\agentos.exe run analysis target=gemini model=gemini-3.1-pro-preview objective=Run_a_provider_smoke_test timeout_ms=120000
 build\agentos.exe run analysis target=qwen model=qwen-plus objective=Explain_the_current_workspace timeout_ms=120000
 build\agentos.exe run analysis target=codex_cli objective=Review_the_project_structure

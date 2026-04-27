@@ -88,6 +88,7 @@ struct AgentTask {
     std::string task_type;
     std::string objective;
     std::string workspace_path;
+    std::optional<std::string> auth_profile;
     std::string context_json;
     std::string constraints_json;
     int timeout_ms = 0;
@@ -140,6 +141,7 @@ struct AgentInvocation {
     std::string task_id;
     std::string objective;
     std::filesystem::path workspace_path;
+    std::optional<std::string> auth_profile;
     StringMap context;                              // structured replacement for context_json
     StringMap constraints;                          // structured replacement for constraints_json
     std::optional<std::string> session_id;          // continue an existing kernel-issued session
@@ -253,6 +255,7 @@ struct TaskRequest {
     std::string task_type;
     std::string objective;
     std::filesystem::path workspace_path;
+    std::optional<std::string> auth_profile;
     std::string user_id = "local-user";
     std::string idempotency_key;
     bool remote_trigger = false;

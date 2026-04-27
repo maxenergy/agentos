@@ -122,6 +122,7 @@ Delivered:
 - `anthropic` authenticated Messages adapter plus Claude CLI passthrough execution
 - `qwen` authenticated Alibaba Cloud Model Studio OpenAI-compatible Chat Completions adapter
 - `openai` authenticated Chat Completions adapter targeting `api.openai.com/v1/chat/completions` (sync + V2 SSE streaming, default gpt-4o)
+- per-task `profile=` / `auth_profile=` override for provider-agent auth session selection across `run`, `schedule add`, and `subagents run`
 - normalized `agent_result.v1` structured output for Codex CLI, Gemini, Anthropic, OpenAI, Qwen, and local_planner, preserving raw provider output
 - Agent health listing
 - Router selection by health and basic historical score

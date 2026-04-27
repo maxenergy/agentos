@@ -1882,6 +1882,83 @@ void TestAuthCommands() {
         "auth login-interactive should persist a real session via the existing AuthManager path");
 }
 
+// Verifies that `agentos run target=<provider> profile=<name>` and
+// `agentos subagents run agents=<provider> profile=<name>` propagate the
+// per-task auth profile override all the way to the provider adapter.
+//
+// Strategy: register a default Qwen API-key profile so QwenAgent::healthy()
+// succeeds (a precondition for both the named-target router path and the
+// SubagentManager::run_one health gate). Then dispatch with an *unconfigured*
+// profile name. The adapter's session lookup will miss, producing an
+// AuthUnavailable error whose message embeds the requested profile name —
+// observable proof that profile= flowed through TaskRequest -> AgentTask /
+// AgentInvocation -> adapter, rather than silently defaulting.
+//
+// curl must be on PATH for QwenAgent::healthy() to return true; CI runners
+// (Windows/Ubuntu) and dev machines satisfy this. If a future environment
+// strips curl this test will fail loudly at the healthy() gate, signaling the
+// missing prerequisite rather than silently skipping the override check.
+void TestRunAuthProfileOverride() {
+    const auto workspace = FreshWorkspace("auth_profile_override");
+
+    // Register a default Qwen profile so the adapter is healthy and selectable.
+    // The env var is captured/restored around the login call so unrelated
+    // tests don't see lingering state.
+    const auto saved_qwen_key = ReadEnvForTest("QWEN_API_KEY").value_or("");
+    SetEnvForTest("QWEN_API_KEY", "test-default-key");
+    const auto login_result = RunAgentos(workspace, {
+        "auth", "login", "qwen", "mode=api-key", "api_key_env=QWEN_API_KEY",
+        "profile=default", "set_default=true"});
+    SetEnvForTest("QWEN_API_KEY", saved_qwen_key);
+    Expect(login_result.exit_code == 0,
+        "auth login should register a default qwen profile so the adapter reports healthy");
+
+    // `agentos run` honors profile= as the per-task override. Targeting an
+    // unconfigured profile should reach the adapter and fail with the
+    // requested profile name in the error message.
+    const auto run_result = RunAgentos(workspace, {
+        "run", "analysis", "target=qwen", "profile=ghost-profile",
+        "objective=verify_profile_override"});
+    Expect(run_result.output.find("error_code: AuthUnavailable") != std::string::npos,
+        "agentos run target=qwen profile=ghost-profile should surface AuthUnavailable");
+    Expect(run_result.output.find("ghost-profile") != std::string::npos,
+        "agentos run profile= must reach the adapter (error_message should mention the requested profile)");
+
+    // The auth_profile= alias must behave identically to profile=.
+    const auto alias_result = RunAgentos(workspace, {
+        "run", "analysis", "target=qwen", "auth_profile=ghost-alias",
+        "objective=verify_alias"});
+    Expect(alias_result.output.find("error_code: AuthUnavailable") != std::string::npos,
+        "agentos run target=qwen auth_profile=ghost-alias should surface AuthUnavailable");
+    Expect(alias_result.output.find("ghost-alias") != std::string::npos,
+        "auth_profile= alias should propagate the same way profile= does");
+
+    // `agentos subagents run` must propagate profile= through the
+    // SubagentManager into the AgentInvocation. The orchestrator wraps the
+    // per-agent failure inside its aggregate JSON output (top-level error is
+    // SubagentFailure), so the AuthUnavailable signal appears inline as
+    // `"error_code":"AuthUnavailable"` alongside the requested profile name.
+    const auto subagents_result = RunAgentos(workspace, {
+        "subagents", "run", "agents=qwen", "mode=sequential",
+        "profile=ghost-subagent", "objective=verify_subagent_profile"});
+    Expect(subagents_result.output.find("AuthUnavailable") != std::string::npos,
+        "subagents run agents=qwen profile=ghost-subagent should surface AuthUnavailable in agent_outputs");
+    Expect(subagents_result.output.find("ghost-subagent") != std::string::npos,
+        "subagents run profile= must reach the adapter via SubagentManager");
+
+    // Sanity check: omitting profile= falls back to the default profile and
+    // therefore must NOT mention any of the override names — confirms the
+    // override is targeted, not a global pollution.
+    const auto default_run = RunAgentos(workspace, {
+        "run", "analysis", "target=qwen", "objective=verify_default_profile"});
+    Expect(default_run.output.find("ghost-profile") == std::string::npos,
+        "agentos run without profile= must not leak prior override names");
+    Expect(default_run.output.find("ghost-alias") == std::string::npos,
+        "agentos run without profile= must not leak prior override names");
+    Expect(default_run.output.find("ghost-subagent") == std::string::npos,
+        "agentos run without profile= must not leak prior override names");
+}
+
 void TestDiagnosticsCommand() {
     const auto workspace = FreshWorkspace("diagnostics");
 
@@ -1940,6 +2017,7 @@ int main() {
     TestScheduleCommands();
     TestSubagentsCommand();
     TestAuthCommands();
+    TestRunAuthProfileOverride();
     TestDiagnosticsCommand();
 
     if (failures != 0) {

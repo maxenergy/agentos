@@ -1080,6 +1080,7 @@ public:
 
     agentos::AgentResult run_task(const agentos::AgentTask& task) override {
         legacy_calls_ += 1;
+        last_auth_profile_ = task.auth_profile;
         return {
             .success = true,
             .summary = "legacy " + task.objective,
@@ -1096,6 +1097,7 @@ public:
                                 const agentos::AgentEventCallback& /*on_event*/) override {
         v2_calls_ += 1;
         last_context_ = invocation.context;
+        last_auth_profile_ = invocation.auth_profile;
         agentos::AgentResult result;
         result.success = true;
         result.summary = "v2 " + invocation.objective;
@@ -1110,6 +1112,7 @@ public:
     int legacy_calls() const { return legacy_calls_; }
     int v2_calls() const { return v2_calls_; }
     const agentos::StringMap& last_context() const { return last_context_; }
+    const std::optional<std::string>& last_auth_profile() const { return last_auth_profile_; }
 
 private:
     std::string name_;
@@ -1117,6 +1120,7 @@ private:
     int legacy_calls_ = 0;
     int v2_calls_ = 0;
     agentos::StringMap last_context_;
+    std::optional<std::string> last_auth_profile_;
 };
 
 void TestSubagentManagerPrefersV2InvokeWhenAvailable(const std::filesystem::path& workspace) {
@@ -1140,6 +1144,7 @@ void TestSubagentManagerPrefersV2InvokeWhenAvailable(const std::filesystem::path
             .task_type = "analysis",
             .objective = "exercise V2 routing",
             .workspace_path = isolated_workspace,
+            .auth_profile = "team-profile",
         },
         {"agent_v2"},
         agentos::SubagentExecutionMode::sequential);
@@ -1167,6 +1172,8 @@ void TestSubagentManagerPrefersV2InvokeWhenAvailable(const std::filesystem::path
         "V2 invocation context should carry the assigned role");
     Expect(ctx.count("parent_task_id") == 1 && ctx.at("parent_task_id") == "subagent-v2-routing",
         "V2 invocation context should carry the parent task_id");
+    Expect(v2_agent->last_auth_profile().has_value() && *v2_agent->last_auth_profile() == "team-profile",
+        "SubagentManager should forward TaskRequest.auth_profile into V2 AgentInvocation");
 }
 
 void TestSubagentManagerCancellationShortCircuitsSequential(const std::filesystem::path& workspace) {
@@ -1274,6 +1281,7 @@ void TestAgentLoopRoutesThroughV2InvokeAndForwardsUsageCost(const std::filesyste
         .task_type = "analysis",
         .objective = "exercise V2 routing through AgentLoop",
         .workspace_path = isolated_workspace,
+        .auth_profile = "loop-profile",
     });
 
     Expect(result.success, "AgentLoop V2 routing should succeed");
@@ -1288,6 +1296,8 @@ void TestAgentLoopRoutesThroughV2InvokeAndForwardsUsageCost(const std::filesyste
         Expect(result.steps[0].estimated_cost > 0.41 && result.steps[0].estimated_cost < 0.43,
             "AgentLoop step.estimated_cost should source from AgentResult.usage.cost_usd on the V2 path");
     }
+    Expect(agent->last_auth_profile().has_value() && *agent->last_auth_profile() == "loop-profile",
+        "AgentLoop should forward TaskRequest.auth_profile into V2 AgentInvocation");
 }
 
 void TestAgentLoopHonorsCancellationBeforeAgentDispatch(const std::filesystem::path& workspace) {

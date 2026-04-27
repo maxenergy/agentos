@@ -92,7 +92,7 @@ AgentProfile GeminiAgent::profile() const {
 }
 
 bool GeminiAgent::healthy() const {
-    const auto session = credential_broker_.get_session(AuthProviderId::gemini, profile_name());
+    const auto session = credential_broker_.get_session(AuthProviderId::gemini, profile_name(std::nullopt));
     if (!session.has_value()) {
         return false;
     }
@@ -129,7 +129,7 @@ AgentResult GeminiAgent::run_task(const AgentTask& task) {
         };
     }
 
-    const auto profile = profile_name();
+    const auto profile = profile_name(task.auth_profile);
     const auto session = credential_broker_.get_session(AuthProviderId::gemini, profile);
     if (!session.has_value()) {
         return {
@@ -162,7 +162,7 @@ AgentResult GeminiAgent::run_task_with_rest_session(
         };
     }
 
-    const auto profile = profile_name();
+    const auto profile = profile_name(task.auth_profile);
     std::string token;
     if (session.mode == AuthMode::cloud_adc || session.access_token_ref == "external-cli:gcloud-adc") {
         if (!CommandExists("gcloud") && !CommandExists("gcloud.cmd")) {
@@ -475,7 +475,7 @@ AgentResult GeminiAgent::invoke(const AgentInvocation& invocation,
         .kind = AgentEvent::Kind::SessionInit,
         .fields = {
             {"agent", "gemini"},
-            {"profile", profile_name()},
+            {"profile", profile_name(invocation.auth_profile)},
             {"model", ModelNameFromConstraints(invocation.constraints)},
         },
     });
@@ -532,6 +532,7 @@ AgentTask GeminiAgent::TaskFromInvocation(const AgentInvocation& invocation) {
         : task_type_it->second;
     task.objective = invocation.objective;
     task.workspace_path = invocation.workspace_path.string();
+    task.auth_profile = invocation.auth_profile;
     task.context_json = context_json.empty() ? std::string{} : context_json.dump();
     task.constraints_json = constraints_json.empty() ? std::string{} : constraints_json.dump();
     task.timeout_ms = invocation.timeout_ms;
@@ -547,8 +548,8 @@ std::string GeminiAgent::ModelNameFromConstraints(const StringMap& constraints) 
     return NormalizeGeminiModelName(it->second);
 }
 
-std::string GeminiAgent::profile_name() const {
-    return profile_store_.default_profile(AuthProviderId::gemini).value_or("default");
+std::string GeminiAgent::profile_name(const std::optional<std::string>& requested_profile) const {
+    return requested_profile.value_or(profile_store_.default_profile(AuthProviderId::gemini).value_or("default"));
 }
 
 std::string GeminiAgent::model_name(const AgentTask& task) {

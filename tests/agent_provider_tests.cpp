@@ -6,6 +6,7 @@
 #include "hosts/agents/codex_cli_agent.hpp"
 #include "hosts/agents/gemini_agent.hpp"
 #include "hosts/agents/anthropic_agent.hpp"
+#include "hosts/agents/openai_agent.hpp"
 #include "hosts/agents/qwen_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
 #include "utils/cancellation.hpp"
@@ -953,6 +954,117 @@ void TestGeminiAgentV2InvokeCancelsBeforeDispatch(const std::filesystem::path& w
         "gemini V2 cancellation should set error_code=Cancelled");
 }
 
+// Direct regression test for the V2 -> legacy projection helpers
+// (`InvocationToTask` / `TaskFromInvocation`) on every adapter that owns one.
+// These helpers are the bridge that lets `invoke()` reuse `run_task()` for
+// sync mode and failure fallbacks; if a future change adds a field to
+// `AgentInvocation` and forgets to wire it through any of these helpers, the
+// V2 sync path silently loses that field.
+//
+// The previous round shipped per-task `auth_profile=` overrides but missed
+// these projections — `agentos run target=qwen profile=team objective=...`
+// silently fell back to the default profile because `InvocationToTask`
+// dropped `invocation.auth_profile`. Same shape on openai/gemini/anthropic.
+// This test fences that off going forward.
+//
+// Each adapter's projection has the same contract (see
+// docs/AGENT_SYSTEM.md §4.7): copy task_id / objective / workspace_path /
+// auth_profile / timeout_ms / budget_limit, encode invocation.context as
+// `context_json`, encode invocation.constraints as `constraints_json`, and
+// derive `task_type` from `context["task_type"]`.
+void TestV2ToLegacyProjectionPropagatesAllFields() {
+    agentos::AgentInvocation invocation;
+    invocation.task_id = "proj-task-id";
+    invocation.objective = "propagate every field";
+    invocation.workspace_path = std::filesystem::path("/tmp/projection_workspace");
+    invocation.auth_profile = "team-profile";
+    invocation.context = {
+        {"task_type", "analysis"},
+        {"parent_task_id", "parent-007"},
+        {"role", "planner"},
+    };
+    invocation.constraints = {
+        {"model", "gpt-4o-mini"},
+    };
+    invocation.timeout_ms = 17500;
+    invocation.budget_limit_usd = 2.5;
+
+    struct Case {
+        const char* name;
+        agentos::AgentTask task;
+    };
+    const std::vector<Case> cases = {
+        {"qwen",      agentos::QwenAgent::InvocationToTask(invocation)},
+        {"openai",    agentos::OpenAiAgent::InvocationToTask(invocation)},
+        {"gemini",    agentos::GeminiAgent::TaskFromInvocation(invocation)},
+        {"anthropic", agentos::AnthropicAgent::TaskFromInvocation(invocation)},
+    };
+
+    for (const auto& [name, task] : cases) {
+        const std::string label = std::string(" (") + name + ")";
+
+        Expect(task.task_id == "proj-task-id",
+            ("projection should copy task_id" + label));
+        Expect(task.objective == "propagate every field",
+            ("projection should copy objective" + label));
+        Expect(task.workspace_path == "/tmp/projection_workspace" || task.workspace_path == "\\tmp\\projection_workspace",
+            ("projection should copy workspace_path as a string" + label));
+        Expect(task.auth_profile.has_value() && *task.auth_profile == "team-profile",
+            ("projection MUST carry invocation.auth_profile so per-task profile= overrides survive sync fallback" + label));
+        Expect(task.timeout_ms == 17500,
+            ("projection should copy timeout_ms" + label));
+        Expect(task.budget_limit > 2.49 && task.budget_limit < 2.51,
+            ("projection should copy budget_limit_usd into budget_limit" + label));
+
+        // task_type is derived from context["task_type"] across all adapters
+        // (anthropic uses a literal "agent_invoke" instead — assert per name).
+        if (std::string(name) == "anthropic") {
+            Expect(task.task_type == "agent_invoke",
+                ("anthropic projection sets task_type=agent_invoke literal" + label));
+        } else {
+            Expect(task.task_type == "analysis",
+                ("projection should derive task_type from context[\"task_type\"]" + label));
+        }
+
+        // Encoded JSON blobs should contain the original keys/values. Substring
+        // checks are sufficient — we don't depend on key ordering, just that
+        // the field round-tripped at all (this is exactly what was missing on
+        // qwen/openai before this round).
+        Expect(task.context_json.find("\"parent_task_id\"") != std::string::npos &&
+               task.context_json.find("parent-007") != std::string::npos,
+            ("projection should encode invocation.context into context_json" + label));
+        Expect(task.context_json.find("\"role\"") != std::string::npos &&
+               task.context_json.find("planner") != std::string::npos,
+            ("projection should preserve all context entries, not just task_type" + label));
+        Expect(task.constraints_json.find("\"model\"") != std::string::npos &&
+               task.constraints_json.find("gpt-4o-mini") != std::string::npos,
+            ("projection should encode invocation.constraints into constraints_json (legacy model_name() reads this)" + label));
+    }
+
+    // Empty maps must produce empty strings, not "{}", so the legacy
+    // run_task() path's `!context_json.empty()` / `!constraints_json.empty()`
+    // gates keep their existing semantics across all four adapters.
+    agentos::AgentInvocation empty_inv;
+    empty_inv.task_id = "empty";
+    empty_inv.objective = "no maps";
+    empty_inv.workspace_path = std::filesystem::path("/tmp/projection_workspace");
+    const std::vector<Case> empty_cases = {
+        {"qwen",      agentos::QwenAgent::InvocationToTask(empty_inv)},
+        {"openai",    agentos::OpenAiAgent::InvocationToTask(empty_inv)},
+        {"gemini",    agentos::GeminiAgent::TaskFromInvocation(empty_inv)},
+        {"anthropic", agentos::AnthropicAgent::TaskFromInvocation(empty_inv)},
+    };
+    for (const auto& [name, task] : empty_cases) {
+        const std::string label = std::string(" (") + name + ")";
+        Expect(task.context_json.empty(),
+            ("empty invocation.context should yield empty context_json, not \"{}\"" + label));
+        Expect(task.constraints_json.empty(),
+            ("empty invocation.constraints should yield empty constraints_json, not \"{}\"" + label));
+        Expect(!task.auth_profile.has_value(),
+            ("absent invocation.auth_profile should leave task.auth_profile unset" + label));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -967,6 +1079,7 @@ int main() {
     TestAnthropicAgentUsesExternalClaudeCliSession(workspace);
     TestQwenAgentUsesAuthenticatedProviderSession(workspace);
     TestGeminiAgentDoesNotLeakBearerTokenOnArgv(workspace);
+    TestV2ToLegacyProjectionPropagatesAllFields();
 
     if (failures != 0) {
         std::cerr << failures << " agent provider test assertion(s) failed\n";

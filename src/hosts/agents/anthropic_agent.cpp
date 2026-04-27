@@ -480,7 +480,7 @@ AgentProfile AnthropicAgent::profile() const {
 }
 
 bool AnthropicAgent::healthy() const {
-    const auto session = credential_broker_.get_session(AuthProviderId::anthropic, profile_name());
+    const auto session = credential_broker_.get_session(AuthProviderId::anthropic, profile_name(std::nullopt));
     if (!session.has_value()) {
         return false;
     }
@@ -513,7 +513,7 @@ AgentResult AnthropicAgent::run_task(const AgentTask& task) {
         };
     }
 
-    const auto profile = profile_name();
+    const auto profile = profile_name(task.auth_profile);
     const auto session = credential_broker_.get_session(AuthProviderId::anthropic, profile);
     if (!session.has_value()) {
         return {
@@ -547,7 +547,7 @@ AgentResult AnthropicAgent::run_task_with_rest_session(
         };
     }
 
-    const auto profile = profile_name();
+    const auto profile = profile_name(task.auth_profile);
     std::string token;
     try {
         token = credential_broker_.get_access_token(AuthProviderId::anthropic, profile);
@@ -797,7 +797,7 @@ AgentResult AnthropicAgent::invoke(
         };
     }
 
-    const auto profile = profile_name();
+    const auto profile = profile_name(invocation.auth_profile);
     const auto session = credential_broker_.get_session(AuthProviderId::anthropic, profile);
     if (!session.has_value()) {
         return {
@@ -848,7 +848,7 @@ std::optional<AgentResult> AnthropicAgent::invoke_with_rest_streaming(
         return std::nullopt;
     }
 
-    const auto profile = profile_name();
+    const auto profile = profile_name(invocation.auth_profile);
     std::string token;
     try {
         token = credential_broker_.get_access_token(AuthProviderId::anthropic, profile);
@@ -1133,8 +1133,8 @@ std::optional<AgentResult> AnthropicAgent::invoke_with_rest_streaming(
     return agent_result;
 }
 
-std::string AnthropicAgent::profile_name() const {
-    return profile_store_.default_profile(AuthProviderId::anthropic).value_or("default");
+std::string AnthropicAgent::profile_name(const std::optional<std::string>& requested_profile) const {
+    return requested_profile.value_or(profile_store_.default_profile(AuthProviderId::anthropic).value_or("default"));
 }
 
 std::string AnthropicAgent::model_name(const AgentTask& task) {
@@ -1260,6 +1260,7 @@ AgentTask AnthropicAgent::TaskFromInvocation(const AgentInvocation& invocation) 
     task.task_type = "agent_invoke";
     task.objective = invocation.objective;
     task.workspace_path = invocation.workspace_path.string();
+    task.auth_profile = invocation.auth_profile;
     task.context_json = context_json.empty() ? std::string() : context_json.dump();
     task.constraints_json = constraints_json.empty() ? std::string() : constraints_json.dump();
     task.timeout_ms = invocation.timeout_ms;

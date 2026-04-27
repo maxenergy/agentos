@@ -183,6 +183,45 @@ reference — type signatures, event sequence, cancellation contract,
 migration recipe, routing semantics, and known gaps — lives in
 [V2_ADAPTER_INTERFACE.md](V2_ADAPTER_INTERFACE.md).
 
+### V2→legacy projection helpers (`*FromInvocation` / `InvocationTo*`)
+
+Most V2 adapters implement `invoke()` for the streaming/cancellation path
+but reuse the legacy `run_task()` body for sync mode (`on_event == null`)
+and for failure fallbacks (e.g. streaming setup error → `fallback_to_sync`,
+or anthropic projecting an invocation onto `run_task_with_rest_session`).
+The bridge is a small static helper — `QwenAgent::InvocationToTask`,
+`OpenAiAgent::InvocationToTask`, `GeminiAgent::TaskFromInvocation`,
+`AnthropicAgent::TaskFromInvocation` — that materializes an `AgentTask`
+from an `AgentInvocation`. **Every field added to `AgentInvocation` must
+also be wired into each of these helpers**, or the V2 sync path silently
+loses it. The current required mapping is:
+
+| AgentInvocation field    | AgentTask field        | Notes                                                         |
+|--------------------------|------------------------|---------------------------------------------------------------|
+| `task_id`                | `task_id`              | direct copy                                                   |
+| `objective`              | `objective`            | direct copy                                                   |
+| `workspace_path`         | `workspace_path`       | `.string()`                                                   |
+| `auth_profile`           | `auth_profile`         | direct copy — required for per-task profile override          |
+| `context` (StringMap)    | `context_json` (str)   | encode as flat JSON object                                    |
+| `constraints` (StringMap)| `constraints_json` (str)| encode as flat JSON object; `model_name` parser reads this   |
+| `timeout_ms`             | `timeout_ms`           | direct copy                                                   |
+| `budget_limit_usd`       | `budget_limit`         | direct copy (note name change)                                |
+| `context["task_type"]`   | `task_type`            | look up via `invocation.context.find("task_type")`            |
+
+`session_id` / `resume_session_id` / `attachments` / `cancel` have no
+`AgentTask` counterpart and must be consumed directly inside `invoke()`
+before any projection — they cannot round-trip through legacy
+`run_task()`. Two regression guards fence this contract:
+`tests/cli_integration_tests.cpp::TestRunAuthProfileOverride` exercises
+the bridge end-to-end against the real Qwen adapter (proves
+`auth_profile=` survives `agentos run` / `agentos subagents run`), and
+`tests/agent_provider_tests.cpp::TestV2ToLegacyProjectionPropagatesAllFields`
+calls each adapter's projection helper directly with a fully-populated
+`AgentInvocation` and asserts every field round-trips on all four
+adapters. To enable that direct test, the projection helpers are declared
+`public static` (their pure-function signature has no instance state to
+encapsulate, so promoting them to public has no real risk surface).
+
 ---
 
 ## 5. Agent Registry

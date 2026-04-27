@@ -181,6 +181,12 @@ runtime/
 > 实际 agent adapter 数量 **5 个** (local_planner, codex_cli, gemini, anthropic, qwen)，超过 PRD 要求的 "至少 1 个二级代理"。
 
 > 2026-04-26 update: 五个 adapter 均已同时实现 `IAgentAdapter` 与 `IAgentAdapterV2`（参见 `src/hosts/agents/*.hpp` `: public IAgentAdapter, public IAgentAdapterV2` 声明）；CodexCli/Anthropic/Qwen 走 SSE/NDJSON streaming 路径，Gemini 与 LocalPlanning 是 sync 包装（`profile().supports_streaming = false`）。`SubagentManager::run_one` 与 `AgentLoop::run_agent_task` 通过 `dynamic_cast<IAgentAdapterV2*>` 优先 `invoke()`，并把 `AgentResult.usage.cost_usd` 提升为 `step.estimated_cost` 的优先来源；CancellationToken 已贯通到 `AgentInvocation::cancel`。
+> 2026-04-27 update: `agentos run` / `schedule add` / `subagents run` 支持 `profile=` / `auth_profile=` per-task 覆盖，并通过 `AgentTask` / `AgentInvocation` 传入 provider adapters；SubagentManager 与 AgentLoop 已有 V2 透传回归测试。
+> 2026-04-27 follow-up: 新增 `tests/cli_integration_tests.cpp::TestRunAuthProfileOverride` 端到端覆盖 `agentos run target=<provider> profile=<name>` 与 `agentos subagents run agents=<provider> profile=<name>` 的外部行为（包含 `auth_profile=` 别名 + "省略 profile 时不泄漏"sanity check）；该集成测试发现并修复了四个 V2→legacy projection helper 漏拷字段的 bug：`QwenAgent::InvocationToTask` / `OpenAiAgent::InvocationToTask` / `GeminiAgent::TaskFromInvocation` / `AnthropicAgent::TaskFromInvocation` 之前没有把 `invocation.auth_profile` 拷到 `task.auth_profile`，导致 V2 invoke→sync `run_task` fallback 时 per-task profile override 被静默退回到 default。同时把 qwen/openai 的 projection 补上 `context_json` 编码，对齐 gemini/anthropic 行为。
+>
+> **Adapter author checklist（新增 `AgentInvocation` 字段时必读）**：每一个 `*FromInvocation` / `InvocationTo*` projection helper 都必须同步显式拷贝 / 编码新字段——一旦遗漏，V2 sync 模式（`on_event == null`）就会丢失该字段。当前需要同步的字段：`task_id`, `task_type`(从 `context["task_type"]` 解析), `objective`, `workspace_path`, `auth_profile`, `context_json`(从 `invocation.context` 编码), `constraints_json`(从 `invocation.constraints` 编码), `timeout_ms`, `budget_limit`(=`budget_limit_usd`)。`session_id` / `resume_session_id` / `attachments` / `cancel` 由 `invoke()` 直接消费，不通过 projection。
+>
+> 四个 projection helper 已从 `private static` 提升为 `public static`，以便 `tests/agent_provider_tests.cpp::TestV2ToLegacyProjectionPropagatesAllFields` 直接对每个 adapter 验证完整字段映射；它配合 `TestRunAuthProfileOverride` 端到端覆盖，构成这条契约的双重回归屏障。
 
 ---
 

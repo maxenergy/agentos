@@ -761,6 +761,7 @@ TaskStepRecord SubagentManager::run_one(
         .task_type = task.task_type,
         .objective = "[" + role + "] " + subtask_objective,
         .workspace_path = task.workspace_path.string(),
+        .auth_profile = task.auth_profile,
         .context_json = SubagentContextJson(task, agent_name, role, subtask_objective),
         .constraints_json = "",
         .timeout_ms = task.timeout_ms,
@@ -790,6 +791,7 @@ TaskStepRecord SubagentManager::run_one(
         invocation.task_id = agent_task.task_id;
         invocation.objective = agent_task.objective;
         invocation.workspace_path = task.workspace_path;
+        invocation.auth_profile = task.auth_profile;
         invocation.context = {
             {"task_type", task.task_type},
             {"parent_task_id", task.task_id},

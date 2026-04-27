@@ -124,6 +124,9 @@ TaskRequest BuildSubagentTaskFromOptions(
         .task_type = task_type,
         .objective = options.contains("objective") ? options.at("objective") : ("Coordinate subagents for: " + task_type),
         .workspace_path = workspace,
+        .auth_profile = options.contains("profile")
+            ? std::make_optional(options.at("profile"))
+            : (options.contains("auth_profile") ? std::make_optional(options.at("auth_profile")) : std::nullopt),
         .idempotency_key = options.contains("idempotency_key") ? options.at("idempotency_key") : "",
         .remote_trigger = ParseBoolOption(options, "remote", ParseBoolOption(options, "remote_trigger", false)),
         .origin_identity_id = options.contains("origin_identity")
@@ -173,7 +176,7 @@ void PrintResult(const TaskRunResult& result) {
 void PrintSubagentsUsage() {
     std::cerr
         << "subagents commands:\n"
-        << "  agentos subagents run [agents=<agent[,agent]>] [mode=sequential|parallel] objective=text\n";
+        << "  agentos subagents run [agents=<agent[,agent]>] [mode=sequential|parallel] [profile=name] objective=text\n";
 }
 
 }  // namespace
