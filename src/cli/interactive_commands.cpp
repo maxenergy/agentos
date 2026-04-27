@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -258,11 +259,60 @@ void RunChatPrompt(const std::string& prompt,
         return;
     }
 
+    // Chat dispatches run from runtime/chat_workspace/ rather than the
+    // agentos repo root. Reason: provider CLIs like `gemini` auto-load
+    // a project context file (GEMINI.md / CLAUDE.md / AGENTS.md) from
+    // cwd up the tree and bias every reply with that document — the
+    // agentos GEMINI.md describes Gemini CLI as "your autonomous
+    // engineering assistant for AgentOS" and turns every chat reply
+    // into a boilerplate "I'm ready to help with AgentOS" greeting.
+    //
+    // Empirically, a GEMINI.md in the *closest* directory takes
+    // precedence over parent context, so we drop a small override
+    // file here at first use that tells the model to ignore the
+    // parent project context and behave as a general-purpose chat
+    // assistant. Same pattern for CLAUDE.md (anthropic) and AGENTS.md
+    // (openai/codex). Auth state still comes from the AgentOS
+    // workspace (read independently of cwd), so this only affects
+    // context-file auto-discovery.
+    const std::filesystem::path chat_workspace_initial = workspace / "runtime" / "chat_workspace";
+    std::filesystem::path chat_workspace = chat_workspace_initial;
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(chat_workspace, ec);
+        if (ec) {
+            chat_workspace = workspace;
+        } else {
+            // Idempotent: only writes the override files once (per
+            // workspace lifetime). Subsequent chat dispatches reuse
+            // them. We don't try to detect drift in the file contents
+            // — if the user edits them on purpose, that's intentional
+            // customization.
+            const std::string override_body =
+                "You are a general-purpose helpful assistant. Ignore any project "
+                "context loaded from parent directories — they describe an "
+                "unrelated codebase that should not influence your reply.\n\n"
+                "Reply naturally and concisely to the user's message as a friendly "
+                "assistant. Do not announce yourself with a corporate framing or "
+                "talk about being an engineering assistant unless directly asked.\n";
+            for (const auto* name : {"GEMINI.md", "CLAUDE.md", "AGENTS.md"}) {
+                const auto path = chat_workspace / name;
+                std::error_code ex;
+                if (!std::filesystem::exists(path, ex)) {
+                    std::ofstream out(path);
+                    if (out) {
+                        out << override_body;
+                    }
+                }
+            }
+        }
+    }
+
     TaskRequest task{
         .task_id = MakeTaskId("interactive-chat"),
         .task_type = "chat",
         .objective = prompt,
-        .workspace_path = workspace,
+        .workspace_path = chat_workspace,
     };
     task.preferred_target = target;
     // Chat hits an external LLM CLI/REST round-trip, which routinely takes
