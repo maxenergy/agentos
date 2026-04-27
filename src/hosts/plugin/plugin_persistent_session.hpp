@@ -194,12 +194,44 @@ struct PersistentPluginSession {
         SetHandleInformation(session->stdout_read, HANDLE_FLAG_INHERIT, 0);
         SetHandleInformation(session->stderr_read, HANDLE_FLAG_INHERIT, 0);
 
-        STARTUPINFOA startup_info{};
-        startup_info.cb = sizeof(STARTUPINFOA);
-        startup_info.dwFlags = STARTF_USESTDHANDLES;
-        startup_info.hStdInput = stdin_read;
-        startup_info.hStdOutput = stdout_write;
-        startup_info.hStdError = stderr_write;
+        // Same handle-inheritance hardening as CliHost: bInheritHandles=TRUE
+        // would otherwise inherit every inheritable parent-side handle into
+        // the long-running plugin child, including CTest's stdout/stderr
+        // pipes when the test binary that owns this PluginHost runs under
+        // CTest. STARTUPINFOEX + PROC_THREAD_ATTRIBUTE_HANDLE_LIST narrows
+        // the inheritance to exactly stdin_read / stdout_write / stderr_write.
+        HANDLE inherit_list[3] = {stdin_read, stdout_write, stderr_write};
+        SIZE_T inherit_count = 3;
+
+        SIZE_T attribute_size = 0;
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
+        std::vector<unsigned char> attribute_buffer(attribute_size);
+        auto* attribute_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_buffer.data());
+        bool attribute_list_initialized = false;
+        if (InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size)) {
+            attribute_list_initialized = true;
+            if (!UpdateProcThreadAttribute(
+                    attribute_list,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                    inherit_list,
+                    inherit_count * sizeof(HANDLE),
+                    nullptr,
+                    nullptr)) {
+                DeleteProcThreadAttributeList(attribute_list);
+                attribute_list_initialized = false;
+            }
+        }
+
+        STARTUPINFOEXA startup_info{};
+        startup_info.StartupInfo.cb = sizeof(STARTUPINFOEXA);
+        startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup_info.StartupInfo.hStdInput = stdin_read;
+        startup_info.StartupInfo.hStdOutput = stdout_write;
+        startup_info.StartupInfo.hStdError = stderr_write;
+        if (attribute_list_initialized) {
+            startup_info.lpAttributeList = attribute_list;
+        }
 
         PROCESS_INFORMATION process_info{};
         auto command_line = QuoteCommandForDisplay(spec.binary);
@@ -208,17 +240,24 @@ struct PersistentPluginSession {
         }
         auto mutable_command_line = command_line;
         auto cwd_string = workspace_path.string();
+        DWORD creation_flags = CREATE_NO_WINDOW;
+        if (attribute_list_initialized) {
+            creation_flags |= EXTENDED_STARTUPINFO_PRESENT;
+        }
         const BOOL created = CreateProcessA(
             nullptr,
             mutable_command_line.data(),
             nullptr,
             nullptr,
             TRUE,
-            CREATE_NO_WINDOW,
+            creation_flags,
             nullptr,
             cwd_string.c_str(),
-            &startup_info,
+            reinterpret_cast<LPSTARTUPINFOA>(&startup_info),
             &process_info);
+        if (attribute_list_initialized) {
+            DeleteProcThreadAttributeList(attribute_list);
+        }
         CloseHandle(stdin_read);
         CloseHandle(stdout_write);
         CloseHandle(stderr_write);
@@ -321,16 +360,34 @@ struct PersistentPluginSession {
         return ElapsedMs(last_used_at) >= idle_timeout_ms;
     }
 
+    // Polls until the plugin process has been alive continuously for `kReadyDwellMs`
+    // (a readiness dwell), or `timeout_ms` elapses, or the process exits.
+    // The dwell catches plugins that fork/exec then exit immediately — `alive()`
+    // alone returning true after 5 ms is insufficient evidence of readiness.
     bool wait_until_started(const int timeout_ms) const {
+        constexpr int kReadyDwellMs = 25;
+        constexpr int kPollIntervalMs = 5;
         const auto wait_started_at = std::chrono::steady_clock::now();
+        auto first_alive_at = std::chrono::steady_clock::time_point{};
+        bool seen_alive = false;
         while (ElapsedMs(wait_started_at) < timeout_ms) {
             if (!alive()) {
-                return false;
+                if (seen_alive) {
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+                continue;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            return true;
+            if (!seen_alive) {
+                seen_alive = true;
+                first_alive_at = std::chrono::steady_clock::now();
+            }
+            if (ElapsedMs(first_alive_at) >= kReadyDwellMs) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
         }
-        return alive();
+        return seen_alive && alive();
     }
 
     void drain_stderr() {
@@ -434,7 +491,7 @@ struct PersistentPluginSession {
         }
     }
 
-    PluginRunResult request(const StringMap& arguments) {
+    PluginRunResult request(const StringMap& arguments, const bool health_probe = false) {
         const auto request_started_at = std::chrono::steady_clock::now();
         if (!alive()) {
             return {
@@ -445,7 +502,9 @@ struct PersistentPluginSession {
             };
         }
 
-        const auto request_json = JsonRpcRequestForPlugin(spec, arguments, next_request_id++);
+        const auto request_json = health_probe
+            ? JsonRpcHealthRequest(next_request_id++)
+            : JsonRpcRequestForPlugin(spec, arguments, next_request_id++);
         ++request_count;
         last_used_at = std::chrono::steady_clock::now();
         last_used_at_wall = std::chrono::system_clock::now();

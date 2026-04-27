@@ -1,11 +1,12 @@
 #include "skills/builtin/file_patch_skill.hpp"
 
-#include "utils/json_utils.hpp"
 #include "utils/path_utils.hpp"
 
 #include <chrono>
 #include <fstream>
 #include <sstream>
+
+#include <nlohmann/json.hpp>
 
 namespace agentos {
 
@@ -79,12 +80,12 @@ SkillResult FilePatchSkill::execute(const SkillCall& call) {
     output << content;
     output.flush();
 
+    nlohmann::json output_json;
+    output_json["path"] = resolved_path.string();
+    output_json["replacements"] = static_cast<long long>(replacements);
     return {
         .success = true,
-        .json_output = MakeJsonObject({
-            {"path", QuoteJson(resolved_path.string())},
-            {"replacements", NumberAsJson(static_cast<long long>(replacements))},
-        }),
+        .json_output = output_json.dump(),
         .duration_ms = static_cast<int>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count()),
     };

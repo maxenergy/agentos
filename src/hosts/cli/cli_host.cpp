@@ -235,6 +235,12 @@ CliRunResult RunProcessWindows(
         };
     }
 
+    // Read-end handles must NOT be inherited by the child — only the write
+    // ends should reach into the child's stdout/stderr. (Inheritance race
+    // diagnosed in the cli_plugin_tests flake: when this test runs under
+    // CTest's pipe-captured stdout/stderr, an inherited read-end handle
+    // could keep the pipe open past the child's death and confuse the
+    // outer reader.)
     SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
     stdin_read = CreateFileA(
@@ -249,12 +255,50 @@ CliRunResult RunProcessWindows(
         stdin_read = nullptr;
     }
 
-    STARTUPINFOA startup_info{};
-    startup_info.cb = sizeof(STARTUPINFOA);
-    startup_info.dwFlags = STARTF_USESTDHANDLES;
-    startup_info.hStdOutput = stdout_write;
-    startup_info.hStdError = stderr_write;
-    startup_info.hStdInput = stdin_read != INVALID_HANDLE_VALUE ? stdin_read : GetStdHandle(STD_INPUT_HANDLE);
+    // Build STARTUPINFOEX with PROC_THREAD_ATTRIBUTE_HANDLE_LIST so the child
+    // inherits exactly stdout_write / stderr_write / stdin_read and nothing
+    // else. With plain STARTUPINFOA + bInheritHandles=TRUE the child would
+    // inherit every inheritable parent-side handle, including the ctest-
+    // owned stdout/stderr pipes when this code runs inside the test binary
+    // — which produces an intermittent segfault during pipe teardown when
+    // a long-running grandchild (e.g. powershell) outlives the child.
+    HANDLE inherit_list[3];
+    SIZE_T inherit_count = 0;
+    inherit_list[inherit_count++] = stdout_write;
+    inherit_list[inherit_count++] = stderr_write;
+    if (stdin_read != nullptr && stdin_read != INVALID_HANDLE_VALUE) {
+        inherit_list[inherit_count++] = stdin_read;
+    }
+
+    SIZE_T attribute_size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
+    std::vector<unsigned char> attribute_buffer(attribute_size);
+    auto* attribute_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_buffer.data());
+    bool attribute_list_initialized = false;
+    if (InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size)) {
+        attribute_list_initialized = true;
+        if (!UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                inherit_list,
+                inherit_count * sizeof(HANDLE),
+                nullptr,
+                nullptr)) {
+            DeleteProcThreadAttributeList(attribute_list);
+            attribute_list_initialized = false;
+        }
+    }
+
+    STARTUPINFOEXA startup_info{};
+    startup_info.StartupInfo.cb = sizeof(STARTUPINFOEXA);
+    startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup_info.StartupInfo.hStdOutput = stdout_write;
+    startup_info.StartupInfo.hStdError = stderr_write;
+    startup_info.StartupInfo.hStdInput = stdin_read != INVALID_HANDLE_VALUE ? stdin_read : GetStdHandle(STD_INPUT_HANDLE);
+    if (attribute_list_initialized) {
+        startup_info.lpAttributeList = attribute_list;
+    }
 
     PROCESS_INFORMATION process_info{};
     auto command_display = BuildCommandLine(request.spec.binary, args);
@@ -263,6 +307,9 @@ CliRunResult RunProcessWindows(
     auto cwd_string = cwd.string();
     auto environment_block = BuildWindowsEnvironmentBlock(request.spec);
     DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
+    if (attribute_list_initialized) {
+        creation_flags |= EXTENDED_STARTUPINFO_PRESENT;
+    }
 
     const BOOL created = CreateProcessA(
         nullptr,
@@ -273,8 +320,12 @@ CliRunResult RunProcessWindows(
         creation_flags,
         environment_block.data(),
         cwd_string.c_str(),
-        &startup_info,
+        reinterpret_cast<LPSTARTUPINFOA>(&startup_info),
         &process_info);
+
+    if (attribute_list_initialized) {
+        DeleteProcThreadAttributeList(attribute_list);
+    }
 
     CloseHandle(stdout_write);
     CloseHandle(stderr_write);

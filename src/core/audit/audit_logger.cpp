@@ -1,7 +1,6 @@
 #include "core/audit/audit_logger.hpp"
 
 #include "utils/atomic_file.hpp"
-#include "utils/json_utils.hpp"
 #include "utils/secret_redaction.hpp"
 
 #include <algorithm>
@@ -13,7 +12,13 @@
 #include <set>
 #include <sstream>
 
+#include <nlohmann/json.hpp>
+
 namespace agentos {
+
+namespace {
+using OrderedJson = nlohmann::ordered_json;
+}  // namespace
 
 namespace {
 
@@ -331,71 +336,71 @@ void AuditLogger::record_task_start(const TaskRequest& task) {
         sensitive_values_by_task_[task.task_id] = SensitiveValuesFromMap(task.inputs);
     }
 
-    append_line(MakeJsonObject({
-        {"ts", QuoteJson(CurrentTimestamp())},
-        {"event", QuoteJson("task_start")},
-        {"task_id", QuoteJson(task.task_id)},
-        {"task_type", QuoteJson(task.task_type)},
-        {"objective", QuoteJson(redact_for_task(task.task_id, task.objective))},
-        {"workspace", QuoteJson(task.workspace_path.string())},
-    }));
+    OrderedJson event;
+    event["ts"] = CurrentTimestamp();
+    event["event"] = "task_start";
+    event["task_id"] = task.task_id;
+    event["task_type"] = task.task_type;
+    event["objective"] = redact_for_task(task.task_id, task.objective);
+    event["workspace"] = task.workspace_path.string();
+    append_line(event.dump());
 }
 
 void AuditLogger::record_route(const TaskRequest& task, const RouteDecision& route) {
-    append_line(MakeJsonObject({
-        {"ts", QuoteJson(CurrentTimestamp())},
-        {"event", QuoteJson("route")},
-        {"task_id", QuoteJson(task.task_id)},
-        {"target_kind", QuoteJson(route_target_kind_name(route.target_kind))},
-        {"target_name", QuoteJson(route.target_name)},
-        {"workflow_name", QuoteJson(route.workflow_name.value_or(""))},
-        {"rationale", QuoteJson(redact_for_task(task.task_id, route.rationale))},
-    }));
+    OrderedJson event;
+    event["ts"] = CurrentTimestamp();
+    event["event"] = "route";
+    event["task_id"] = task.task_id;
+    event["target_kind"] = route_target_kind_name(route.target_kind);
+    event["target_name"] = route.target_name;
+    event["workflow_name"] = route.workflow_name.value_or("");
+    event["rationale"] = redact_for_task(task.task_id, route.rationale);
+    append_line(event.dump());
 }
 
 void AuditLogger::record_policy(
     const std::string& task_id,
     const std::string& target_name,
     const PolicyDecision& decision) {
-    append_line(MakeJsonObject({
-        {"ts", QuoteJson(CurrentTimestamp())},
-        {"event", QuoteJson("policy")},
-        {"task_id", QuoteJson(task_id)},
-        {"target_name", QuoteJson(target_name)},
-        {"allowed", BoolAsJson(decision.allowed)},
-        {"reason", QuoteJson(redact_for_task(task_id, decision.reason))},
-    }));
+    OrderedJson event;
+    event["ts"] = CurrentTimestamp();
+    event["event"] = "policy";
+    event["task_id"] = task_id;
+    event["target_name"] = target_name;
+    event["allowed"] = decision.allowed;
+    event["reason"] = redact_for_task(task_id, decision.reason);
+    append_line(event.dump());
 }
 
 void AuditLogger::record_step(const std::string& task_id, const TaskStepRecord& step) {
-    append_line(MakeJsonObject({
-        {"ts", QuoteJson(CurrentTimestamp())},
-        {"event", QuoteJson("step")},
-        {"task_id", QuoteJson(task_id)},
-        {"target_kind", QuoteJson(route_target_kind_name(step.target_kind))},
-        {"target_name", QuoteJson(step.target_name)},
-        {"success", BoolAsJson(step.success)},
-        {"duration_ms", NumberAsJson(step.duration_ms)},
-        {"summary", QuoteJson(redact_for_task(task_id, step.summary))},
-        {"error_code", QuoteJson(step.error_code)},
-        {"error_message", QuoteJson(redact_for_task(task_id, step.error_message))},
-    }));
+    OrderedJson event;
+    event["ts"] = CurrentTimestamp();
+    event["event"] = "step";
+    event["task_id"] = task_id;
+    event["target_kind"] = route_target_kind_name(step.target_kind);
+    event["target_name"] = step.target_name;
+    event["success"] = step.success;
+    event["duration_ms"] = step.duration_ms;
+    event["summary"] = redact_for_task(task_id, step.summary);
+    event["error_code"] = step.error_code;
+    event["error_message"] = redact_for_task(task_id, step.error_message);
+    append_line(event.dump());
 }
 
 void AuditLogger::record_task_end(const std::string& task_id, const TaskRunResult& result) {
-    append_line(MakeJsonObject({
-        {"ts", QuoteJson(CurrentTimestamp())},
-        {"event", QuoteJson("task_end")},
-        {"task_id", QuoteJson(task_id)},
-        {"success", BoolAsJson(result.success)},
-        {"from_cache", BoolAsJson(result.from_cache)},
-        {"route_kind", QuoteJson(route_target_kind_name(result.route_kind))},
-        {"route_target", QuoteJson(result.route_target)},
-        {"duration_ms", NumberAsJson(result.duration_ms)},
-        {"summary", QuoteJson(redact_for_task(task_id, result.summary))},
-        {"error_code", QuoteJson(result.error_code)},
-        {"error_message", QuoteJson(redact_for_task(task_id, result.error_message))},
-    }));
+    OrderedJson event;
+    event["ts"] = CurrentTimestamp();
+    event["event"] = "task_end";
+    event["task_id"] = task_id;
+    event["success"] = result.success;
+    event["from_cache"] = result.from_cache;
+    event["route_kind"] = route_target_kind_name(result.route_kind);
+    event["route_target"] = result.route_target;
+    event["duration_ms"] = result.duration_ms;
+    event["summary"] = redact_for_task(task_id, result.summary);
+    event["error_code"] = result.error_code;
+    event["error_message"] = redact_for_task(task_id, result.error_message);
+    append_line(event.dump());
 }
 
 void AuditLogger::record_config_diagnostic(
@@ -403,14 +408,14 @@ void AuditLogger::record_config_diagnostic(
     const std::filesystem::path& file,
     const int line_number,
     const std::string& reason) {
-    append_line(MakeJsonObject({
-        {"ts", QuoteJson(CurrentTimestamp())},
-        {"event", QuoteJson("config_diagnostic")},
-        {"source", QuoteJson(source)},
-        {"file", QuoteJson(file.string())},
-        {"line", NumberAsJson(line_number)},
-        {"reason", QuoteJson(reason)},
-    }));
+    OrderedJson event;
+    event["ts"] = CurrentTimestamp();
+    event["event"] = "config_diagnostic";
+    event["source"] = source;
+    event["file"] = file.string();
+    event["line"] = line_number;
+    event["reason"] = reason;
+    append_line(event.dump());
 }
 
 void AuditLogger::record_trust_event(
@@ -419,15 +424,15 @@ void AuditLogger::record_trust_event(
     const std::string& device_id,
     const bool success,
     const std::string& message) {
-    append_line(MakeJsonObject({
-        {"ts", QuoteJson(CurrentTimestamp())},
-        {"event", QuoteJson("trust")},
-        {"action", QuoteJson(action)},
-        {"identity_id", QuoteJson(identity_id)},
-        {"device_id", QuoteJson(device_id)},
-        {"success", BoolAsJson(success)},
-        {"message", QuoteJson(message)},
-    }));
+    OrderedJson event;
+    event["ts"] = CurrentTimestamp();
+    event["event"] = "trust";
+    event["action"] = action;
+    event["identity_id"] = identity_id;
+    event["device_id"] = device_id;
+    event["success"] = success;
+    event["message"] = message;
+    append_line(event.dump());
 }
 
 const std::filesystem::path& AuditLogger::log_path() const {
@@ -515,23 +520,24 @@ void AuditLogger::compact_log(const std::filesystem::path& recovery_storage_dir)
             const auto timestamp_it = recovered_timestamps_by_task.find(task.task_id);
             const RecoveredLifecycleTimestamps empty_timestamps;
             const auto& timestamps = timestamp_it != recovered_timestamps_by_task.end() ? timestamp_it->second : empty_timestamps;
-            const auto task_start_line = MakeJsonObject({
-                {"ts", QuoteJson(TimestampOrNow(timestamps.task_start_ts))},
-                {"event", QuoteJson("task_start")},
-                {"task_id", QuoteJson(task.task_id)},
-                {"task_type", QuoteJson(task.task_type)},
-                {"objective", QuoteJson(task.objective)},
-                {"workspace", QuoteJson("")},
-            });
-            const auto route_line = MakeJsonObject({
-                {"ts", QuoteJson(TimestampOrNow(timestamps.route_ts))},
-                {"event", QuoteJson("route")},
-                {"task_id", QuoteJson(task.task_id)},
-                {"target_kind", QuoteJson(route_target_kind_name(task.route_kind))},
-                {"target_name", QuoteJson(task.route_target)},
-                {"workflow_name", QuoteJson("")},
-                {"rationale", QuoteJson("recovered from runtime/memory logs")},
-            });
+            OrderedJson task_start_json;
+            task_start_json["ts"] = TimestampOrNow(timestamps.task_start_ts);
+            task_start_json["event"] = "task_start";
+            task_start_json["task_id"] = task.task_id;
+            task_start_json["task_type"] = task.task_type;
+            task_start_json["objective"] = task.objective;
+            task_start_json["workspace"] = "";
+            const auto task_start_line = task_start_json.dump();
+
+            OrderedJson route_json;
+            route_json["ts"] = TimestampOrNow(timestamps.route_ts);
+            route_json["event"] = "route";
+            route_json["task_id"] = task.task_id;
+            route_json["target_kind"] = route_target_kind_name(task.route_kind);
+            route_json["target_name"] = task.route_target;
+            route_json["workflow_name"] = "";
+            route_json["rationale"] = "recovered from runtime/memory logs";
+            const auto route_line = route_json.dump();
 
             std::vector<OrderedAuditLine> ordered_lines;
             ordered_lines.push_back(OrderedAuditLine{
@@ -567,39 +573,39 @@ void AuditLogger::compact_log(const std::filesystem::path& recovery_storage_dir)
                     const auto step_timestamp = index < timestamps.step_timestamps.size()
                         ? timestamps.step_timestamps[index]
                         : "";
+                    OrderedJson step_json;
+                    step_json["ts"] = TimestampOrNow(step_timestamp);
+                    step_json["event"] = "step";
+                    step_json["task_id"] = task.task_id;
+                    step_json["target_kind"] = route_target_kind_name(step.target_kind);
+                    step_json["target_name"] = step.target_name;
+                    step_json["success"] = step.success;
+                    step_json["duration_ms"] = step.duration_ms;
+                    step_json["summary"] = step.summary;
+                    step_json["error_code"] = step.error_code;
+                    step_json["error_message"] = step.error_message;
                     ordered_lines.push_back(OrderedAuditLine{
-                        .line = MakeJsonObject({
-                            {"ts", QuoteJson(TimestampOrNow(step_timestamp))},
-                            {"event", QuoteJson("step")},
-                            {"task_id", QuoteJson(task.task_id)},
-                            {"target_kind", QuoteJson(route_target_kind_name(step.target_kind))},
-                            {"target_name", QuoteJson(step.target_name)},
-                            {"success", BoolAsJson(step.success)},
-                            {"duration_ms", NumberAsJson(step.duration_ms)},
-                            {"summary", QuoteJson(step.summary)},
-                            {"error_code", QuoteJson(step.error_code)},
-                            {"error_message", QuoteJson(step.error_message)},
-                        }),
+                        .line = step_json.dump(),
                         .timestamp = TimestampOrNow(step_timestamp),
                         .fallback_order = 100 + static_cast<int>(index),
                     });
                 }
             }
 
+            OrderedJson task_end_json;
+            task_end_json["ts"] = TimestampOrNow(timestamps.task_end_ts);
+            task_end_json["event"] = "task_end";
+            task_end_json["task_id"] = task.task_id;
+            task_end_json["success"] = task.success;
+            task_end_json["from_cache"] = task.from_cache;
+            task_end_json["route_kind"] = route_target_kind_name(task.route_kind);
+            task_end_json["route_target"] = task.route_target;
+            task_end_json["duration_ms"] = task.duration_ms;
+            task_end_json["summary"] = "recovered from runtime/memory logs";
+            task_end_json["error_code"] = task.error_code;
+            task_end_json["error_message"] = task.error_message;
             ordered_lines.push_back(OrderedAuditLine{
-                .line = MakeJsonObject({
-                    {"ts", QuoteJson(TimestampOrNow(timestamps.task_end_ts))},
-                    {"event", QuoteJson("task_end")},
-                    {"task_id", QuoteJson(task.task_id)},
-                    {"success", BoolAsJson(task.success)},
-                    {"from_cache", BoolAsJson(task.from_cache)},
-                    {"route_kind", QuoteJson(route_target_kind_name(task.route_kind))},
-                    {"route_target", QuoteJson(task.route_target)},
-                    {"duration_ms", NumberAsJson(task.duration_ms)},
-                    {"summary", QuoteJson("recovered from runtime/memory logs")},
-                    {"error_code", QuoteJson(task.error_code)},
-                    {"error_message", QuoteJson(task.error_message)},
-                }),
+                .line = task_end_json.dump(),
                 .timestamp = TimestampOrNow(timestamps.task_end_ts),
                 .fallback_order = 1000,
             });
@@ -633,25 +639,23 @@ void AuditLogger::compact_log(const std::filesystem::path& recovery_storage_dir)
         for (std::size_t run_index = 0; run_index < scheduler_runs.size(); ++run_index) {
             const auto& run = scheduler_runs[run_index];
             const auto timestamp = TimestampFromEpochMs(run.completed_epoch_ms > 0 ? run.completed_epoch_ms : run.started_epoch_ms);
+            OrderedJson run_json;
+            run_json["ts"] = timestamp;
+            run_json["event"] = "scheduler_run";
+            run_json["schedule_id"] = run.schedule_id;
+            run_json["task_id"] = run.task_id;
+            run_json["started_epoch_ms"] = run.started_epoch_ms;
+            run_json["completed_epoch_ms"] = run.completed_epoch_ms;
+            run_json["run_count"] = run.run_count;
+            run_json["success"] = run.success;
+            run_json["rescheduled"] = run.rescheduled;
+            run_json["route_kind"] = run.route_kind;
+            run_json["route_target"] = run.route_target;
+            run_json["duration_ms"] = run.duration_ms;
+            run_json["error_code"] = run.error_code;
+            run_json["error_message"] = run.error_message;
             ordered_chunks.push_back(OrderedAuditChunk{
-                .lines = {
-                    MakeJsonObject({
-                        {"ts", QuoteJson(timestamp)},
-                        {"event", QuoteJson("scheduler_run")},
-                        {"schedule_id", QuoteJson(run.schedule_id)},
-                        {"task_id", QuoteJson(run.task_id)},
-                        {"started_epoch_ms", NumberAsJson(run.started_epoch_ms)},
-                        {"completed_epoch_ms", NumberAsJson(run.completed_epoch_ms)},
-                        {"run_count", NumberAsJson(run.run_count)},
-                        {"success", BoolAsJson(run.success)},
-                        {"rescheduled", BoolAsJson(run.rescheduled)},
-                        {"route_kind", QuoteJson(run.route_kind)},
-                        {"route_target", QuoteJson(run.route_target)},
-                        {"duration_ms", NumberAsJson(run.duration_ms)},
-                        {"error_code", QuoteJson(run.error_code)},
-                        {"error_message", QuoteJson(run.error_message)},
-                    }),
-                },
+                .lines = {run_json.dump()},
                 .timestamp = timestamp,
                 .fallback_order = 50000 + static_cast<int>(run_index),
             });

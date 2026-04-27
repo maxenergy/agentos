@@ -4,12 +4,14 @@
 #include "core/policy/policy_engine.hpp"
 #include "core/registry/agent_registry.hpp"
 #include "core/registry/skill_registry.hpp"
+#include "cli/plugins_commands.hpp"
 #include "core/router/router.hpp"
 #include "hosts/agents/local_planning_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
 #include "hosts/cli/cli_skill_invoker.hpp"
 #include "hosts/cli/cli_spec_loader.hpp"
 #include "hosts/plugin/plugin_host.hpp"
+#include "hosts/plugin/plugin_json_rpc.hpp"
 #include "memory/memory_manager.hpp"
 #include "test_command_fixtures.hpp"
 #include "skills/builtin/file_patch_skill.hpp"
@@ -17,14 +19,18 @@
 #include "skills/builtin/file_write_skill.hpp"
 #include "skills/builtin/workflow_run_skill.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -43,6 +49,83 @@ void Expect(const bool condition, const std::string& message) {
         std::cerr << "FAIL: " << message << '\n';
         ++failures;
     }
+}
+
+std::pair<int, std::string> RunPluginsCommandForTest(
+    const std::filesystem::path& workspace,
+    const std::vector<std::string>& args,
+    const agentos::PluginHost* plugin_host) {
+    std::vector<char*> argv;
+    argv.reserve(args.size());
+    for (const auto& arg : args) {
+        argv.push_back(const_cast<char*>(arg.c_str()));
+    }
+
+    std::ostringstream output;
+    auto* previous = std::cout.rdbuf(output.rdbuf());
+    const int exit_code = agentos::RunPluginsCommand(
+        workspace,
+        std::set<std::string>{},
+        static_cast<int>(argv.size()),
+        argv.data(),
+        plugin_host);
+    std::cout.rdbuf(previous);
+    return {exit_code, output.str()};
+}
+
+void TestJsonRpcRequestBuilder() {
+    agentos::PluginSpec spec{
+        .manifest_version = "plugin.v1",
+        .name = "json_rpc_request_fixture",
+        .description = "JSON-RPC request rendering fixture.",
+        .binary = "unused",
+        .protocol = "json-rpc-v0",
+    };
+
+    const auto empty_request = nlohmann::json::parse(agentos::JsonRpcRequestForPlugin(spec, {}, 7));
+    Expect(empty_request.at("jsonrpc") == "2.0", "JSON-RPC request must set jsonrpc=2.0");
+    Expect(empty_request.at("id") == 7, "JSON-RPC request must preserve the numeric request id");
+    Expect(empty_request.at("method") == "json_rpc_request_fixture", "JSON-RPC request method must use plugin name");
+    Expect(empty_request.at("params").is_object(), "JSON-RPC request must encode empty params as an object");
+    Expect(empty_request.at("params").empty(), "JSON-RPC request empty params object should have no members");
+
+    const agentos::StringMap arguments{
+        {"message", "quote \" backslash \\ newline \n"},
+        {"path", "C:\\tmp\\file.txt"},
+    };
+    const auto request = nlohmann::json::parse(agentos::JsonRpcRequestForPlugin(spec, arguments, 8));
+    Expect(request.at("params").at("message") == "quote \" backslash \\ newline \n",
+        "JSON-RPC request must round-trip escaped argument values");
+    Expect(request.at("params").at("path") == "C:\\tmp\\file.txt",
+        "JSON-RPC request must round-trip Windows-style paths");
+}
+
+void TestJsonRpcResponseValidation() {
+    const std::string valid_response =
+        R"({"jsonrpc":"2.0","id":"agentos-plugin","result":{"message":"ok","nested":{"value":1}}})";
+    Expect(agentos::JsonRpcOutputError(valid_response).empty(),
+        "JSON-RPC response validation should accept a valid result object");
+    const auto result = agentos::JsonRpcResultObject(valid_response);
+    Expect(result.has_value(), "JSON-RPC result extraction should return the result object");
+    if (result.has_value()) {
+        const auto parsed_result = nlohmann::json::parse(*result);
+        Expect(parsed_result.at("message") == "ok",
+            "JSON-RPC result extraction should preserve string fields");
+        Expect(parsed_result.at("nested").at("value") == 1,
+            "JSON-RPC result extraction should preserve nested objects");
+    }
+
+    Expect(agentos::JsonRpcOutputError("not-json-rpc").find("must be a JSON object") != std::string::npos,
+        "JSON-RPC response validation should reject malformed JSON");
+    Expect(agentos::JsonRpcOutputError(R"({"jsonrpc":"2.0","result":{"message":"missing-id"}})") ==
+            "json-rpc-v0 plugin stdout must include id",
+        "JSON-RPC response validation should require an id field");
+    Expect(agentos::JsonRpcOutputError(R"({"jsonrpc":"2.0","id":1,"error":{"code":-32000}})") ==
+            "json-rpc-v0 plugin returned an error response",
+        "JSON-RPC response validation should reject error responses");
+    Expect(agentos::JsonRpcOutputError(R"({"jsonrpc":"2.0","id":1,"result":["not","object"]})") ==
+            "json-rpc-v0 plugin result must be a JSON object",
+        "JSON-RPC response validation should require object-shaped results");
 }
 
 struct TestRuntime {
@@ -619,11 +702,11 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
 #ifdef _WIN32
         const auto json_args_template =
             R"(  "args_template": ["/d", "/s", "/c", "echo {\"\"plugin\"\":\"\"json\"\",\"\"message\"\":\"\"{{message}}\"\"}"],)";
-        const auto json_health_args_template = R"(  "health_args_template": ["/d", "/s", "/c", "exit 0"],)";
+        const auto json_health_args_template = R"(  "health_args_template": ["/d", "/s", "/c", "exit 0"])";
 #else
         const auto json_args_template =
             R"(  "args_template": ["-c", "printf '%s\\n' '{\"plugin\":\"json\",\"message\":\"{{message}}\"}'"],)";
-        const auto json_health_args_template = R"(  "health_args_template": ["-c", "exit 0"],)";
+        const auto json_health_args_template = R"(  "health_args_template": ["-c", "exit 0"])";
 #endif
         std::ofstream spec_file(isolated_workspace / "runtime" / "plugin_specs" / "json_echo_plugin.json", std::ios::binary);
         spec_file
@@ -789,6 +872,13 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
     Expect(result.output_json.find("hello") != std::string::npos, "plugin output should include rendered argument");
     Expect(result.output_json.find(R"("plugin_output":{)") != std::string::npos,
         "plugin output should include structured plugin_output JSON");
+    {
+        const auto parsed_output = nlohmann::json::parse(result.output_json);
+        Expect(parsed_output.at("plugin") == "echo_plugin",
+            "stdio-json plugin skill output should expose plugin metadata");
+        Expect(parsed_output.at("plugin_output").at("message") == "hello",
+            "stdio-json plugin skill output should embed stdout as an object");
+    }
     if (spec_it != specs.end()) {
         auto sandbox_spec = *spec_it;
 #ifdef _WIN32
@@ -858,6 +948,49 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
         "json-rpc plugin output should preserve protocol metadata");
     Expect(json_rpc_skill.json_output.find(R"("plugin_output":{"message":"json-rpc-ok"})") != std::string::npos,
         "json-rpc plugin output should embed the JSON-RPC result object");
+    {
+        const auto parsed_output = nlohmann::json::parse(json_rpc_skill.json_output);
+        Expect(parsed_output.at("plugin_output").at("message") == "json-rpc-ok",
+            "json-rpc plugin skill output should embed the parsed result object");
+    }
+
+    {
+        agentos::PluginSpec sandbox_invoker_spec{
+            .manifest_version = "plugin.v1",
+            .name = "sandbox_invoker_test",
+            .description = "PluginSkillInvoker sandbox containment fixture.",
+            .binary = binary,
+#ifdef _WIN32
+            .args_template = {"-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"ok\":true}'"},
+#else
+            .args_template = {"-c", "printf '%s\\n' '{\"ok\":true}'"},
+#endif
+            .required_args = {"target_path"},
+            .protocol = "stdio-json-v0",
+            .permissions = {"process.spawn"},
+            .sandbox_mode = "workspace",
+        };
+        agentos::PluginSkillInvoker sandbox_invoker(sandbox_invoker_spec, plugin_host);
+
+        const auto sandbox_escape = sandbox_invoker.execute(agentos::SkillCall{
+            .skill_name = "sandbox_invoker_test",
+            .workspace_id = isolated_workspace.string(),
+            .arguments = {{"target_path", "../escape.txt"}},
+        });
+        Expect(!sandbox_escape.success,
+            "PluginSkillInvoker must enforce workspace sandbox on relative path escape");
+        Expect(sandbox_escape.error_code == "PluginSandboxDenied",
+            "PluginSkillInvoker sandbox denial should surface PluginSandboxDenied");
+
+        const auto inside_workspace_path = (isolated_workspace / "inside.txt").string();
+        const auto sandbox_inside = sandbox_invoker.execute(agentos::SkillCall{
+            .skill_name = "sandbox_invoker_test",
+            .workspace_id = isolated_workspace.string(),
+            .arguments = {{"target_path", inside_workspace_path}},
+        });
+        Expect(sandbox_inside.success,
+            "PluginSkillInvoker must use SkillCall.workspace_id (not process cwd) for sandbox containment");
+    }
 
 #ifdef _WIN32
     const auto persistent_script = isolated_workspace / "persistent_json_rpc.ps1";
@@ -900,6 +1033,53 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
 #endif
     const auto persistent_health = agentos::CheckPluginHealth(persistent_json_rpc_spec, cli_host, isolated_workspace);
     Expect(persistent_health.healthy, "persistent plugin health should accept a supported persistent json-rpc plugin");
+
+#ifdef _WIN32
+    const auto persistent_healthz_script = isolated_workspace / "persistent_healthz_only.ps1";
+    {
+        std::ofstream script(persistent_healthz_script, std::ios::binary);
+        script
+            << "while (($line = [Console]::In.ReadLine()) -ne $null) {\n"
+            << "  $req = $line | ConvertFrom-Json\n"
+            << "  if ($req.method -eq '$/healthz') {\n"
+            << "    Write-Output \"{\"\"jsonrpc\"\":\"\"2.0\"\",\"\"id\"\":$($req.id),\"\"result\"\":{\"\"healthy\"\":true}}\"\n"
+            << "  } else {\n"
+            << "    Write-Output \"{\"\"jsonrpc\"\":\"\"2.0\"\",\"\"id\"\":$($req.id),\"\"error\"\":{\"\"code\"\":-32601,\"\"message\"\":\"\"expected healthz\"\"}}\"\n"
+            << "  }\n"
+            << "  [Console]::Out.Flush()\n"
+            << "}\n";
+    }
+#else
+    const auto persistent_healthz_script = isolated_workspace / "persistent_healthz_only.sh";
+    {
+        std::ofstream script(persistent_healthz_script, std::ios::binary);
+        script
+            << "#!/usr/bin/env sh\n"
+            << "while IFS= read -r line; do\n"
+            << "  case \"$line\" in\n"
+            << "    *'\"method\":\"$/healthz\"'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"healthy\":true}}' ;;\n"
+            << "    *) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"expected healthz\"}}' ;;\n"
+            << "  esac\n"
+            << "done\n";
+    }
+    std::filesystem::permissions(
+        persistent_healthz_script,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+    agentos::PluginSpec persistent_healthz_spec = persistent_json_rpc_spec;
+    persistent_healthz_spec.name = "persistent_healthz_only";
+#ifdef _WIN32
+    persistent_healthz_spec.args_template = {
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", persistent_healthz_script.string()};
+#else
+    persistent_healthz_spec.args_template = {persistent_healthz_script.string()};
+#endif
+    const auto persistent_healthz =
+        agentos::CheckPluginHealth(persistent_healthz_spec, cli_host, isolated_workspace);
+    Expect(persistent_healthz.healthy,
+        "persistent plugin health should use the explicit JSON-RPC $/healthz method");
+
     const auto persistent_run = plugin_host.run(agentos::PluginRunRequest{
         .spec = persistent_json_rpc_spec,
         .workspace_path = isolated_workspace,
@@ -1041,6 +1221,48 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
         "persistent plugin restart should launch a new process after crash");
     Expect(persistent_crash_second.lifecycle_event == "restarted",
         "persistent plugin restart should report restarted lifecycle event");
+
+#ifdef _WIN32
+    const auto immediate_exit_script = isolated_workspace / "immediate_exit.ps1";
+    {
+        std::ofstream script(immediate_exit_script, std::ios::binary);
+        script << "exit 0\n";
+    }
+#else
+    const auto immediate_exit_script = isolated_workspace / "immediate_exit.sh";
+    {
+        std::ofstream script(immediate_exit_script, std::ios::binary);
+        script
+            << "#!/usr/bin/env sh\n"
+            << "exit 0\n";
+    }
+    std::filesystem::permissions(
+        immediate_exit_script,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+    agentos::PluginSpec immediate_exit_spec = persistent_json_rpc_spec;
+    immediate_exit_spec.name = "immediate_exit_persistent";
+    immediate_exit_spec.startup_timeout_ms = 200;
+#ifdef _WIN32
+    immediate_exit_spec.args_template = {
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", immediate_exit_script.string()};
+#else
+    immediate_exit_spec.args_template = {immediate_exit_script.string()};
+#endif
+    const auto immediate_exit_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = immediate_exit_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!immediate_exit_run.success,
+        "persistent plugin that exits immediately must surface a startup-class failure");
+    const bool startup_class_failure =
+        immediate_exit_run.error_code == "PluginLifecycleStartFailed" ||
+        immediate_exit_run.error_code == "PluginLifecycleWriteFailed" ||
+        immediate_exit_run.error_code == "PluginLifecycleReadFailed";
+    Expect(startup_class_failure,
+        std::string("immediate-exit persistent plugin should surface a Lifecycle* failure code, got: ") +
+        immediate_exit_run.error_code);
 
 #ifdef _WIN32
     const auto persistent_timeout_script = isolated_workspace / "persistent_timeout.ps1";
@@ -1436,6 +1658,855 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
         "plugin host should reject stdio-json-v0 output with invalid multipleOf constraints");
     Expect(schema_invalid_multiple_output_run.error_message.find("invalid constraint: score:multipleOf") != std::string::npos,
         "plugin host should explain invalid output multipleOf constraints");
+
+#ifdef _WIN32
+    const std::vector<std::string> schema_invalid_array_type_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":\"one\"}'"};
+    const std::vector<std::string> schema_invalid_min_items_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"one\"]}'"};
+    const std::vector<std::string> schema_invalid_max_items_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"one\",\"two\"]}'"};
+    const std::vector<std::string> schema_invalid_items_type_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"one\",2]}'"};
+    const std::vector<std::string> schema_valid_items_type_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"one\",\"two\"]}'"};
+    const std::vector<std::string> schema_invalid_items_const_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"bad\"]}'"};
+    const std::vector<std::string> schema_invalid_items_enum_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"blue\",\"red\"]}'"};
+    const std::vector<std::string> schema_valid_items_const_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"ok\"]}'"};
+    const std::vector<std::string> schema_invalid_items_min_length_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"x\"]}'"};
+    const std::vector<std::string> schema_invalid_items_max_length_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"toolong\"]}'"};
+    const std::vector<std::string> schema_invalid_items_pattern_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"AA\",\"bad\"]}'"};
+    const std::vector<std::string> schema_valid_items_pattern_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"AA\",\"BB\"]}'"};
+    const std::vector<std::string> schema_invalid_items_minimum_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"scores\":[2,0]}'"};
+    const std::vector<std::string> schema_invalid_items_maximum_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"scores\":[2,5]}'"};
+    const std::vector<std::string> schema_invalid_items_multiple_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"scores\":[2,3]}'"};
+    const std::vector<std::string> schema_valid_items_numeric_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"scores\":[2,4]}'"};
+    const std::vector<std::string> schema_invalid_unique_items_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"one\",\"one\"]}'"};
+    const std::vector<std::string> schema_valid_unique_items_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"one\",\"two\"]}'"};
+    const std::vector<std::string> schema_invalid_contains_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"bad\",\"skip\"]}'"};
+    const std::vector<std::string> schema_invalid_min_contains_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"skip\"]}'"};
+    const std::vector<std::string> schema_invalid_max_contains_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"ok\"]}'"};
+    const std::vector<std::string> schema_valid_contains_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"skip\"]}'"};
+    const std::vector<std::string> schema_invalid_prefix_items_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",2]}'"};
+    const std::vector<std::string> schema_valid_prefix_items_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"tags\":[\"ok\",\"two\",3]}'"};
+    const std::vector<std::string> schema_invalid_object_items_required_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"name\":\"ok\"},{\"age\":2}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_type_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"name\":3}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_additional_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"name\":\"ok\",\"extra\":true}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_property_names_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"bad\":\"ok\"}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_dependent_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"name\":\"ok\"}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_dependencies_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"kind\":\"primary\"}]}'"};
+    const std::vector<std::string> schema_valid_object_items_dependencies_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command",
+        "Write-Output '{\"records\":[{\"name\":\"ok\",\"id\":\"1\"},{\"kind\":\"primary\",\"rank\":1}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_not_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command",
+        "Write-Output '{\"records\":[{\"name\":\"ok\",\"deprecated\":true}]}'"};
+    const std::vector<std::string> schema_valid_object_items_not_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"name\":\"ok\"}]}'"};
+    const std::vector<std::string> schema_valid_object_items_output_args = {
+        "-NoProfile", "-NonInteractive", "-Command", "Write-Output '{\"records\":[{\"name\":\"ok\"},{\"name\":\"two\"}]}'"};
+#else
+    const std::vector<std::string> schema_invalid_array_type_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":\"one\"}'"};
+    const std::vector<std::string> schema_invalid_min_items_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"one\"]}'"};
+    const std::vector<std::string> schema_invalid_max_items_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"one\",\"two\"]}'"};
+    const std::vector<std::string> schema_invalid_items_type_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"one\",2]}'"};
+    const std::vector<std::string> schema_valid_items_type_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"one\",\"two\"]}'"};
+    const std::vector<std::string> schema_invalid_items_const_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"bad\"]}'"};
+    const std::vector<std::string> schema_invalid_items_enum_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"blue\",\"red\"]}'"};
+    const std::vector<std::string> schema_valid_items_const_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"ok\"]}'"};
+    const std::vector<std::string> schema_invalid_items_min_length_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"x\"]}'"};
+    const std::vector<std::string> schema_invalid_items_max_length_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"toolong\"]}'"};
+    const std::vector<std::string> schema_invalid_items_pattern_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"AA\",\"bad\"]}'"};
+    const std::vector<std::string> schema_valid_items_pattern_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"AA\",\"BB\"]}'"};
+    const std::vector<std::string> schema_invalid_items_minimum_output_args = {
+        "-c", "printf '%s\\n' '{\"scores\":[2,0]}'"};
+    const std::vector<std::string> schema_invalid_items_maximum_output_args = {
+        "-c", "printf '%s\\n' '{\"scores\":[2,5]}'"};
+    const std::vector<std::string> schema_invalid_items_multiple_output_args = {
+        "-c", "printf '%s\\n' '{\"scores\":[2,3]}'"};
+    const std::vector<std::string> schema_valid_items_numeric_output_args = {
+        "-c", "printf '%s\\n' '{\"scores\":[2,4]}'"};
+    const std::vector<std::string> schema_invalid_unique_items_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"one\",\"one\"]}'"};
+    const std::vector<std::string> schema_valid_unique_items_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"one\",\"two\"]}'"};
+    const std::vector<std::string> schema_invalid_contains_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"bad\",\"skip\"]}'"};
+    const std::vector<std::string> schema_invalid_min_contains_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"skip\"]}'"};
+    const std::vector<std::string> schema_invalid_max_contains_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"ok\"]}'"};
+    const std::vector<std::string> schema_valid_contains_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"skip\"]}'"};
+    const std::vector<std::string> schema_invalid_prefix_items_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",2]}'"};
+    const std::vector<std::string> schema_valid_prefix_items_output_args = {
+        "-c", "printf '%s\\n' '{\"tags\":[\"ok\",\"two\",3]}'"};
+    const std::vector<std::string> schema_invalid_object_items_required_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":\"ok\"},{\"age\":2}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_type_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":3}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_additional_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":\"ok\",\"extra\":true}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_property_names_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"bad\":\"ok\"}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_dependent_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":\"ok\"}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_dependencies_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"kind\":\"primary\"}]}'"};
+    const std::vector<std::string> schema_valid_object_items_dependencies_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":\"ok\",\"id\":\"1\"},{\"kind\":\"primary\",\"rank\":1}]}'"};
+    const std::vector<std::string> schema_invalid_object_items_not_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":\"ok\",\"deprecated\":true}]}'"};
+    const std::vector<std::string> schema_valid_object_items_not_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":\"ok\"}]}'"};
+    const std::vector<std::string> schema_valid_object_items_output_args = {
+        "-c", "printf '%s\\n' '{\"records\":[{\"name\":\"ok\"},{\"name\":\"two\"}]}'"};
+#endif
+    agentos::PluginSpec schema_invalid_array_type_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_array_type_output_plugin",
+        .description = "Schema-invalid plugin output array type fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_array_type_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array"}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_array_type_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_array_type_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_array_type_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array type");
+    Expect(schema_invalid_array_type_output_run.error_message.find("invalid type: tags:array") != std::string::npos,
+        "plugin host should explain invalid output array type");
+
+    agentos::PluginSpec schema_invalid_min_items_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_min_items_output_plugin",
+        .description = "Schema-invalid plugin output minItems fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_min_items_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","minItems":2}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_min_items_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_min_items_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_min_items_output_run.success,
+        "plugin host should reject stdio-json-v0 output with too few array items");
+    Expect(schema_invalid_min_items_output_run.error_message.find("invalid constraint: tags:minItems") !=
+               std::string::npos,
+        "plugin host should explain output minItems constraints");
+
+    agentos::PluginSpec schema_invalid_max_items_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_max_items_output_plugin",
+        .description = "Schema-invalid plugin output maxItems fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_max_items_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","maxItems":1}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_max_items_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_max_items_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_max_items_output_run.success,
+        "plugin host should reject stdio-json-v0 output with too many array items");
+    Expect(schema_invalid_max_items_output_run.error_message.find("invalid constraint: tags:maxItems") !=
+               std::string::npos,
+        "plugin host should explain output maxItems constraints");
+
+    agentos::PluginSpec schema_invalid_unique_items_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_unique_items_output_plugin",
+        .description = "Schema-invalid plugin output uniqueItems fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_unique_items_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","uniqueItems":true}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_unique_items_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_unique_items_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_unique_items_output_run.success,
+        "plugin host should reject stdio-json-v0 output with duplicate uniqueItems values");
+    Expect(schema_invalid_unique_items_output_run.error_message.find("invalid constraint: tags:uniqueItems") !=
+               std::string::npos,
+        "plugin host should explain output uniqueItems constraints");
+
+    agentos::PluginSpec schema_valid_unique_items_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_unique_items_output_plugin",
+        .description = "Schema-valid plugin output uniqueItems fixture.",
+        .binary = binary,
+        .args_template = schema_valid_unique_items_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","uniqueItems":true}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_unique_items_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_unique_items_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_unique_items_output_run.success,
+        "plugin host should accept stdio-json-v0 output with unique array values");
+
+    agentos::PluginSpec schema_invalid_contains_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_contains_output_plugin",
+        .description = "Schema-invalid plugin output contains fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_contains_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","contains":{"const":"ok"}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_contains_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_contains_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_contains_output_run.success,
+        "plugin host should reject stdio-json-v0 output with no contains matches");
+    Expect(schema_invalid_contains_output_run.error_message.find("invalid constraint: tags:contains") !=
+               std::string::npos,
+        "plugin host should explain output contains constraints");
+
+    agentos::PluginSpec schema_invalid_min_contains_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_min_contains_output_plugin",
+        .description = "Schema-invalid plugin output minContains fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_min_contains_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","contains":{"const":"ok"},"minContains":2}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_min_contains_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_min_contains_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_min_contains_output_run.success,
+        "plugin host should reject stdio-json-v0 output with too few contains matches");
+    Expect(schema_invalid_min_contains_output_run.error_message.find("invalid constraint: tags:minContains") !=
+               std::string::npos,
+        "plugin host should explain output minContains constraints");
+
+    agentos::PluginSpec schema_invalid_max_contains_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_max_contains_output_plugin",
+        .description = "Schema-invalid plugin output maxContains fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_max_contains_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","contains":{"const":"ok"},"maxContains":1}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_max_contains_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_max_contains_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_max_contains_output_run.success,
+        "plugin host should reject stdio-json-v0 output with too many contains matches");
+    Expect(schema_invalid_max_contains_output_run.error_message.find("invalid constraint: tags:maxContains") !=
+               std::string::npos,
+        "plugin host should explain output maxContains constraints");
+
+    agentos::PluginSpec schema_valid_contains_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_contains_output_plugin",
+        .description = "Schema-valid plugin output contains fixture.",
+        .binary = binary,
+        .args_template = schema_valid_contains_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","contains":{"const":"ok"},"minContains":1,"maxContains":1}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_contains_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_contains_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_contains_output_run.success,
+        "plugin host should accept stdio-json-v0 output with contains match counts in bounds");
+
+    agentos::PluginSpec schema_invalid_prefix_items_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_prefix_items_output_plugin",
+        .description = "Schema-invalid plugin output prefixItems fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_prefix_items_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","prefixItems":[{"const":"ok"},{"type":"string"}]}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_prefix_items_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_prefix_items_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_prefix_items_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid prefixItems values");
+    Expect(schema_invalid_prefix_items_output_run.error_message.find("invalid constraint: tags:prefixItems") !=
+               std::string::npos,
+        "plugin host should explain output prefixItems constraints");
+
+    agentos::PluginSpec schema_valid_prefix_items_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_prefix_items_output_plugin",
+        .description = "Schema-valid plugin output prefixItems fixture.",
+        .binary = binary,
+        .args_template = schema_valid_prefix_items_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","prefixItems":[{"const":"ok"},{"type":"string"}]}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_prefix_items_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_prefix_items_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_prefix_items_output_run.success,
+        "plugin host should accept stdio-json-v0 output with valid prefixItems values");
+
+    agentos::PluginSpec schema_invalid_object_items_required_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_object_items_required_output_plugin",
+        .description = "Schema-invalid plugin output object items required fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_object_items_required_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_object_items_required_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_object_items_required_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_object_items_required_output_run.success,
+        "plugin host should reject stdio-json-v0 output with missing object item required fields");
+    Expect(schema_invalid_object_items_required_output_run.error_message.find("invalid constraint: records:items:object") !=
+               std::string::npos,
+        "plugin host should explain output object item required constraints");
+
+    agentos::PluginSpec schema_invalid_object_items_type_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_object_items_type_output_plugin",
+        .description = "Schema-invalid plugin output object items property type fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_object_items_type_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"}}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_object_items_type_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_object_items_type_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_object_items_type_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid object item property types");
+    Expect(schema_invalid_object_items_type_output_run.error_message.find("invalid constraint: records:items:object") !=
+               std::string::npos,
+        "plugin host should explain output object item property constraints");
+
+    agentos::PluginSpec schema_invalid_object_items_additional_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_object_items_additional_output_plugin",
+        .description = "Schema-invalid plugin output object items additionalProperties fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_object_items_additional_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_object_items_additional_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_object_items_additional_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_object_items_additional_output_run.success,
+        "plugin host should reject stdio-json-v0 output with unexpected object item properties");
+    Expect(schema_invalid_object_items_additional_output_run.error_message.find("invalid constraint: records:items:object") !=
+               std::string::npos,
+        "plugin host should explain output object item additionalProperties constraints");
+
+    agentos::PluginSpec schema_invalid_object_items_property_names_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_object_items_property_names_output_plugin",
+        .description = "Schema-invalid plugin output object items propertyNames fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_object_items_property_names_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","propertyNames":{"pattern":"^name$"}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_object_items_property_names_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_object_items_property_names_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_object_items_property_names_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid object item property names");
+    Expect(
+        schema_invalid_object_items_property_names_output_run.error_message.find(
+            "invalid constraint: records:items:object") != std::string::npos,
+        "plugin host should explain output object item propertyNames constraints");
+
+    agentos::PluginSpec schema_invalid_object_items_dependent_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_object_items_dependent_output_plugin",
+        .description = "Schema-invalid plugin output object items dependentRequired fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_object_items_dependent_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","dependentRequired":{"name":["id"]}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_object_items_dependent_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_object_items_dependent_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_object_items_dependent_output_run.success,
+        "plugin host should reject stdio-json-v0 output with missing object item dependentRequired fields");
+    Expect(
+        schema_invalid_object_items_dependent_output_run.error_message.find(
+            "invalid constraint: records:items:object") != std::string::npos,
+        "plugin host should explain output object item dependentRequired constraints");
+
+    agentos::PluginSpec schema_invalid_object_items_dependencies_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_object_items_dependencies_output_plugin",
+        .description = "Schema-invalid plugin output object items legacy dependencies fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_object_items_dependencies_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","dependencies":{"kind":["rank"]}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_object_items_dependencies_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_object_items_dependencies_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_object_items_dependencies_output_run.success,
+        "plugin host should reject stdio-json-v0 output with missing object item dependencies fields");
+    Expect(
+        schema_invalid_object_items_dependencies_output_run.error_message.find(
+            "invalid constraint: records:items:object") != std::string::npos,
+        "plugin host should explain output object item dependencies constraints");
+
+    agentos::PluginSpec schema_valid_object_items_dependencies_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_object_items_dependencies_output_plugin",
+        .description = "Schema-valid plugin output object items dependencies fixture.",
+        .binary = binary,
+        .args_template = schema_valid_object_items_dependencies_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","dependentRequired":{"name":["id"]},"dependencies":{"kind":["rank"]}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_object_items_dependencies_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_object_items_dependencies_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_object_items_dependencies_output_run.success,
+        "plugin host should accept stdio-json-v0 output with object item dependency fields: " +
+            schema_valid_object_items_dependencies_output_run.error_message);
+
+    agentos::PluginSpec schema_invalid_object_items_not_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_object_items_not_output_plugin",
+        .description = "Schema-invalid plugin output object items not.required fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_object_items_not_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","not":{"required":["name","deprecated"]}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_object_items_not_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_object_items_not_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_object_items_not_output_run.success,
+        "plugin host should reject stdio-json-v0 output matching object item not.required");
+    Expect(
+        schema_invalid_object_items_not_output_run.error_message.find("invalid constraint: records:items:object") !=
+            std::string::npos,
+        "plugin host should explain output object item not.required constraints");
+
+    agentos::PluginSpec schema_valid_object_items_not_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_object_items_not_output_plugin",
+        .description = "Schema-valid plugin output object items not.required fixture.",
+        .binary = binary,
+        .args_template = schema_valid_object_items_not_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","not":{"required":["name","deprecated"]}}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_object_items_not_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_object_items_not_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_object_items_not_output_run.success,
+        "plugin host should accept stdio-json-v0 output not matching object item not.required: " +
+            schema_valid_object_items_not_output_run.error_message);
+
+    agentos::PluginSpec schema_valid_object_items_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_object_items_output_plugin",
+        .description = "Schema-valid plugin output object items fixture.",
+        .binary = binary,
+        .args_template = schema_valid_object_items_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"records":{"type":"array","items":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}},"additionalProperties":false}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_object_items_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_object_items_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_object_items_output_run.success,
+        "plugin host should accept stdio-json-v0 output with valid object array items");
+
+    agentos::PluginSpec schema_invalid_items_type_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_type_output_plugin",
+        .description = "Schema-invalid plugin output items.type fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_type_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","items":{"type":"string"}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_type_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_type_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_type_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item types");
+    Expect(schema_invalid_items_type_output_run.error_message.find("invalid constraint: tags:items:type") !=
+               std::string::npos,
+        "plugin host should explain output items.type constraints");
+
+    agentos::PluginSpec schema_valid_items_type_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_items_type_output_plugin",
+        .description = "Schema-valid plugin output items.type fixture.",
+        .binary = binary,
+        .args_template = schema_valid_items_type_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","items":{"type":"string"}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_items_type_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_items_type_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_items_type_output_run.success,
+        "plugin host should accept stdio-json-v0 output with valid array item types");
+
+    agentos::PluginSpec schema_invalid_items_const_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_const_output_plugin",
+        .description = "Schema-invalid plugin output items.const fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_const_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","items":{"const":"ok"}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_const_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_const_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_const_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item const values");
+    Expect(schema_invalid_items_const_output_run.error_message.find("invalid constraint: tags:items:const") !=
+               std::string::npos,
+        "plugin host should explain output items.const constraints");
+
+    agentos::PluginSpec schema_invalid_items_enum_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_enum_output_plugin",
+        .description = "Schema-invalid plugin output items.enum fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_enum_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","items":{"enum":["blue","green"]}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_enum_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_enum_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_enum_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item enum values");
+    Expect(schema_invalid_items_enum_output_run.error_message.find("invalid constraint: tags:items:enum") !=
+               std::string::npos,
+        "plugin host should explain output items.enum constraints");
+
+    agentos::PluginSpec schema_valid_items_const_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_items_const_output_plugin",
+        .description = "Schema-valid plugin output items.const fixture.",
+        .binary = binary,
+        .args_template = schema_valid_items_const_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","items":{"const":"ok"}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_items_const_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_items_const_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_items_const_output_run.success,
+        "plugin host should accept stdio-json-v0 output with valid array item const values");
+
+    agentos::PluginSpec schema_invalid_items_min_length_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_min_length_output_plugin",
+        .description = "Schema-invalid plugin output items.minLength fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_min_length_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","items":{"minLength":2}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_min_length_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_min_length_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_min_length_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item minLength values");
+    Expect(schema_invalid_items_min_length_output_run.error_message.find("invalid constraint: tags:items:minLength") !=
+               std::string::npos,
+        "plugin host should explain output items.minLength constraints");
+
+    agentos::PluginSpec schema_invalid_items_max_length_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_max_length_output_plugin",
+        .description = "Schema-invalid plugin output items.maxLength fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_max_length_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"tags":{"type":"array","items":{"maxLength":4}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_max_length_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_max_length_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_max_length_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item maxLength values");
+    Expect(schema_invalid_items_max_length_output_run.error_message.find("invalid constraint: tags:items:maxLength") !=
+               std::string::npos,
+        "plugin host should explain output items.maxLength constraints");
+
+    agentos::PluginSpec schema_invalid_items_pattern_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_pattern_output_plugin",
+        .description = "Schema-invalid plugin output items.pattern fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_pattern_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","items":{"pattern":"^[A-Z]{2}$"}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_pattern_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_pattern_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_pattern_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item pattern values");
+    Expect(schema_invalid_items_pattern_output_run.error_message.find("invalid constraint: tags:items:pattern") !=
+               std::string::npos,
+        "plugin host should explain output items.pattern constraints");
+
+    agentos::PluginSpec schema_valid_items_pattern_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_items_pattern_output_plugin",
+        .description = "Schema-valid plugin output items.pattern fixture.",
+        .binary = binary,
+        .args_template = schema_valid_items_pattern_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"tags":{"type":"array","items":{"pattern":"^[A-Z]{2}$"}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_items_pattern_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_items_pattern_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_items_pattern_output_run.success,
+        "plugin host should accept stdio-json-v0 output with valid array item pattern values");
+
+    agentos::PluginSpec schema_invalid_items_minimum_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_minimum_output_plugin",
+        .description = "Schema-invalid plugin output items.minimum fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_minimum_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"scores":{"type":"array","items":{"minimum":1}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_minimum_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_minimum_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_minimum_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item minimum values");
+    Expect(schema_invalid_items_minimum_output_run.error_message.find("invalid constraint: scores:items:minimum") !=
+               std::string::npos,
+        "plugin host should explain output items.minimum constraints");
+
+    agentos::PluginSpec schema_invalid_items_maximum_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_maximum_output_plugin",
+        .description = "Schema-invalid plugin output items.maximum fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_maximum_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"scores":{"type":"array","items":{"maximum":4}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_maximum_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_maximum_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_maximum_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item maximum values");
+    Expect(schema_invalid_items_maximum_output_run.error_message.find("invalid constraint: scores:items:maximum") !=
+               std::string::npos,
+        "plugin host should explain output items.maximum constraints");
+
+    agentos::PluginSpec schema_invalid_items_multiple_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_invalid_items_multiple_output_plugin",
+        .description = "Schema-invalid plugin output items.multipleOf fixture.",
+        .binary = binary,
+        .args_template = schema_invalid_items_multiple_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json = R"({"type":"object","properties":{"scores":{"type":"array","items":{"multipleOf":2}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_invalid_items_multiple_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_invalid_items_multiple_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(!schema_invalid_items_multiple_output_run.success,
+        "plugin host should reject stdio-json-v0 output with invalid array item multipleOf values");
+    Expect(schema_invalid_items_multiple_output_run.error_message.find("invalid constraint: scores:items:multipleOf") !=
+               std::string::npos,
+        "plugin host should explain output items.multipleOf constraints");
+
+    agentos::PluginSpec schema_valid_items_numeric_output_spec{
+        .manifest_version = "plugin.v1",
+        .name = "schema_valid_items_numeric_output_plugin",
+        .description = "Schema-valid plugin output items numeric fixture.",
+        .binary = binary,
+        .args_template = schema_valid_items_numeric_output_args,
+        .required_args = std::vector<std::string>{},
+        .protocol = "stdio-json-v0",
+        .output_schema_json =
+            R"({"type":"object","properties":{"scores":{"type":"array","items":{"minimum":1,"maximum":4,"multipleOf":2}}}})",
+        .permissions = {"process.spawn"},
+    };
+    const auto schema_valid_items_numeric_output_run = plugin_host.run(agentos::PluginRunRequest{
+        .spec = schema_valid_items_numeric_output_spec,
+        .workspace_path = isolated_workspace,
+    });
+    Expect(schema_valid_items_numeric_output_run.success,
+        "plugin host should accept stdio-json-v0 output with valid numeric array item constraints");
 
 #ifdef _WIN32
     const std::vector<std::string> schema_invalid_additional_output_args = {
@@ -2227,6 +3298,10 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
         Expect(info.request_count >= 1,
             "session info request_count should reflect the executed request");
         Expect(info.alive, "session info alive flag should be true for a running process");
+        Expect(info.idle_timeout_ms == pool_spec.idle_timeout_ms,
+            "session info should expose the configured idle timeout");
+        Expect(!info.idle_expired,
+            "freshly used session info should not be marked idle-expired");
     }
 
     // Second call: workspace B with pool_size=1 → must evict the workspace-A session.
@@ -2258,10 +3333,110 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
     Expect(host.active_session_count() == 2,
         "pool_size=2 should allow two concurrent persistent sessions for one plugin");
 
+    const auto filtered_sessions_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "sessions", "name=pool_admin_session"},
+        &host);
+    Expect(filtered_sessions_cli.first == 0,
+        "plugins sessions name=<plugin> should succeed for a live plugin session");
+    Expect(
+        filtered_sessions_cli.second.find("plugin_sessions_summary total=2 active=2 name=pool_admin_session matched=true")
+            != std::string::npos,
+        "plugins sessions should report matched=true and only count sessions for the requested plugin");
+    Expect(filtered_sessions_cli.second.find("idle_expired=0 dead=0") != std::string::npos,
+        "plugins sessions should report no idle-expired or dead live sessions");
+    Expect(filtered_sessions_cli.second.find("idle_timeout_ms=60000 idle_expired=false") != std::string::npos,
+        "plugins sessions should include per-session idle expiry diagnostics");
+    Expect(filtered_sessions_cli.second.find("scope=process persistence=none") != std::string::npos,
+        "plugins sessions should make filtered session summaries explicitly process-scoped");
+
+    const auto filtered_missing_sessions_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "sessions", "name=does_not_exist"},
+        &host);
+    Expect(filtered_missing_sessions_cli.first == 0,
+        "plugins sessions name=<plugin> should succeed when no live session matches");
+    Expect(
+        filtered_missing_sessions_cli.second.find("plugin_sessions_summary total=0 active=2 name=does_not_exist matched=false")
+            != std::string::npos,
+        "plugins sessions should report matched=false when the requested plugin has no live sessions");
+    Expect(filtered_missing_sessions_cli.second.find("idle_expired=0 dead=0") != std::string::npos,
+        "plugins sessions should report empty idle/dead diagnostics for no-match filters");
+    Expect(filtered_missing_sessions_cli.second.find("scope=process persistence=none") != std::string::npos,
+        "plugins sessions should keep no-match summaries explicitly process-scoped");
+
+    auto expired_pool_spec = pool_spec;
+    expired_pool_spec.name = "expired_pool_admin_session";
+    expired_pool_spec.idle_timeout_ms = 1;
+    const auto expired_workspace = isolated_workspace / "expired_ws";
+    std::filesystem::create_directories(expired_workspace);
+    const auto expired_run = host.run(agentos::PluginRunRequest{
+        .spec = expired_pool_spec,
+        .workspace_path = expired_workspace,
+    });
+    Expect(expired_run.success,
+        "expired pool fixture should start a session for prune coverage");
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto expired_sessions_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "sessions", "name=expired_pool_admin_session"},
+        &host);
+    Expect(expired_sessions_cli.second.find("idle_expired=1 dead=0") != std::string::npos,
+        "plugins sessions should count idle-expired filtered sessions");
+
+    const auto dry_run_prune_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "session-prune", "name=expired_pool_admin_session", "dry_run=true"},
+        &host);
+    Expect(dry_run_prune_cli.first == 0,
+        "plugins session-prune dry_run=true should succeed for idle-expired sessions");
+    Expect(
+        dry_run_prune_cli.second.find(
+            "plugin_session_prune name=expired_pool_admin_session pruned=0 matched=true dry_run=true would_prune=1")
+            != std::string::npos,
+        "plugins session-prune dry_run=true should report would_prune without pruning");
+    Expect(host.active_session_count() == 3,
+        "session-prune dry_run=true should leave idle-expired sessions alive until a real prune");
+
+    const auto prune_expired_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "session-prune", "name=expired_pool_admin_session"},
+        &host);
+    Expect(prune_expired_cli.first == 0,
+        "plugins session-prune should succeed for idle-expired sessions");
+    Expect(
+        prune_expired_cli.second.find(
+            "plugin_session_prune name=expired_pool_admin_session pruned=1 matched=true")
+            != std::string::npos,
+        "plugins session-prune should report matched=true when it prunes an idle-expired session");
+    Expect(prune_expired_cli.second.find("reason=idle_expired_or_dead scope=process persistence=none")
+            != std::string::npos,
+        "plugins session-prune should explain its prune criteria and process scope");
+    Expect(host.active_session_count() == 2,
+        "session-prune should leave non-expired sessions for other plugins alone");
+
+    const auto prune_missing_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "session-prune", "name=does_not_exist"},
+        &host);
+    Expect(prune_missing_cli.first == 0,
+        "plugins session-prune should succeed when no session matches");
+    Expect(
+        prune_missing_cli.second.find("plugin_session_prune name=does_not_exist pruned=0 matched=false")
+            != std::string::npos,
+        "plugins session-prune should report matched=false for no-op filtered prunes");
+
     // session-restart: force-restart all sessions for the plugin and verify they remain usable.
-    const auto restarted_count = host.restart_sessions_for_plugin("pool_admin_session");
-    Expect(restarted_count == 2,
-        "restart_sessions_for_plugin should restart every matching live session");
+    const auto restart_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "session-restart", "name=pool_admin_session"},
+        &host);
+    Expect(restart_cli.first == 0,
+        "plugins session-restart should succeed for a live plugin session");
+    Expect(
+        restart_cli.second.find("plugin_session_restart name=pool_admin_session restarted=2 matched=true")
+            != std::string::npos,
+        "plugins session-restart should report matched=true when live sessions are restarted");
     const auto sessions_after_restart = host.list_sessions();
     Expect(sessions_after_restart.size() == 2,
         "host should still hold the same number of sessions after restart");
@@ -2279,8 +3454,16 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
         "post-restart session should resume the response counter from one");
 
     // session-close: forcibly close all sessions for the plugin.
-    const auto closed = host.close_sessions_for_plugin("pool_admin_session");
-    Expect(closed == 2, "close_sessions_for_plugin should close every matching session");
+    const auto close_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "session-close", "name=pool_admin_session"},
+        &host);
+    Expect(close_cli.first == 0,
+        "plugins session-close should succeed for a live plugin session");
+    Expect(
+        close_cli.second.find("plugin_session_close name=pool_admin_session closed=2 matched=true")
+            != std::string::npos,
+        "plugins session-close should report matched=true when live sessions are closed");
     Expect(host.active_session_count() == 0,
         "no sessions should remain after close_sessions_for_plugin");
 
@@ -2289,6 +3472,10 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
         "close_sessions_for_plugin should return zero for unknown plugins");
     Expect(host.restart_sessions_for_plugin("does_not_exist") == 0,
         "restart_sessions_for_plugin should return zero for unknown plugins");
+    Expect(host.count_inactive_sessions("does_not_exist") == 0,
+        "count_inactive_sessions should return zero for unknown plugins");
+    Expect(host.prune_inactive_sessions("does_not_exist") == 0,
+        "prune_inactive_sessions should return zero for unknown plugins");
 
     // Manifest pool_size parsing: TSV.
     const auto pool_workspace = isolated_workspace / "manifest_pool";
@@ -2413,6 +3600,8 @@ void TestJqTransformCliSkillWithFixture(const std::filesystem::path& workspace) 
 int main() {
     const auto workspace = FreshWorkspace();
 
+    TestJsonRpcRequestBuilder();
+    TestJsonRpcResponseValidation();
     TestCliHostEnvironmentAllowlist(workspace);
     TestCliHostRedactsSensitiveArguments(workspace);
     TestCliHostProcessLimit(workspace);

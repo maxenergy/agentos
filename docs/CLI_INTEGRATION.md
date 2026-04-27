@@ -250,9 +250,12 @@ public:
 | `agentos plugins health` | 列出加载结果并执行声明的 health probe（含 persistent JSON-RPC round-trip） |
 | `agentos plugins lifecycle` | 列出 lifecycle 信息汇总：oneshot/persistent 计数、`max_persistent_sessions`、每条 spec 的 `pool_size` |
 | `agentos plugins inspect name=<plugin> [health=true]` | 打印单个 spec 的所有字段，可选附加 health probe |
-| `agentos plugins sessions` | 列出当前进程内 PluginHost 已经长驻的 persistent sessions（plugin 名、pid、started_at、last_used_at、idle_for_ms、request_count、alive） |
-| `agentos plugins session-restart name=<plugin>` | 强制重启某个 plugin 名下的所有 persistent sessions |
-| `agentos plugins session-close name=<plugin>` | 优雅关闭某个 plugin 名下的所有 persistent sessions |
+| `agentos plugins sessions [name=<plugin>]` | 列出当前进程内 PluginHost 已经长驻的 persistent sessions（plugin 名、pid、started_at、last_used_at、idle_for_ms、idle_timeout_ms、idle_expired、request_count、alive）；带 `name=` 时只统计该 plugin，并在 summary 输出 `matched=true|false`、`idle_expired=<n>`、`dead=<n>`、`scope=process`、`persistence=none` |
+| `agentos plugins session-prune [name=<plugin>] [dry_run=true]` | 清理当前进程内 idle-expired 或 dead 的 persistent sessions；不带 `name=` 时扫描全部 sessions；`dry_run=true` 只输出 `would_prune=<n>` 不修改 session 状态；输出 `pruned=<n>`、`matched=true|false`、`dry_run=true|false`、`reason=idle_expired_or_dead`、`scope=process`、`persistence=none` |
+| `agentos plugins session-restart name=<plugin>` | 强制重启某个 plugin 名下的所有 persistent sessions，输出 `matched=true|false` 区分是否命中活跃 session |
+| `agentos plugins session-close name=<plugin>` | 优雅关闭某个 plugin 名下的所有 persistent sessions，输出 `matched=true|false` 区分是否命中活跃 session |
+
+Session admin commands accept `scope=process` explicitly and default to it. `scope=daemon` currently returns `plugin_sessions_unavailable scope=daemon supported_scope=process` until cross-process daemon session inspection is implemented.
 
 manifest 关键字段（TSV 列顺序与 JSON 字段名相同）：
 

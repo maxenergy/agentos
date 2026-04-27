@@ -2,13 +2,11 @@
 
 #include "core/policy/permission_model.hpp"
 #include "hosts/plugin/plugin_json_rpc.hpp"
-#include "hosts/plugin/plugin_json_utils.hpp"
 #include "hosts/plugin/plugin_persistent_session.hpp"
 #include "hosts/plugin/plugin_sandbox.hpp"
 #include "hosts/plugin/plugin_schema_validator.hpp"
 #include "hosts/plugin/plugin_spec_utils.hpp"
 #include "utils/command_utils.hpp"
-#include "utils/json_utils.hpp"
 #include "utils/spec_parsing.hpp"
 
 #include <algorithm>
@@ -145,6 +143,55 @@ std::size_t PluginHost::restart_sessions_for_plugin(const std::string& plugin_na
     return restarted;
 }
 
+std::size_t PluginHost::count_inactive_sessions(const std::string& plugin_name) const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::size_t inactive = 0;
+    for (const auto& [key, session] : sessions_) {
+        (void)key;
+        if (!session) {
+            if (plugin_name.empty()) {
+                ++inactive;
+            }
+            continue;
+        }
+        if (!plugin_name.empty() && session->spec.name != plugin_name) {
+            continue;
+        }
+        if (!session->alive() || session->idle_expired(session->spec.idle_timeout_ms)) {
+            ++inactive;
+        }
+    }
+    return inactive;
+}
+
+std::size_t PluginHost::prune_inactive_sessions(const std::string& plugin_name) const {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::size_t pruned = 0;
+    for (auto iterator = sessions_.begin(); iterator != sessions_.end();) {
+        auto& session = iterator->second;
+        if (!session) {
+            if (plugin_name.empty()) {
+                iterator = sessions_.erase(iterator);
+                ++pruned;
+            } else {
+                ++iterator;
+            }
+            continue;
+        }
+        if (!plugin_name.empty() && session->spec.name != plugin_name) {
+            ++iterator;
+            continue;
+        }
+        if (!session->alive() || session->idle_expired(session->spec.idle_timeout_ms)) {
+            iterator = sessions_.erase(iterator);
+            ++pruned;
+        } else {
+            ++iterator;
+        }
+    }
+    return pruned;
+}
+
 std::vector<PluginSessionInfo> PluginHost::list_sessions() const {
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     std::vector<PluginSessionInfo> entries;
@@ -166,8 +213,10 @@ std::vector<PluginSessionInfo> PluginHost::list_sessions() const {
             session->last_used_at_wall.time_since_epoch()).count();
         info.idle_for_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now_steady - session->last_used_at).count());
+        info.idle_timeout_ms = session->spec.idle_timeout_ms;
         info.request_count = session->request_count;
         info.alive = session->alive();
+        info.idle_expired = info.alive && session->idle_expired(session->spec.idle_timeout_ms);
         entries.push_back(std::move(info));
     }
     return entries;
@@ -314,7 +363,7 @@ PluginRunResult PluginHost::run(const PluginRunRequest& request) const {
         auto request_result = session->request(request.arguments);
         request_result.lifecycle_event = plugin_result.lifecycle_event;
         if (!request_result.success && !request_result.timed_out) {
-            sessions_.erase(session_key);
+            session.reset();
             std::string restart_error;
             auto restarted_session = PersistentPluginSession::start(request.spec, request.workspace_path, restart_error);
             if (restarted_session && restarted_session->wait_until_started(request.spec.startup_timeout_ms)) {

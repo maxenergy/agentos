@@ -3,6 +3,7 @@
 #include "core/models.hpp"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 namespace agentos {
 
 class AgentLoop;
+class CancellationToken;
 
 struct ScheduledTask {
     std::string schedule_id;
@@ -66,7 +68,13 @@ public:
                                                        const std::string& timezone_name,
                                                        long long after_epoch_ms);
 
-    std::vector<SchedulerRunRecord> run_due(AgentLoop& loop, long long now_epoch_ms = NowEpochMs());
+    // `cancel` (if non-null) is checked before each scheduled-task dispatch
+    // and forwarded into `AgentLoop::run`, so a tripped token interrupts the
+    // current run and skips remaining due tasks for this tick.
+    std::vector<SchedulerRunRecord> run_due(
+        AgentLoop& loop,
+        long long now_epoch_ms = NowEpochMs(),
+        std::shared_ptr<CancellationToken> cancel = {});
     void compact_tasks() const;
     void compact_history() const;
 

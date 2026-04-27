@@ -12,9 +12,11 @@
 #include "skills/builtin/file_read_skill.hpp"
 #include "skills/builtin/file_write_skill.hpp"
 #include "skills/builtin/workflow_run_skill.hpp"
+#include "utils/cancellation.hpp"
 
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <ctime>
@@ -587,6 +589,34 @@ void TestSchedulerCronTimezoneAwareness(const std::filesystem::path& /*workspace
         "cron in UTC should fire at 09:30 UTC");
 }
 
+void TestSchedulerCronDstGapAndFold(const std::filesystem::path& /*workspace*/) {
+    // America/New_York enters DST on 2026-03-08 at 02:00 local time.
+    // A 02:30 local cron falls in the skipped wall-clock hour, so the
+    // scheduler should run it at the first valid instant after the gap:
+    // 2026-03-08 07:00 UTC (03:00 EDT).
+    constexpr long long kBeforeSpringForwardUtcMs = 1772928000000LL; // 2026-03-08 00:00 UTC
+    constexpr long long kFirstValidAfterGapUtcMs = 1772953200000LL;  // 2026-03-08 07:00 UTC
+    const auto spring_gap = agentos::Scheduler::NextCronRunEpochMs(
+        "30 2 * * *", "America/New_York", kBeforeSpringForwardUtcMs);
+    Expect(spring_gap.has_value() && *spring_gap == kFirstValidAfterGapUtcMs,
+        "New York spring-forward gap should schedule at the first valid instant after the gap");
+
+    // America/New_York leaves DST on 2026-11-01. The 01:30 wall-clock time
+    // exists twice; the scheduler should choose the first occurrence only.
+    constexpr long long kBeforeFallBackUtcMs = 1793491200000LL;     // 2026-11-01 00:00 UTC
+    constexpr long long kFirstFoldOccurrenceUtcMs = 1793511000000LL; // 2026-11-01 05:30 UTC
+    const auto first_fold = agentos::Scheduler::NextCronRunEpochMs(
+        "30 1 * * *", "America/New_York", kBeforeFallBackUtcMs);
+    Expect(first_fold.has_value() && *first_fold == kFirstFoldOccurrenceUtcMs,
+        "New York fall-back fold should schedule the first 01:30 occurrence");
+
+    constexpr long long kNextDayUtcMs = 1793601000000LL; // 2026-11-02 06:30 UTC
+    const auto after_first_fold = agentos::Scheduler::NextCronRunEpochMs(
+        "30 1 * * *", "America/New_York", kFirstFoldOccurrenceUtcMs);
+    Expect(after_first_fold.has_value() && *after_first_fold == kNextDayUtcMs,
+        "New York fall-back fold should not schedule the repeated 01:30 occurrence");
+}
+
 void TestSchedulerCronTimezoneRoundTrip(const std::filesystem::path& workspace) {
     const auto isolated_workspace = workspace / "scheduler_cron_tz_roundtrip";
     std::filesystem::remove_all(isolated_workspace);
@@ -622,6 +652,46 @@ void TestSchedulerCronTimezoneRoundTrip(const std::filesystem::path& workspace) 
     }
 }
 
+void TestSchedulerSkipsDispatchWhenCancelled(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "scheduler_cancelled";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    agentos::Scheduler scheduler(isolated_workspace / "scheduler" / "tasks.tsv");
+    // Two due tasks; both should be skipped under a pre-tripped cancel token.
+    for (const auto& id : {"cancel-a", "cancel-b"}) {
+        scheduler.save(agentos::ScheduledTask{
+            .schedule_id = id,
+            .enabled = true,
+            .next_run_epoch_ms = agentos::Scheduler::NowEpochMs() - 1000,
+            .max_runs = 1,
+            .task = agentos::TaskRequest{
+                .task_type = "write_file",
+                .objective = std::string("scheduled write under cancel: ") + id,
+                .workspace_path = isolated_workspace,
+                .inputs = {
+                    {"path", std::string("scheduler_cancelled/") + id + ".txt"},
+                    {"content", "should not appear"},
+                },
+            },
+        });
+    }
+
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+    cancel->cancel();
+
+    const auto records = scheduler.run_due(runtime.loop, agentos::Scheduler::NowEpochMs(), cancel);
+    Expect(records.empty(),
+        "pre-tripped cancel should produce zero scheduler run records (no task dispatched)");
+    Expect(!std::filesystem::exists(isolated_workspace / "scheduler_cancelled" / "cancel-a.txt"),
+        "first scheduled task must NOT execute when the token is pre-tripped");
+    Expect(!std::filesystem::exists(isolated_workspace / "scheduler_cancelled" / "cancel-b.txt"),
+        "second scheduled task must NOT execute when the token is pre-tripped");
+}
+
 }  // namespace
 
 int main() {
@@ -636,7 +706,9 @@ int main() {
     TestSchedulerNormalizesInvalidMissedRunPolicy(workspace);
     TestSchedulerCronExpressionSupport(workspace);
     TestSchedulerCronTimezoneAwareness(workspace);
+    TestSchedulerCronDstGapAndFold(workspace);
     TestSchedulerCronTimezoneRoundTrip(workspace);
+    TestSchedulerSkipsDispatchWhenCancelled(workspace);
 
     if (failures != 0) {
         std::cerr << failures << " scheduler test assertion(s) failed\n";

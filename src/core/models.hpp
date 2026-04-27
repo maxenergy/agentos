@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -10,6 +12,8 @@
 namespace agentos {
 
 using StringMap = std::unordered_map<std::string, std::string>;
+
+class CancellationToken;  // forward declaration; full definition in utils/cancellation.hpp
 
 struct SkillManifest {
     std::string name;
@@ -95,6 +99,23 @@ struct AgentArtifact {
     std::string uri;
     std::string content;
     std::string metadata_json;
+    // Phase 3 V2 additions — coexist with the legacy fields above; older
+    // adapters that fill type/uri/content/metadata_json keep working.
+    std::string mime;                        // explicit MIME, decoupled from `type`
+    std::vector<std::byte> inline_bytes;     // binary-safe payload (replaces stuffing bytes into `content`)
+    StringMap metadata;                      // typed key/value metadata (replaces metadata_json string)
+};
+
+// Phase 3 — usage actually measured by the upstream API/CLI, not estimated.
+// Wired into AgentResult.usage; orchestrator accumulates these to drive the
+// V2 admission-control budget gate.
+struct AgentUsage {
+    int input_tokens = 0;
+    int output_tokens = 0;
+    int reasoning_tokens = 0;
+    double cost_usd = 0.0;
+    int turns = 0;
+    StringMap per_model;
 };
 
 struct AgentResult {
@@ -106,6 +127,79 @@ struct AgentResult {
     double estimated_cost = 0.0;
     std::string error_code;
     std::string error_message;
+    // Phase 3 V2 additions.
+    AgentUsage usage;                         // fed by upstream Usage events; non-zero only on V2 path
+    std::optional<std::string> session_id;    // service-side session token returned for follow-up turns
+    bool from_stream_fallback = false;        // true if streaming failed and the orchestrator retried sync
+};
+
+// Phase 3 — explicit invocation context replaces the opaque AgentTask
+// context_json/constraints_json blobs and removes the need for the adapter
+// to maintain its own task_id -> cancel-state map.
+struct AgentInvocation {
+    std::string task_id;
+    std::string objective;
+    std::filesystem::path workspace_path;
+    StringMap context;                              // structured replacement for context_json
+    StringMap constraints;                          // structured replacement for constraints_json
+    std::optional<std::string> session_id;          // continue an existing kernel-issued session
+    std::optional<std::string> resume_session_id;   // upstream-side session id (e.g. `codex --resume <id>`)
+    std::vector<std::string> attachments;           // file paths the adapter may inline or upload
+    int timeout_ms = 0;
+    double budget_limit_usd = 0.0;
+    std::shared_ptr<CancellationToken> cancel;      // shared signal; replaces IAgentAdapter::cancel(task_id)
+};
+
+// Phase 3 — normalized event union the adapter emits during a streaming
+// invoke. Inspired by ductor's stream_events.py but tied into the AgentOS
+// kernel's policy/audit/budget hooks rather than just observability.
+struct AgentEvent {
+    enum class Kind {
+        SessionInit,       // upstream-side session started; fields: session_id, model, version
+        TextDelta,         // assistant text fragment; payload_text carries the chunk
+        Thinking,          // reasoning chunk (UI may collapse); payload_text carries the chunk
+        ToolUseStart,      // adapter wants to invoke a tool; fields: tool_name, args_json
+        ToolUseResult,     // tool returned; fields: tool_name, success, output_json
+        Status,            // human-readable progress; payload_text carries the message
+        CompactBoundary,   // upstream context was compacted; fields: trigger, pre_tokens, post_tokens
+        Usage,             // incremental usage delta; fields: input_tokens, output_tokens, cost_usd
+        Final,             // no more events follow; the AgentResult is also returned synchronously
+        Error,             // error mid-stream; fields: error_code, error_message
+    };
+    Kind kind = Kind::Status;
+    StringMap fields;        // simple typed fields; ADR-JSON-001 may upgrade to nlohmann::json later
+    std::string payload_text; // chunk body for TextDelta / Thinking / Status
+};
+
+// Returning `false` from the callback signals the orchestrator wants to cancel:
+// the adapter should call `invocation.cancel->cancel()` (or equivalent) and
+// return as quickly as possible. The orchestrator may also have already
+// triggered the cancel itself before the callback fires.
+using AgentEventCallback = std::function<bool(const AgentEvent&)>;
+
+// Phase 3 — V2 single-entry adapter interface. Coexists with the legacy
+// IAgentAdapter via dynamic_cast in SubagentManager during the staged
+// migration (Phase 4). When the callback is empty, adapters return a
+// synchronous AgentResult lump exactly like the legacy path; when present,
+// adapters emit AgentEvents in real time so the kernel can apply admission
+// control (budget, policy, audit) before each upstream tool call or token
+// charge.
+class IAgentAdapterV2 {
+public:
+    virtual ~IAgentAdapterV2() = default;
+    virtual AgentProfile profile() const = 0;
+    virtual bool healthy() const = 0;
+    virtual AgentResult invoke(
+        const AgentInvocation& invocation,
+        const AgentEventCallback& on_event = {}) = 0;
+    // Defaults: adapters that do not support persistent sessions get the
+    // empty implementation for free; SubagentManager treats nullopt as
+    // "session not supported, fall back to one-shot invoke()".
+    virtual std::optional<std::string> open_session(const StringMap& config) {
+        (void)config;
+        return std::nullopt;
+    }
+    virtual void close_session(const std::string& /*session_id*/) {}
 };
 
 class IAgentAdapter {
@@ -228,6 +322,13 @@ struct WorkflowCandidate {
     double success_rate = 0.0;
     double avg_duration_ms = 0.0;
     double score = 0.0;
+    // Maps "step1|step2|..." signature -> count of successful runs that
+    // produced exactly that step sequence. The Phase 2.2 promotion gate
+    // requires a single signature to recur (>= 3 occurrences AND >= 60%
+    // of all successful runs of this task_type) before the workflow is
+    // canonicalized; this map carries the evidence for that decision and
+    // is persisted in workflow_candidates.tsv schema v2.
+    std::unordered_map<std::string, int> step_signature_counts;
 };
 
 }  // namespace agentos

@@ -1,6 +1,6 @@
 #include "skills/builtin/http_fetch_skill.hpp"
 
-#include "utils/json_utils.hpp"
+#include <nlohmann/json.hpp>
 
 namespace agentos {
 
@@ -49,15 +49,15 @@ SkillResult HttpFetchSkill::execute(const SkillCall& call) {
         .workspace_path = call.workspace_id,
     });
 
+    nlohmann::json output_json;
+    output_json["url"] = *maybe_url;
+    output_json["body"] = result.stdout_text;
+    output_json["stderr"] = result.stderr_text;
+    output_json["exit_code"] = result.exit_code;
+    output_json["timed_out"] = result.timed_out;
     return {
         .success = result.success,
-        .json_output = MakeJsonObject({
-            {"url", QuoteJson(*maybe_url)},
-            {"body", QuoteJson(result.stdout_text)},
-            {"stderr", QuoteJson(result.stderr_text)},
-            {"exit_code", NumberAsJson(result.exit_code)},
-            {"timed_out", BoolAsJson(result.timed_out)},
-        }),
+        .json_output = output_json.dump(),
         .error_code = result.error_code,
         .error_message = result.error_message,
         .duration_ms = result.duration_ms,

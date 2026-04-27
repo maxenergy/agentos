@@ -1,6 +1,6 @@
 # AgentOS Roadmap
 
-Last synced: 2026-04-25
+Last synced: 2026-04-27
 
 This roadmap reflects the current codebase state. The detailed execution checklist lives in [`../plan.md`](../plan.md).
 
@@ -359,6 +359,33 @@ Remaining:
 
 ---
 
+## Phase 11: Resident Operation Modes
+
+Status: ✅ Implemented MVP
+
+Delivered:
+
+- Interactive REPL mode (`agentos interactive`) with command parsing (run/agents/skills/status/memory/schedule/help/exit)
+- HTTP API Server mode (`agentos serve [port=18080] [host=127.0.0.1]`) with REST JSON endpoints
+  - `GET /api/health`  — health check
+  - `GET /api/skills`  — list skills
+  - `GET /api/agents`  — list agents
+  - `GET /api/status`  — runtime status
+  - `POST /api/run`    — execute task
+  - `GET /api/schedule/list` — list scheduled tasks
+  - `GET /api/memory/stats`  — memory statistics
+- Default no-args behavior changed from demo to interactive REPL
+- cpp-httplib v0.18.3 dependency via CMake FetchContent
+- CORS support for local frontend development
+- Signal-based graceful shutdown for both modes
+
+Remaining:
+
+- WebSocket streaming for long-running tasks
+- Authentication/token-based access control for HTTP API
+
+---
+
 ## Current Priority
 
-Current state is a runnable local MVP, not a production-complete system. Follow "Current Highest-Priority Gaps" and "Post-Review Development Plan" in [`../plan.md`](../plan.md), especially auth hardening, plugin long-running lifecycle, stronger storage recovery, and richer agent orchestration.
+Current state is a runnable local MVP with resident operation modes (Interactive REPL and HTTP API server), not a production-complete system. Follow "Current Highest-Priority Gaps" and "Post-Review Development Plan" in [`../plan.md`](../plan.md), especially auth hardening, plugin long-running lifecycle, stronger storage recovery, and richer agent orchestration.

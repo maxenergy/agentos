@@ -1,5 +1,8 @@
 #include "cli/schedule_commands.hpp"
 
+#include "utils/cancellation.hpp"
+#include "utils/signal_cancellation.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <iostream>
@@ -338,23 +341,35 @@ bool RunSchedulerLoop(
     AgentLoop& loop,
     const std::string& label,
     const int iterations,
-    const int interval_ms) {
+    const int interval_ms,
+    const std::shared_ptr<CancellationToken>& cancel) {
     bool all_success = true;
     int iteration = 0;
     while (iterations == 0 || iteration < iterations) {
+        if (cancel && cancel->is_cancelled()) {
+            std::cout << label << " cancelled iteration=" << iteration << '\n';
+            break;
+        }
         ++iteration;
         const auto now = Scheduler::NowEpochMs();
         std::cout
             << label << " iteration=" << iteration
             << " now_epoch_ms=" << now
             << '\n';
-        all_success = PrintSchedulerRunRecords(scheduler.run_due(loop, now)) && all_success;
+        all_success = PrintSchedulerRunRecords(scheduler.run_due(loop, now, cancel)) && all_success;
 
         if (iterations != 0 && iteration >= iterations) {
             break;
         }
         if (interval_ms > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+            // wait_for_cancel returns true on cancel and false on timeout; in
+            // both cases we just continue the loop check, which exits cleanly
+            // on the next iteration when cancelled.
+            if (cancel) {
+                (void)cancel->wait_for_cancel(std::chrono::milliseconds(interval_ms));
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+            }
         }
     }
     return all_success;
@@ -474,7 +489,8 @@ int RunScheduleCommand(
             return 1;
         }
 
-        return RunSchedulerLoop(scheduler, loop, "tick", iterations, interval_ms) ? 0 : 1;
+        auto cancel = InstallSignalCancellation();
+        return RunSchedulerLoop(scheduler, loop, "tick", iterations, interval_ms, cancel) ? 0 : 1;
     }
 
     if (command == "daemon") {
@@ -490,7 +506,8 @@ int RunScheduleCommand(
             << " iterations=" << iterations
             << " interval_ms=" << interval_ms
             << '\n';
-        return RunSchedulerLoop(scheduler, loop, "daemon", iterations, interval_ms) ? 0 : 1;
+        auto cancel = InstallSignalCancellation();
+        return RunSchedulerLoop(scheduler, loop, "daemon", iterations, interval_ms, cancel) ? 0 : 1;
     }
 
     PrintScheduleUsage();

@@ -17,12 +17,19 @@
 #include "trust/identity_manager.hpp"
 #include "trust/pairing_manager.hpp"
 #include "trust/trust_policy.hpp"
-#include "utils/json_utils.hpp"
+#include "utils/cancellation.hpp"
+#include "utils/signal_cancellation.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
+#include <thread>
+#include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace {
 
@@ -33,6 +40,12 @@ void Expect(const bool condition, const std::string& message) {
         std::cerr << "FAIL: " << message << '\n';
         ++failures;
     }
+}
+
+std::string ContentJson(const std::string& content) {
+    nlohmann::ordered_json output;
+    output["content"] = content;
+    return output.dump();
 }
 
 std::filesystem::path FreshWorkspace() {
@@ -123,22 +136,26 @@ public:
     }
 
     agentos::AgentResult run_task(const agentos::AgentTask& task) override {
+        nlohmann::ordered_json structured_output;
+        structured_output["content"] = name_ + " handled " + task.objective;
+        structured_output["agent"] = name_;
+        structured_output["provider"] = "static_test";
+        structured_output["model"] = "static-model";
+        structured_output["task_type"] = task.task_type;
+
+        nlohmann::ordered_json artifact_metadata;
+        artifact_metadata["source"] = "static_test";
+
         return {
             .success = true,
             .summary = name_ + " handled " + task.objective,
-            .structured_output_json = agentos::MakeJsonObject({
-                {"content", agentos::QuoteJson(name_ + " handled " + task.objective)},
-                {"agent", agentos::QuoteJson(name_)},
-                {"provider", agentos::QuoteJson("static_test")},
-                {"model", agentos::QuoteJson("static-model")},
-                {"task_type", agentos::QuoteJson(task.task_type)},
-            }),
+            .structured_output_json = structured_output.dump(),
             .artifacts = {
                 agentos::AgentArtifact{
                     .type = "text",
                     .uri = "memory://" + task.task_id,
                     .content = name_ + " artifact",
-                    .metadata_json = agentos::MakeJsonObject({{"source", agentos::QuoteJson("static_test")}}),
+                    .metadata_json = artifact_metadata.dump(),
                 },
             },
             .duration_ms = 1,
@@ -293,7 +310,7 @@ void TestSubagentManagerSequentialRun(const std::filesystem::path& workspace) {
         "subagent normalized output should preserve provider-specific metadata");
     Expect(result.output_json.find(R"("artifacts":[{)") != std::string::npos,
         "subagent normalized output should preserve agent artifacts");
-    Expect(result.output_json.find(R"("metrics":{"duration_ms":1,"estimated_cost":0.00})") != std::string::npos,
+    Expect(result.output_json.find(R"("metrics":{"duration_ms":1,"estimated_cost":0.0})") != std::string::npos,
         "subagent normalized output should include duration and cost metrics");
     Expect(result.output_json.find(R"("tool_calls":[])") != std::string::npos,
         "subagent normalized output should include an explicit tool_calls array");
@@ -431,9 +448,7 @@ void TestSubagentManagerRejectsInvalidDecompositionOutput(const std::filesystem:
     runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
         "invalid_decomposer",
         true,
-        agentos::MakeJsonObject({
-            {"content", agentos::QuoteJson("missing plan actions")},
-        })));
+        ContentJson("missing plan actions")));
     agentos::SubagentManager manager(
         runtime.agent_registry,
         runtime.policy_engine,
@@ -460,6 +475,208 @@ void TestSubagentManagerRejectsInvalidDecompositionOutput(const std::filesystem:
     Expect(result.steps.empty(), "invalid decomposition output should fail before starting workers");
 }
 
+void TestSubagentManagerAutoDecomposeAcceptsRootPlanSteps(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_decompose_root_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("root_worker_a", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("root_worker_b", "review"));
+    runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
+        "root_decomposer",
+        true,
+        R"({"plan_steps":[{"action":"step1"},{"action":"step2"}]})"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-decompose-root",
+            .task_type = "analysis",
+            .objective = "coordinate strict root plan_steps",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"roles", "root_worker_a:planner,root_worker_b:critic"},
+                {"auto_decompose", "true"},
+                {"decomposition_agent", "root_decomposer"},
+            },
+        },
+        {"root_worker_a", "root_worker_b"},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(result.success, "strict root plan_steps should drive auto decomposition");
+    Expect(result.steps.size() == 2, "strict root plan_steps should inject two subtasks");
+    Expect(result.steps[0].summary.find("step1") != std::string::npos,
+        "first injected subtask should carry root plan_steps[0].action");
+    Expect(result.steps[1].summary.find("step2") != std::string::npos,
+        "second injected subtask should carry root plan_steps[1].action");
+}
+
+// Each of these proves the substring-search injection vector is closed: the
+// planner output contains the literal text "action" but never as a typed
+// plan_steps[*].action field.
+void TestSubagentManagerAutoDecomposeRejectsActionSubstringInjection(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_decompose_inject_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("inject_worker", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
+        "inject_decomposer",
+        true,
+        R"({"summary":"action: do evil"})"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-decompose-inject",
+            .task_type = "analysis",
+            .objective = "reject substring action injection",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"auto_decompose", "true"},
+                {"decomposition_agent", "inject_decomposer"},
+            },
+        },
+        {"inject_worker"},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(!result.success, "summary text containing 'action:' must not become a subtask");
+    Expect(result.error_code == "DecompositionOutputInvalid",
+        "substring injection attempts should surface as DecompositionOutputInvalid");
+    Expect(result.steps.empty(), "substring injection attempts should never start workers");
+}
+
+void TestSubagentManagerAutoDecomposeRejectsNonArrayPlanSteps(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_decompose_nonarray_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("nonarray_worker", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
+        "nonarray_decomposer",
+        true,
+        R"({"plan_steps":"not an array"})"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-decompose-nonarray",
+            .task_type = "analysis",
+            .objective = "reject non-array plan_steps",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"auto_decompose", "true"},
+                {"decomposition_agent", "nonarray_decomposer"},
+            },
+        },
+        {"nonarray_worker"},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(!result.success, "plan_steps must be an array");
+    Expect(result.error_code == "DecompositionOutputInvalid",
+        "non-array plan_steps should surface as DecompositionOutputInvalid");
+    Expect(result.steps.empty(), "non-array plan_steps should never start workers");
+}
+
+void TestSubagentManagerAutoDecomposeRejectsMissingActionField(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_decompose_missing_action_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("missing_action_worker", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
+        "missing_action_decomposer",
+        true,
+        R"({"plan_steps":[{"foo":"x"}]})"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-decompose-missing-action",
+            .task_type = "analysis",
+            .objective = "reject plan_steps without action",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"auto_decompose", "true"},
+                {"decomposition_agent", "missing_action_decomposer"},
+            },
+        },
+        {"missing_action_worker"},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(!result.success, "plan_steps elements must contain a string action");
+    Expect(result.error_code == "DecompositionOutputInvalid",
+        "missing action key should surface as DecompositionOutputInvalid");
+    Expect(result.steps.empty(), "missing action key should never start workers");
+}
+
+void TestSubagentManagerAutoDecomposeRejectsInvalidJson(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_decompose_invalid_json_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("invalid_json_worker", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
+        "invalid_json_decomposer",
+        true,
+        "this is not json {"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-decompose-invalid-json",
+            .task_type = "analysis",
+            .objective = "reject invalid planner json",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"auto_decompose", "true"},
+                {"decomposition_agent", "invalid_json_decomposer"},
+            },
+        },
+        {"invalid_json_worker"},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(!result.success, "planner output must be parseable JSON");
+    Expect(result.error_code == "DecompositionOutputInvalid",
+        "JSON parse errors should surface as DecompositionOutputInvalid");
+    Expect(result.steps.empty(), "JSON parse errors should never start workers");
+}
+
 void TestSubagentManagerPropagatesDecompositionFailure(const std::filesystem::path& workspace) {
     const auto isolated_workspace = workspace / "subagent_auto_decompose_failed_isolated";
     std::filesystem::remove_all(isolated_workspace);
@@ -471,7 +688,7 @@ void TestSubagentManagerPropagatesDecompositionFailure(const std::filesystem::pa
     runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
         "failed_decomposer",
         false,
-        agentos::MakeJsonObject({{"content", agentos::QuoteJson("failed")}})));
+        ContentJson("failed")));
     agentos::SubagentManager manager(
         runtime.agent_registry,
         runtime.policy_engine,
@@ -759,6 +976,366 @@ void TestWorkspaceSessionRejectsUnsupportedAgent(const std::filesystem::path& wo
     Expect(result.error_code == "WorkspaceSessionNotOpen", "unsupported workspace session run should return a clear error");
 }
 
+void TestLocalPlanningAgentV2Smoke(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "local_planner_v2_smoke_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::LocalPlanningAgent agent;
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+    std::vector<agentos::AgentEvent> events;
+    auto on_event = [&](const agentos::AgentEvent& event) {
+        events.push_back(event);
+        return true;
+    };
+
+    const agentos::AgentInvocation invocation{
+        .task_id = "v2-smoke",
+        .objective = "exercise the V2 invoke path",
+        .workspace_path = isolated_workspace,
+        .context = {{"task_type", "analysis"}},
+        .cancel = cancel,
+    };
+
+    const auto result = agent.invoke(invocation, on_event);
+
+    Expect(result.success, "V2 invoke should succeed for an offline planner");
+    Expect(!result.summary.empty(), "V2 invoke should return a non-empty summary");
+    Expect(result.usage.cost_usd == 0.0, "local planner V2 invoke should report zero cost");
+
+    bool saw_status = false;
+    bool saw_usage = false;
+    bool saw_final = false;
+    for (const auto& event : events) {
+        if (event.kind == agentos::AgentEvent::Kind::Status) {
+            saw_status = true;
+        } else if (event.kind == agentos::AgentEvent::Kind::Usage) {
+            saw_usage = true;
+        } else if (event.kind == agentos::AgentEvent::Kind::Final) {
+            saw_final = true;
+        }
+    }
+    Expect(saw_status, "V2 invoke should emit at least one Status event");
+    Expect(saw_usage, "V2 invoke should emit a Usage event");
+    Expect(saw_final, "V2 invoke should emit a Final event before returning");
+}
+
+void TestLocalPlanningAgentV2Cancels(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "local_planner_v2_cancel_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::LocalPlanningAgent agent;
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+    // Pre-cancel: the deterministic offline planner finishes too fast for a
+    // racing thread to win reliably, so we assert the cancel-before-invoke
+    // path returns the documented "Cancelled" code.
+    cancel->cancel();
+
+    const agentos::AgentInvocation invocation{
+        .task_id = "v2-cancel",
+        .objective = "ensure cancellation is honored",
+        .workspace_path = isolated_workspace,
+        .context = {{"task_type", "analysis"}},
+        .cancel = cancel,
+    };
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = agent.invoke(invocation);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+
+    Expect(!result.success, "cancelled V2 invoke should not report success");
+    Expect(result.error_code == "Cancelled", "cancelled V2 invoke should set the documented Cancelled error code");
+    Expect(elapsed.count() < 1000, "cancelled V2 invoke should return promptly");
+}
+
+// V2-aware fake adapter: implements both interfaces so we can prove that
+// SubagentManager::run_one prefers invoke() over run_task() when both are
+// available, and that AgentUsage.cost_usd flows through to step cost.
+class V2DualPathAgent final : public agentos::IAgentAdapter, public agentos::IAgentAdapterV2 {
+public:
+    V2DualPathAgent(std::string name, std::string capability)
+        : name_(std::move(name)), capability_(std::move(capability)) {}
+
+    agentos::AgentProfile profile() const override {
+        return {
+            .agent_name = name_,
+            .version = "test",
+            .description = "V2-aware dual-path test agent",
+            .capabilities = {{capability_, 100}},
+            .supports_session = false,
+            .supports_streaming = true,
+            .supports_patch = false,
+            .supports_subagents = false,
+            .supports_network = false,
+            .cost_tier = "free",
+            .latency_tier = "low",
+            .risk_level = "low",
+        };
+    }
+    bool healthy() const override { return true; }
+    std::string start_session(const std::string&) override { return ""; }
+    void close_session(const std::string&) override {}
+
+    agentos::AgentResult run_task(const agentos::AgentTask& task) override {
+        legacy_calls_ += 1;
+        return {
+            .success = true,
+            .summary = "legacy " + task.objective,
+            .duration_ms = 1,
+            .estimated_cost = 0.99,
+        };
+    }
+    agentos::AgentResult run_task_in_session(const std::string&, const agentos::AgentTask& task) override {
+        return run_task(task);
+    }
+    bool cancel(const std::string&) override { return false; }
+
+    agentos::AgentResult invoke(const agentos::AgentInvocation& invocation,
+                                const agentos::AgentEventCallback& /*on_event*/) override {
+        v2_calls_ += 1;
+        last_context_ = invocation.context;
+        agentos::AgentResult result;
+        result.success = true;
+        result.summary = "v2 " + invocation.objective;
+        result.duration_ms = 2;
+        // V2 path reports measured usage; orchestrator should prefer this over
+        // legacy estimated_cost (0.99 vs 0.42).
+        result.usage.cost_usd = 0.42;
+        result.usage.turns = 1;
+        return result;
+    }
+
+    int legacy_calls() const { return legacy_calls_; }
+    int v2_calls() const { return v2_calls_; }
+    const agentos::StringMap& last_context() const { return last_context_; }
+
+private:
+    std::string name_;
+    std::string capability_;
+    int legacy_calls_ = 0;
+    int v2_calls_ = 0;
+    agentos::StringMap last_context_;
+};
+
+void TestSubagentManagerPrefersV2InvokeWhenAvailable(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_v2_routing";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    auto v2_agent = std::make_shared<V2DualPathAgent>("agent_v2", "analysis");
+    runtime.agent_registry.register_agent(v2_agent);
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-v2-routing",
+            .task_type = "analysis",
+            .objective = "exercise V2 routing",
+            .workspace_path = isolated_workspace,
+        },
+        {"agent_v2"},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(result.success, "V2-routed subagent run should succeed");
+    Expect(v2_agent->v2_calls() == 1,
+        "SubagentManager should call invoke() exactly once on a V2-capable adapter");
+    Expect(v2_agent->legacy_calls() == 0,
+        "SubagentManager should NOT fall back to run_task() when invoke() succeeds");
+    Expect(result.steps.size() == 1, "V2-routed run should record one step");
+    if (result.steps.size() == 1) {
+        const auto& step = result.steps[0];
+        Expect(step.summary.find("v2 ") != std::string::npos,
+            "step summary should reflect the V2 invoke() output, not the legacy run_task()");
+        // 0.42 (V2 usage.cost_usd) wins over 0.99 (legacy estimated_cost).
+        Expect(step.estimated_cost > 0.41 && step.estimated_cost < 0.43,
+            "step.estimated_cost should be sourced from AgentResult.usage.cost_usd on the V2 path");
+    }
+    // Spot-check that structured invocation context made it through the
+    // TaskRequest -> AgentInvocation translation in run_one.
+    const auto& ctx = v2_agent->last_context();
+    Expect(ctx.count("task_type") == 1 && ctx.at("task_type") == "analysis",
+        "V2 invocation context should carry the original task_type");
+    Expect(ctx.count("role") == 1 && !ctx.at("role").empty(),
+        "V2 invocation context should carry the assigned role");
+    Expect(ctx.count("parent_task_id") == 1 && ctx.at("parent_task_id") == "subagent-v2-routing",
+        "V2 invocation context should carry the parent task_id");
+}
+
+void TestSubagentManagerCancellationShortCircuitsSequential(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_cancel_sequential";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    auto agent_a = std::make_shared<V2DualPathAgent>("agent_seq_a", "analysis");
+    auto agent_b = std::make_shared<V2DualPathAgent>("agent_seq_b", "analysis");
+    runtime.agent_registry.register_agent(agent_a);
+    runtime.agent_registry.register_agent(agent_b);
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+    cancel->cancel();
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-cancel-seq",
+            .task_type = "analysis",
+            .objective = "should not dispatch any agent",
+            .workspace_path = isolated_workspace,
+        },
+        {"agent_seq_a", "agent_seq_b"},
+        agentos::SubagentExecutionMode::sequential,
+        cancel);
+
+    Expect(!result.success, "pre-tripped cancel should fail the sequential subagent run");
+    Expect(result.steps.size() == 2,
+        "sequential cancel should still record one step per requested agent");
+    for (const auto& step : result.steps) {
+        Expect(step.error_code == "Cancelled",
+            "every sequential step under a tripped cancel should report Cancelled");
+        Expect(!step.success, "Cancelled steps must not be marked successful");
+    }
+    Expect(agent_a->v2_calls() == 0 && agent_a->legacy_calls() == 0,
+        "first sequential agent should never have been dispatched under a tripped cancel");
+    Expect(agent_b->v2_calls() == 0 && agent_b->legacy_calls() == 0,
+        "second sequential agent should never have been dispatched under a tripped cancel");
+}
+
+void TestSubagentManagerCancellationShortCircuitsParallel(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_cancel_parallel";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    auto agent_a = std::make_shared<V2DualPathAgent>("agent_par_a", "analysis");
+    auto agent_b = std::make_shared<V2DualPathAgent>("agent_par_b", "analysis");
+    runtime.agent_registry.register_agent(agent_a);
+    runtime.agent_registry.register_agent(agent_b);
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+    cancel->cancel();
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-cancel-par",
+            .task_type = "analysis",
+            .objective = "should cancel both parallel branches",
+            .workspace_path = isolated_workspace,
+        },
+        {"agent_par_a", "agent_par_b"},
+        agentos::SubagentExecutionMode::parallel,
+        cancel);
+
+    Expect(!result.success, "pre-tripped cancel should fail the parallel subagent run");
+    Expect(result.steps.size() == 2,
+        "parallel cancel should still produce one step per requested agent");
+    for (const auto& step : result.steps) {
+        Expect(step.error_code == "Cancelled",
+            "every parallel step under a tripped cancel should report Cancelled");
+    }
+    // Pre-tripped tokens hit the run_one prologue check before the V2 invoke
+    // dispatch, so neither path on either adapter should have been called.
+    Expect(agent_a->v2_calls() == 0 && agent_a->legacy_calls() == 0,
+        "parallel agent_a should not have been dispatched under a pre-tripped cancel");
+    Expect(agent_b->v2_calls() == 0 && agent_b->legacy_calls() == 0,
+        "parallel agent_b should not have been dispatched under a pre-tripped cancel");
+}
+
+void TestAgentLoopRoutesThroughV2InvokeAndForwardsUsageCost(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "agent_loop_v2_routing";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    auto agent = std::make_shared<V2DualPathAgent>("loop_agent_v2", "analysis");
+    runtime.agent_registry.register_agent(agent);
+
+    const auto result = runtime.loop.run(agentos::TaskRequest{
+        .task_id = "agent-loop-v2-routing",
+        .task_type = "analysis",
+        .objective = "exercise V2 routing through AgentLoop",
+        .workspace_path = isolated_workspace,
+    });
+
+    Expect(result.success, "AgentLoop V2 routing should succeed");
+    Expect(agent->v2_calls() == 1,
+        "AgentLoop should call invoke() exactly once on a V2-capable agent");
+    Expect(agent->legacy_calls() == 0,
+        "AgentLoop should NOT fall back to run_task() when invoke() succeeds");
+    Expect(result.steps.size() == 1, "AgentLoop V2 routing should record one step");
+    if (result.steps.size() == 1) {
+        Expect(result.steps[0].summary.find("v2 ") != std::string::npos,
+            "AgentLoop step summary should reflect the V2 invoke() output");
+        Expect(result.steps[0].estimated_cost > 0.41 && result.steps[0].estimated_cost < 0.43,
+            "AgentLoop step.estimated_cost should source from AgentResult.usage.cost_usd on the V2 path");
+    }
+}
+
+void TestAgentLoopHonorsCancellationBeforeAgentDispatch(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "agent_loop_cancel_dispatch";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    auto agent = std::make_shared<V2DualPathAgent>("loop_agent_cancel", "analysis");
+    runtime.agent_registry.register_agent(agent);
+
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+    cancel->cancel();
+
+    const auto result = runtime.loop.run(
+        agentos::TaskRequest{
+            .task_id = "agent-loop-cancel",
+            .task_type = "analysis",
+            .objective = "should not dispatch under tripped cancel",
+            .workspace_path = isolated_workspace,
+        },
+        cancel);
+
+    Expect(!result.success, "AgentLoop should fail when the cancel token is pre-tripped");
+    Expect(result.error_code == "Cancelled",
+        "AgentLoop should set error_code=Cancelled for pre-tripped cancellations");
+    // Pre-routing cancel returns before dispatch; agent should not have been
+    // called by either entry point.
+    Expect(agent->v2_calls() == 0,
+        "AgentLoop pre-tripped cancel should not invoke V2 path");
+    Expect(agent->legacy_calls() == 0,
+        "AgentLoop pre-tripped cancel should not invoke legacy path");
+}
+
+void TestSignalCancellationIsIdempotent() {
+    auto first = agentos::InstallSignalCancellation();
+    auto second = agentos::InstallSignalCancellation();
+    Expect(first.get() == second.get(),
+        "InstallSignalCancellation should be idempotent — same token across calls");
+    Expect(first != nullptr,
+        "InstallSignalCancellation should always return a non-null token");
+    // The token is global state shared across the whole process. We cannot
+    // safely cancel() it here — that would poison every subsequent test in
+    // this binary. Just assert observability.
+    Expect(!first->is_cancelled(),
+        "freshly installed signal cancellation token should not be cancelled");
+}
+
 }  // namespace
 
 int main() {
@@ -769,6 +1346,11 @@ int main() {
     TestSubagentManagerUsesSubtaskObjectives(workspace);
     TestSubagentManagerAutoDecomposesWithPlanner(workspace);
     TestSubagentManagerRejectsInvalidDecompositionOutput(workspace);
+    TestSubagentManagerAutoDecomposeAcceptsRootPlanSteps(workspace);
+    TestSubagentManagerAutoDecomposeRejectsActionSubstringInjection(workspace);
+    TestSubagentManagerAutoDecomposeRejectsNonArrayPlanSteps(workspace);
+    TestSubagentManagerAutoDecomposeRejectsMissingActionField(workspace);
+    TestSubagentManagerAutoDecomposeRejectsInvalidJson(workspace);
     TestSubagentManagerPropagatesDecompositionFailure(workspace);
     TestSubagentManagerParallelRun(workspace);
     TestSubagentManagerParallelConcurrencyLimit(workspace);
@@ -778,6 +1360,14 @@ int main() {
     TestSubagentManagerPolicyDeniesRemoteWithoutPairing(workspace);
     TestWorkspaceSessionRunsAgentInSession(workspace);
     TestWorkspaceSessionRejectsUnsupportedAgent(workspace);
+    TestLocalPlanningAgentV2Smoke(workspace);
+    TestLocalPlanningAgentV2Cancels(workspace);
+    TestSubagentManagerPrefersV2InvokeWhenAvailable(workspace);
+    TestSubagentManagerCancellationShortCircuitsSequential(workspace);
+    TestSubagentManagerCancellationShortCircuitsParallel(workspace);
+    TestAgentLoopRoutesThroughV2InvokeAndForwardsUsageCost(workspace);
+    TestAgentLoopHonorsCancellationBeforeAgentDispatch(workspace);
+    TestSignalCancellationIsIdempotent();
 
     if (failures != 0) {
         std::cerr << failures << " subagent/session test assertion(s) failed\n";

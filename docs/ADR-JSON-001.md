@@ -1,12 +1,12 @@
 # ADR-JSON-001: Structured JSON Library Adoption
 
-- **Status**: Proposed
-- **Date**: 2026-04-26
+- **Status**: Accepted (Phase 1 partial — see §9)
+- **Date**: 2026-04-26 (proposed); 2026-04-27 (accepted with Phase 1 progress)
 - **Owners**: AgentOS core / runtime
-- **Related**: `completion_review.md` §6 ⚠️ (structured JSON dependency still
-  unintegrated), `docs/CODING_GUIDE.md` §1.3 (recommends `nlohmann/json`),
-  `CLAUDE.md` (no SQLite without explicit decision — same posture for any
-  third-party dependency).
+- **Related**: `completion_review.md` §6 (structured JSON dependency phase 1
+  landed; phases 2-N still open), `docs/CODING_GUIDE.md` §1.3 (recommends
+  `nlohmann/json`), `CLAUDE.md` (no SQLite without explicit decision — same
+  posture for any third-party dependency).
 
 ---
 
@@ -345,6 +345,230 @@ will be implemented.
   blocker.
 - **Boost.JSON**: introduces a Boost surface we have no other reason to take
   on, and still leaves validation unsolved.
+
+---
+
+## 9. Implementation Progress (added 2026-04-27)
+
+This ADR was promoted from Proposed to Accepted after Phase 1 landed. The
+actual implementation diverges from the migration plan in §6 in two ways: the
+dependency is fetched via `FetchContent` rather than vendored, and the first
+migration targets were chosen by call-site risk (substring-match auth probes,
+per-step plan extraction in subagent orchestration, V2 streaming adapters)
+rather than by Plugin Host first.
+
+### 9.1 What landed (Phase 1)
+
+| Subsystem | File | What changed |
+| --- | --- | --- |
+| Build system | `CMakeLists.txt` | `FetchContent_Declare(nlohmann_json URL .../v3.11.3.tar.gz)` + `target_link_libraries(agentos_core PUBLIC nlohmann_json::nlohmann_json)`. No vendoring. |
+| Retired build helpers | `src/utils/json_utils.{hpp,cpp}` | The temporary compatibility helpers were removed from the build after all production and test call sites moved to `nlohmann::json` / `nlohmann::ordered_json`. The fixed `setprecision(2)` truncation bug from §1.2 is gone with the helper module. |
+| Subagent orchestration | `src/core/orchestration/subagent_manager.cpp` | `ExtractPlanActions` parses `plan_steps` as `nlohmann::json`. Substring-style action injection no longer accepted; `plan_steps[].action` must be a string field on an object. The aggregate orchestration output (`agents`, `roles`, counts, `estimated_cost`, `agent_outputs[]`, optional `decomposition_agent`) plus decomposition/per-agent context JSON now uses `nlohmann::ordered_json`, removing the manager's dependency on `utils/json_utils.hpp`. |
+| Auth provider probes | `src/auth/provider_adapters.cpp` | CLI probe stdout is now parsed (`nlohmann::json::parse`) inside a `try/catch (const nlohmann::json::exception&)` instead of `find("\"loggedIn\": true")`. Whitespace/key-order brittleness from §1.2 retired. |
+| V2 streaming adapters | `src/hosts/agents/{anthropic,codex_cli,gemini,qwen}_agent.cpp` | SSE/NDJSON event parsing and request-body construction use `nlohmann::json`. Each adapter no longer hand-builds JSON strings for its own streaming protocol. |
+| Gemini provider adapter | `src/hosts/agents/gemini_agent.cpp` | Legacy REST / CLI-session output envelopes and the Gemini `generateContent` request body now use `nlohmann::ordered_json`; REST response text extraction parses the response with `nlohmann::json` instead of scanning for `"text"`. This removes `utils/json_utils.hpp` from the Gemini adapter. |
+| Anthropic provider adapter | `src/hosts/agents/anthropic_agent.cpp` | Legacy REST / Claude CLI / streaming output envelopes and the Messages request body now use `nlohmann::ordered_json`; REST response text extraction parses `content[].text` with `nlohmann::json`. This removes `utils/json_utils.hpp` from the Anthropic adapter. |
+| Codex CLI provider adapter | `src/hosts/agents/codex_cli_agent.cpp` | Legacy CLI and V2 NDJSON streaming output envelopes plus artifact metadata now use `nlohmann::ordered_json`. This removes `utils/json_utils.hpp` from the Codex CLI adapter. |
+| Qwen provider adapter | `src/hosts/agents/qwen_agent.cpp` | Legacy REST / V2 streaming output envelopes, Chat Completions request bodies, REST response content extraction, and V2 constraint projection now use `nlohmann::ordered_json` / `nlohmann::json`. This removes `utils/json_utils.hpp` from the Qwen adapter. |
+| `workflow_run` skill | `src/skills/builtin/workflow_run_skill.cpp` | Built-in `write_patch_read` and stored-workflow paths now build the result object via `nlohmann::json` and embed each step's `json_output` as a parsed sub-object via `EmbedStepOutput()`. Closes the double-escaping bug from §1.2 — `final_output` is now `{"path":...,"content":...}` instead of `"{\"path\":...,\"content\":...}"`. Falls back to a JSON string when the child output does not parse, preserving backwards compatibility. |
+| Builtin file skills | `src/skills/builtin/{file_read,file_write,file_patch,http_fetch}_skill.cpp` | All four MakeJsonObject + QuoteJson result construction paths replaced with `nlohmann::json` builders. `json_output` is now `dump()`'d so escaping happens once, deterministically. |
+| CLI skill invoker | `src/hosts/cli/cli_skill_invoker.cpp` | The shared `{command, exit_code, timed_out, stdout, stderr}` result for every CLI skill now goes through `nlohmann::json`. Affects `rg_search`, `git_status`, `git_diff`, `curl_fetch`, `jq_transform`, and every external CLI spec loaded from `runtime/cli_specs/*.tsv`. |
+| Local planning agent | `src/hosts/agents/local_planning_agent.cpp` | The structured plan output (`content`, `agent`, `provider`, `task_type`, `objective`, `plan_steps[]`) is built as a `nlohmann::json` value before normalization. Aligns the local planner with the four V2 streaming adapters which already built request/event JSON via nlohmann. |
+| Agent loop | `src/core/loop/agent_loop.cpp` | Legacy `AgentTask.context_json` and `constraints_json` construction now uses `nlohmann::ordered_json`, removing the core loop's dependency on `utils/json_utils.hpp` while preserving compact JSON passed to legacy adapters. |
+| Agent result normalizer | `src/core/orchestration/agent_result_normalizer.cpp` | `agent_result.v1` envelopes now parse provider output once and build the normalized `summary` / `content` / `model` / `artifacts` / `metrics` / `provider_metadata` / `raw_output` shape through `nlohmann::ordered_json`. Malformed provider output is embedded as a JSON string instead of being treated as object-shaped text. |
+| Audit logger | `src/core/audit/audit_logger.cpp` | All seven `record_*` emission sites and all four compaction-recovery emission sites (task_start/route/step/task_end + scheduler_run rebuild) now build `nlohmann::ordered_json` and `dump()` it. Insertion-order preservation keeps the on-disk JSONL byte-identical to the previous `MakeJsonObject` output. |
+| Diagnostics CLI | `src/cli/diagnostics_commands.cpp` | The `agentos diagnostics format=json` snapshot now builds a typed `nlohmann::ordered_json` object, including nested provider/agent arrays, instead of assembling the response through `MakeJsonObject` / `QuoteJson`. Text output remains unchanged. |
+| OAuth token-exchange parsing | `src/auth/oauth_pkce.cpp` | `JsonStringField` and `JsonIntField` (used by `ParseOAuthTokenResponse` to extract `access_token`, `refresh_token`, `token_type`, `expires_in`, `error`, `error_description`) now go through `nlohmann::json::parse`. The legacy `SkipWhitespace`/`ParseJsonStringAt`/`FindTopLevelJsonValue` helpers were deleted after the typed parser landed. Whitespace, key order, unicode escapes, and nested objects in token responses now round-trip correctly. |
+| CLI spec loader | `src/hosts/cli/cli_spec_loader.cpp` | `IsLikelyJsonObjectString` (bracket-shape check) replaced with `IsParseableJsonObject` (`nlohmann::json::parse` + `is_object()`). Manifest schema columns 9/10 now fail at load time on malformations the legacy check would have accepted (unterminated strings, mismatched braces inside content, invalid escape sequences). |
+| Plugin manifest loader | `src/hosts/plugin/plugin_manifest_loader.cpp` | TSV schema columns use parse-time validation, and `*.json` plugin manifests are now parsed through `nlohmann::ordered_json` for all manifest fields. Object-valued `input_schema_json` / `output_schema_json` are preserved via `dump()`. Strict JSON parsing means non-standard trailing commas are rejected. |
+| Shared schema companion | `src/core/schema/schema_validator.{hpp,cpp}` | The shared schema module now exposes `IsParseableJsonObjectSchema()`, and both CLI spec loading and plugin manifest loading use it for `input_schema_json` / `output_schema_json` parse-time object validation instead of carrying duplicate local helpers. It also owns runtime `required`, `properties.*.type`, `properties.*` string/numeric/array item-count and item value constraint, object-shape (`minProperties`, `maxProperties`, `propertyNames`), `additionalProperties:false`, `dependentRequired`, legacy array-valued `dependencies`, object-level `not.required`, basic `if` / `then` / `else`, and `allOf` / `anyOf` / `oneOf` required-branch checks for JSON-object output validation through the `JsonObject*ValidationError()` helpers. |
+| Plugin JSON-RPC helpers | `src/hosts/plugin/plugin_json_rpc.cpp` | `JsonRpcRequestForPlugin()` constructs the JSON-RPC 2.0 request envelope and `params` object through `nlohmann::ordered_json` instead of `MakeJsonObject` / `QuoteJson`. `JsonRpcOutputError()` and `JsonRpcResultObject()` now parse responses through `nlohmann::ordered_json`, preserving the same public error messages while removing the helper-parser dependency from the JSON-RPC path. |
+| Plugin output schema validator | `src/hosts/plugin/plugin_schema_validator.cpp` | `PluginOutputSchemaError()` delegates the existing supported keyword subset (`required`, `properties.*.type`, string constraints, array `minItems` / `maxItems` / `uniqueItems` / `prefixItems` / `contains` / `minContains` / `maxContains` / `items.type` / `items.const` / `items.enum` / `items.minLength` / `items.maxLength` / `items.pattern` / numeric `items` bounds / `items.multipleOf` / object-item required/property/property-name/dependency/not-required/shape constraints, numeric bounds / `multipleOf`, object/property constraints, dependencies, conditionals, and allOf/anyOf/oneOf) to shared `core/schema` helpers instead of carrying plugin-local schema parsing. |
+| Plugin skill invoker | `src/hosts/plugin/plugin_skill_invoker.cpp` | The `{plugin, manifest_version, protocol, lifecycle_mode, lifecycle_event, plugin_output}` skill result envelope now uses `nlohmann::ordered_json`. `json-rpc-v0` skill output embeds the already-validated `JsonRpcResultObject()` instead of re-scanning stdout for a `"result"` substring and brace-counting by hand. |
+
+### 9.2 Divergences from §6 migration plan
+
+- **Phase 0 (vendor `third_party/nlohmann/json.hpp`)**: replaced with
+  `FetchContent`. Reason: the v3.11.3 release is small, CMake handles the
+  download once on first configure, and we keep a single source of truth for
+  the version (`URL` line in `CMakeLists.txt`). Cost: first-time configure on
+  an offline machine fails; the project-wide CI (Windows + Ubuntu) caches the
+  tarball.
+- **Phase 1 ordering**: §6 picks Plugin Host first as the highest-value
+  carrier. The actual Phase 1 picked subagent_manager + provider_adapters +
+  V2 adapters because those were active call sites whose substring/string-
+  concat behavior was already manifesting in real bugs (§1.2). The Plugin
+  Host schema validator landed later as a Phase 2 slice.
+
+### 9.3 What is still hand-rolled (Phase 2-N open)
+
+- ~~`src/utils/json_utils.{hpp,cpp}`~~ retired. No `.cpp` files include
+  `utils/json_utils.hpp`; no `MakeJsonObject` / `QuoteJson` / `BoolAsJson` /
+  `NumberAsJson` call sites remain under `src/` or `tests/`.
+- ~~`src/core/audit/audit_logger.cpp`~~ migrated to `nlohmann::ordered_json`.
+- ~~`src/cli/diagnostics_commands.cpp`~~ migrated to `nlohmann::ordered_json`.
+- ~~`src/core/orchestration/agent_result_normalizer.cpp`~~ migrated to
+  `nlohmann::ordered_json`.
+- ~~`src/core/loop/agent_loop.cpp`~~ migrated to `nlohmann::ordered_json`
+  for legacy agent context/constraint JSON.
+- ~~`src/core/orchestration/subagent_manager.cpp`~~ migrated to
+  `nlohmann::ordered_json` for aggregate orchestration output and legacy
+  agent context JSON.
+- ~~`src/hosts/plugin/plugin_schema_validator.cpp`~~ migrated to
+  `nlohmann::ordered_json` while preserving the existing keyword subset and
+  error strings.
+- `src/core/schema/` — shared parse-time object-schema validation has started
+  through `IsParseableJsonObjectSchema()`, and runtime JSON-object `required`
+  / `properties.*.type` / `properties.*` string and numeric constraint /
+  object-shape / `additionalProperties:false` / dependency / conditional /
+  branch-combinator validation has started through
+  `JsonObjectRequiredFieldValidationError()`,
+  `JsonObjectPropertyTypeValidationError()`,
+  `JsonObjectStringConstraintValidationError()`,
+  `JsonObjectNumericConstraintValidationError()`,
+  `JsonObjectShapeConstraintValidationError()`, and
+  `JsonObjectAdditionalPropertiesValidationError()`,
+  `JsonObjectDependentRequiredValidationError()`,
+  `JsonObjectNotRequiredValidationError()`, and
+  `JsonObjectIfThenElseRequiredValidationError()`, and
+  `JsonObjectRequiredBranchValidationError()`. Skill input schema validation
+  has started moving onto typed parsing for top-level `required`, `propertyNames`,
+  `minProperties`, `maxProperties`, `dependentRequired`, and legacy array-valued
+  `dependencies`, object-level `not.required`, basic `if` / `then` / `else`,
+  `allOf` / `anyOf` / `oneOf` required-branch checks, and
+  `additionalProperties:false`, plus `properties.*.type` and `properties.*`
+  string constraints (`const`, `enum`, `minLength`, `maxLength`, `pattern`) and
+  numeric constraints (`minimum`, `maximum`, `exclusiveMinimum`,
+  `exclusiveMaximum`, `multipleOf`). `ValidateRequiredInputFields()` now parses
+  `input_schema_json` once and passes the typed object through the input helper
+  chain. The public `JsonObject*ValidationError()` helpers now share the same
+  `ParseJsonObject()` / `ParseJsonObjectPair()` guards and
+  `JsonObjectValidationErrorForParsedPair()` delegate wrapper for
+  schema/object parsing instead of carrying per-helper parse/exception
+  boilerplate. `JsonObjectSchemaValidationError()` now routes through the same
+  parsed-pair delegate wrapper via `JsonObjectSchemaValidationErrorForParsed()`,
+  and post-type keyword checks flow through
+  `JsonObjectSchemaConstraintValidationErrorForParsed()` so the output path has
+  a single constraint-ordering collector. Output parsed-validator chains now
+  share `FirstJsonObjectParsedValidationError()` for stable first-error
+  ordering across required, type, and post-type constraint groups.
+  JSON-object output constraint helpers share
+  `JsonObjectFieldConstraintError()` for the
+  stable `<subject> field has invalid constraint: <field>:<constraint>`
+  formatter and `JsonObjectFailedConstraintError()` for the stable
+  `<subject> failed <constraint>` formatter. Output `required` and
+  `properties.*.type` failures share `JsonObjectRequiredFieldError()` and
+  `JsonObjectFieldTypeError()` formatters. Skill input constraint failures now
+  share `JsonObjectInputFieldConstraintFailure()`,
+  `JsonObjectInputSchemaConstraintFailure()`, and
+  `JsonObjectInputSchemaFieldConstraintFailure()` formatters for stable
+  `field:*` and `schema:*` tokens, and `CollectJsonObjectInputFailures()` /
+  `FirstJsonObjectValidationError()` now adapt shared visitors for all-input
+  failure collection vs first-output-error returns in dependency,
+  `additionalProperties:false`, `not.required`, property-count,
+  conditional-required, and branch-combinator checks.
+  `CollectJsonObjectInputPropertyConstraintFailures()` and
+  `FirstJsonObjectPropertyConstraintError()` now adapt present property-value
+  visitors for string/numeric input collection vs output first-error formatting.
+  String and numeric property constraint wrappers now also route through
+  named input collection and output first-error adapters:
+  `CollectJsonObjectInputStringConstraintFailures()`,
+  `CollectJsonObjectInputNumericConstraintFailures()`,
+  `FirstJsonObjectStringConstraintError()`, and
+  `FirstJsonObjectNumericConstraintError()`.
+  Top-level required-field, property-type mismatch, and `propertyNames`
+  wrappers also use the shared input-collection / output-first-error adapter
+  path: required-field input collection now goes through
+  `CollectJsonObjectInputRequiredFieldFailures()` via
+  `JsonObjectInputRequiredFieldFailures()`, output required/type checks go
+  through `FirstJsonObjectRequiredFieldError()` and
+  `FirstJsonObjectPropertyTypeError()`, property-type input collection goes
+  through `CollectJsonObjectInputPropertyTypeFailures()`, and `propertyNames`
+  field-list traversal shares `CollectJsonObjectInputPropertyNameConstraintFailures()` and
+  `FirstJsonObjectPropertyNameConstraintError()`. Object property-count
+  checks share `CollectJsonObjectInputPropertyCountFailures()` and
+  `FirstJsonObjectPropertyCountError()` adapters. Dependency checks share
+  `CollectJsonObjectInputDependentRequiredFailures()` and
+  `FirstJsonObjectDependentRequiredError()` adapters.
+  `additionalProperties:false` checks share
+  `CollectJsonObjectInputAdditionalPropertyFailures()` and
+  `FirstJsonObjectAdditionalPropertyError()` adapters.
+  `not.required` checks share `CollectJsonObjectInputNotRequiredFailures()`
+  and `FirstJsonObjectNotRequiredError()` adapters.
+  Basic `if` / `then` / `else` required-field checks share
+  `CollectJsonObjectInputIfThenElseRequiredFailures()` and
+  `FirstJsonObjectIfThenElseRequiredError()` adapters.
+  Branch-combinator checks share
+  `CollectJsonObjectInputAllOfRequiredBranchFailures()`,
+  `CollectJsonObjectInputRequiredBranchCountFailures()`,
+  `FirstJsonObjectAllOfRequiredBranchError()`, and
+  `FirstJsonObjectRequiredBranchCountError()` adapters.
+  Top-level `required` missing-field traversal is shared across input and output validation, property type
+  mismatch traversal is shared while preserving input/output type semantics,
+  string `const` / `enum` value constraint evaluation is shared while preserving
+  input/output ordering, string length/pattern constraint evaluation is shared, and numeric
+  `minimum` / `maximum` / exclusive bound / `multipleOf` evaluation is shared.
+  Both input/output property validators share typed `properties` and present
+  property-value traversal helpers, and `additionalProperties:false` uses one declared-property
+  comparison helper. Dependency checks and
+  required-branch matching/counting also share typed helpers across input and
+  output validators, and `propertyNames` constraint evaluation shares one typed
+  helper while preserving input and output error formatting. Object property
+  count checks (`minProperties` / `maxProperties`) also share typed evaluation
+  across input and output validators. Object-level `not.required` branch
+  matching, `allOf` required-branch traversal, `anyOf` / `oneOf` branch-count
+  failure evaluation, and basic `if` / `then` / `else` required-field checks
+  also share typed branch traversal while preserving input and output error
+  formatting. Full consolidation of the remaining
+  schema keyword evaluation duplication remains future work.
+- ~~`src/hosts/plugin/plugin_json_rpc.cpp`~~ request rendering and response
+  validation both parse/build through `nlohmann::ordered_json`.
+- ~~`src/hosts/cli/cli_spec_loader.cpp`~~ schema columns now parse-time
+  validated via `nlohmann::json::parse`.
+- ~~`src/hosts/plugin/plugin_manifest_loader.cpp`~~ TSV schema columns and
+  JSON manifests parse through `nlohmann::ordered_json`; the old
+  `plugin_json_utils` helper module has been deleted.
+- ~~`src/hosts/plugin/plugin_skill_invoker.cpp`~~ migrated to
+  `nlohmann::ordered_json` for skill output envelopes and JSON-RPC result
+  projection.
+- ~~`src/auth/oauth_pkce.cpp`~~ token-exchange parsing migrated, and the
+  legacy hand-rolled helpers (`SkipWhitespace`, `ParseJsonStringAt`,
+  `FindTopLevelJsonValue`) have been deleted.
+- `src/skills/builtin/*.cpp` — all five builtin skills migrated.
+- ~~`src/hosts/cli/cli_skill_invoker.cpp`~~ migrated.
+- ~~`src/hosts/agents/local_planning_agent.cpp`~~ migrated.
+- ~~`src/hosts/agents/gemini_agent.cpp`~~ migrated to
+  `nlohmann::ordered_json` for legacy provider output envelopes and
+  `generateContent` request construction.
+- ~~`src/hosts/agents/anthropic_agent.cpp`~~ migrated to
+  `nlohmann::ordered_json` for legacy REST / Claude CLI / streaming output
+  envelopes and Messages request construction.
+- ~~`src/hosts/agents/codex_cli_agent.cpp`~~ migrated to
+  `nlohmann::ordered_json` for legacy CLI / V2 streaming output envelopes and
+  artifact metadata.
+- ~~`src/hosts/agents/qwen_agent.cpp`~~ migrated to
+  `nlohmann::ordered_json` / `nlohmann::json` for legacy REST / V2 streaming
+  output envelopes, Chat Completions request bodies, response content
+  extraction, and V2 constraint projection.
+
+### 9.4 Effort remaining
+
+| Phase | Status | Notes |
+| --- | --- | --- |
+| 0 — Vendor + façade | ✅ (modified — FetchContent instead of vendor) | No façade header; call sites include `<nlohmann/json.hpp>` directly. |
+| 1 — Plugin host first | 🔄 Partial — Plugin Host parse path deferred; provider_adapters / subagent_manager / V2 adapters landed instead. | See §9.1. |
+| 2 — Schema validator | ✅ for Plugin Host — `cli_spec_loader.cpp` and `plugin_manifest_loader.cpp` do parse-time validation of schema columns; JSON plugin manifests, `plugin_json_rpc.cpp` request rendering / response validation, `plugin_schema_validator.cpp` keyword evaluation, and `plugin_skill_invoker.cpp` skill output envelopes are migrated to `nlohmann::ordered_json`. | `src/hosts/plugin/plugin_json_utils.{hpp,cpp}` deleted, and `src/hosts/plugin/` no longer includes `utils/json_utils.hpp`. Shared `src/core/schema/` helpers now own the supported plugin output schema keyword checks. |
+| 3 — Auth and provider adapters | ✅ — provider_adapters CLI probe parsing **and** OAuth token-exchange JSON (`oauth_pkce.cpp::ParseOAuthTokenResponse`) both go through `nlohmann::json` now. | |
+| 4 — Audit logger and skill outputs | ✅ — `audit_logger.cpp` migrated to `nlohmann::ordered_json`; all five builtin skills migrated; `cli_skill_invoker` and `local_planning_agent` migrated. | |
+| 5 — Retire `json_utils` | ✅ — all production and test callers migrated, stale include-only references removed, `src/utils/json_utils.{hpp,cpp}` deleted, and `CMakeLists.txt` no longer builds the helper module. | |
+| 6 — Schema validator companion | 🔄 Partial — `IsParseableJsonObjectSchema()` now lives in `src/core/schema/schema_validator.{hpp,cpp}` and is reused by CLI spec loading plus plugin manifest loading. JSON-object output validation for `required`, `properties.*.type`, `properties.*` string/numeric/array item-count, uniqueness, tuple-prefix, contains-count, and scalar/object item value constraint, object-shape (`minProperties`, `maxProperties`, `propertyNames`), `additionalProperties:false`, `dependentRequired`, legacy array-valued `dependencies`, `not.required`, basic `if` / `then` / `else`, and `allOf` / `anyOf` / `oneOf` checks now lives in `core/schema` via the `JsonObject*ValidationError()` helpers, which share the same typed object parse guard, parsed-pair delegate wrapper, top-level required missing-field traversal, property type mismatch traversal, string `const` / `enum` value constraint evaluator, string length/pattern constraint evaluator, numeric range / `multipleOf` constraint evaluator, array `minItems` / `maxItems` / `uniqueItems` / `prefixItems` / `contains` / `minContains` / `maxContains` / `items.type` / `items.const` / `items.enum` / `items.minLength` / `items.maxLength` / `items.pattern` / numeric `items` bounds / `items.multipleOf` / object-item required/property/property-name/dependency/not-required/shape constraint evaluator, `properties` and present property-value traversal helpers, additional-property evaluator, dependency traversal, required-branch matching/counting helpers, property-name constraint evaluator, object property-count evaluator, not.required branch evaluator, allOf required-branch traversal, anyOf/oneOf branch-count failure evaluator, and conditional required-branch traversal. `JsonObjectSchemaValidationError()` now lets plugin output validation parse the schema/output pair once through that shared delegate path and run the same ordered keyword checks. Skill input top-level `required`, `propertyNames`, `minProperties`, `maxProperties`, `dependentRequired`, legacy array-valued `dependencies`, `not.required`, basic `if` / `then` / `else`, `allOf` / `anyOf` / `oneOf` required-branch extraction, `additionalProperties:false`, `properties.*.type`, and `properties.*` string/numeric constraints also use typed parsing; runtime skill input validation now parses the schema once per call instead of once per keyword helper, routes typed constraint aggregation through `JsonObjectInputConstraintFailures()`, shares formatter helpers for stable `field:*` and `schema:*` failure tokens, and uses shared visitor adapters for all-input failure collection vs first-output-error returns in required-field collection, property-type input collection, output required/type checks, propertyNames field-list traversal, object property-count checks, dependency checks, `additionalProperties:false` checks, `not.required` checks, conditional-required checks, branch-combinator checks, and present property-value string/numeric checks. | The older input keyword scanners have been retired; remaining work is reducing duplication between the input and JSON-object output helper families. |
+
+### 9.5 Decision posture
+
+This ADR is now **Accepted**. Reopen as `Superseded` only if a future ADR
+proposes a different JSON dependency (e.g., a parse-throughput crisis pushes
+us to simdjson + a writer). Phases 2-N remain open work items tracked in
+`plan.md` / `completion_review.md` rather than this ADR.
 
 ---
 

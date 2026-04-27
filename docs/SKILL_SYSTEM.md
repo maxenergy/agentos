@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-Skill System 负责为 AgentOS 提供统一的执行能力抽象。  
+Skill System 负责为 AgentOS 提供统一的执行能力抽象。
 系统中所有“能做事的单元”都应被收敛为可观察、可路由、可审计、可演化的能力对象。
 
 ---
@@ -314,14 +314,27 @@ Plugin Skill 由 `runtime/plugin_specs/*.tsv` / `*.json` 通过 `PluginHost` 加
 
 `agentos plugins` 提供运行时 session 管理：
 
-- `agentos plugins sessions` — 列出当前 PluginHost 中活跃的 persistent sessions，包含
-  plugin 名、pid、started_at_unix_ms、last_used_at_unix_ms、idle_for_ms、request_count、alive。
+- `agentos plugins sessions [name=<plugin>]` — 列出当前 PluginHost 中活跃的 persistent
+  sessions，包含 plugin 名、pid、started_at_unix_ms、last_used_at_unix_ms、idle_for_ms、
+  idle_timeout_ms、idle_expired、request_count、alive。带 `name=` 时只统计该 plugin，并在 summary 输出
+  `matched=true|false`。summary 还会输出 `scope=process persistence=none`，明确该命令看到
+  的是当前 CLI 进程内的 in-memory session 状态，而不是跨进程 daemon 状态；同时输出
+  `idle_expired=<n>` 与 `dead=<n>`，方便脚本判断是否需要 restart/close。
+- `agentos plugins session-prune [name=<plugin>] [dry_run=true]` — 清理当前 PluginHost
+  中 idle-expired 或 dead 的 persistent sessions；不带 `name=` 时扫描全部 sessions。
+  `dry_run=true` 只输出 `would_prune=<n>`，不修改 session 状态。输出 `pruned=<n>`、
+  `matched=true|false`、`dry_run=true|false`、`reason=idle_expired_or_dead`、
+  `scope=process persistence=none`。
 - `agentos plugins session-restart name=<plugin>` — 强制重启某个 plugin 的所有 persistent
-  sessions（适合修复挂死或想清空状态的场景）。
+  sessions（适合修复挂死或想清空状态的场景），输出 `matched=true|false` 区分是否命中活跃
+  session。
 - `agentos plugins session-close name=<plugin>` — 优雅关闭某个 plugin 的所有 persistent
-  sessions。
+  sessions，输出 `matched=true|false` 区分是否命中活跃 session。
 
 由于 CLI 命令和 daemon 进程是独立的，目前 `sessions/session-restart/session-close` 主要
 反映当前 CLI 进程内启动的 PluginHost 状态；持续 daemon 化部署时可继续扩展为跨进程查询。
+这些 session admin 命令可显式传入 `scope=process`（默认值）。`scope=daemon` 当前会返回
+`plugin_sessions_unavailable scope=daemon supported_scope=process`，避免脚本误把当前进程状态
+当成 daemon 全局状态。
 
 这五个即可支撑较多上层能力。

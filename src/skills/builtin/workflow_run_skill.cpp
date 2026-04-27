@@ -1,11 +1,30 @@
 #include "skills/builtin/workflow_run_skill.hpp"
 
-#include "utils/json_utils.hpp"
-
 #include <algorithm>
 #include <sstream>
 
+#include <nlohmann/json.hpp>
+
 namespace agentos {
+
+namespace {
+
+// Returns the step's json_output as a parsed JSON value when it is a structured
+// object/array; otherwise returns the raw text as a JSON string.  This stops
+// the double-escaping bug ADR-JSON-001 §1.2 calls out — embedding a child
+// skill's structured output as a string instead of a sub-object.
+nlohmann::json EmbedStepOutput(const std::string& json_output) {
+    if (json_output.empty()) {
+        return std::string();
+    }
+    try {
+        return nlohmann::json::parse(json_output);
+    } catch (const nlohmann::json::exception&) {
+        return json_output;
+    }
+}
+
+}  // namespace
 
 WorkflowRunSkill::WorkflowRunSkill(const SkillRegistry& skill_registry, const WorkflowStore* workflow_store)
     : skill_registry_(skill_registry),
@@ -103,13 +122,13 @@ SkillResult WorkflowRunSkill::RunWritePatchRead(const SkillCall& call) const {
     }
 
     const auto duration_ms = write_result.duration_ms + patch_result.duration_ms + read_result.duration_ms;
+    nlohmann::json output;
+    output["workflow"] = "write_patch_read";
+    output["steps"] = "file_write,file_patch,file_read";
+    output["final_output"] = EmbedStepOutput(read_result.json_output);
     return {
         .success = true,
-        .json_output = MakeJsonObject({
-            {"workflow", QuoteJson("write_patch_read")},
-            {"steps", QuoteJson("file_write,file_patch,file_read")},
-            {"final_output", QuoteJson(read_result.json_output)},
-        }),
+        .json_output = output.dump(),
         .duration_ms = duration_ms,
     };
 }
@@ -185,14 +204,14 @@ SkillResult WorkflowRunSkill::RunStoredWorkflow(const WorkflowDefinition& workfl
         steps << completed_steps[index];
     }
 
+    nlohmann::json output;
+    output["workflow"] = workflow.name;
+    output["source"] = workflow.source;
+    output["steps"] = steps.str();
+    output["final_output"] = EmbedStepOutput(final_output);
     return {
         .success = true,
-        .json_output = MakeJsonObject({
-            {"workflow", QuoteJson(workflow.name)},
-            {"source", QuoteJson(workflow.source)},
-            {"steps", QuoteJson(steps.str())},
-            {"final_output", QuoteJson(final_output)},
-        }),
+        .json_output = output.dump(),
         .duration_ms = duration_ms,
     };
 }

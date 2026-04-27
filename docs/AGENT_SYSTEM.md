@@ -153,6 +153,35 @@ public:
 };
 ```
 
+## 4.7 V2 adapter interface
+
+`IAgentAdapterV2` is the streaming-aware successor to `IAgentAdapter`. It
+collapses `start_session` / `run_task` / `run_task_in_session` / `cancel` into
+a single `invoke(const AgentInvocation&, const AgentEventCallback&)` entry
+point. `AgentInvocation` replaces the opaque `context_json` /
+`constraints_json` blobs with typed `StringMap` fields and carries a shared
+`std::shared_ptr<CancellationToken>` so adapters no longer maintain a
+private `task_id` -> cancel-state map. `AgentEventCallback` lets the kernel
+observe `SessionInit` / `TextDelta` / `Thinking` / `ToolUseStart` /
+`ToolUseResult` / `Status` / `Usage` / `Final` / `Error` events as they are
+produced — feeding the V2 admission-control budget gate, audit, and live UI
+— and returning `false` from the callback signals cancellation. Measured
+`AgentUsage` (input/output/reasoning tokens, cost, turns, per-model) is
+returned on `AgentResult.usage`; `SubagentManager` and `AgentLoop` prefer
+`usage.cost_usd` over the legacy `estimated_cost` when it is strictly
+positive.
+
+V1 and V2 coexist by design. Migrated adapters (`LocalPlanningAgent`,
+`CodexCliAgent`, `AnthropicAgent`, `QwenAgent`, `GeminiAgent`) inherit both
+interfaces — `profile()` / `healthy()` / `close_session(string)` share
+signatures across the two bases, so a single override satisfies both
+vtables. `SubagentManager::run_one` and `AgentLoop::run_agent_task`
+`dynamic_cast<IAgentAdapterV2*>` and prefer `invoke()` when the cast
+succeeds; legacy-only adapters fall back to `run_task()`. The full
+reference — type signatures, event sequence, cancellation contract,
+migration recipe, routing semantics, and known gaps — lives in
+[V2_ADAPTER_INTERFACE.md](V2_ADAPTER_INTERFACE.md).
+
 ---
 
 ## 5. Agent Registry

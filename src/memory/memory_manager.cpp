@@ -94,8 +94,30 @@ struct WorkflowScoreAccumulator {
     int success_count = 0;
     int failure_count = 0;
     double total_duration_ms = 0.0;
-    std::vector<std::string> latest_steps;
+    // step_signature_counts maps a "step1|step2|..." signature to the number
+    // of successful runs that produced exactly that step sequence. Phase 2.2
+    // promotion requires a single signature to recur (>=3 occurrences and
+    // >=60% of all successful runs of this task_type) instead of trusting
+    // whatever the most recent successful run happened to do.
+    std::unordered_map<std::string, int> step_signature_counts;
+    // Preserves the parsed step list per signature so promotion can emit the
+    // argmax signature's ordered_steps without re-splitting strings.
+    std::unordered_map<std::string, std::vector<std::string>> steps_by_signature;
 };
+
+constexpr int kPromotionMinSignatureCount = 3;
+constexpr double kPromotionMinSignatureRatio = 0.6;
+
+std::string MakeStepSignature(const std::vector<std::string>& steps) {
+    std::ostringstream output;
+    for (std::size_t index = 0; index < steps.size(); ++index) {
+        if (index != 0) {
+            output << '|';
+        }
+        output << steps[index];
+    }
+    return output.str();
+}
 
 double ScoreWorkflow(const WorkflowScoreAccumulator& stats) {
     if (stats.use_count <= 0) {
@@ -107,6 +129,35 @@ double ScoreWorkflow(const WorkflowScoreAccumulator& stats) {
     return (static_cast<double>(stats.success_count) * 100.0 * success_rate) -
            (static_cast<double>(stats.failure_count) * 25.0) -
            (avg_duration_ms / 1000.0);
+}
+
+// "sig1:3,sig2:1" — sig values are tab/newline/percent/comma/colon-encoded.
+std::string EncodeSignatureCounts(const std::unordered_map<std::string, int>& counts) {
+    // Stable order for deterministic TSV output.
+    std::vector<std::pair<std::string, int>> entries(counts.begin(), counts.end());
+    std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+        if (left.second != right.second) {
+            return left.second > right.second;
+        }
+        return left.first < right.first;
+    });
+
+    std::ostringstream output;
+    constexpr char hex[] = "0123456789ABCDEF";
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        if (index != 0) {
+            output << ',';
+        }
+        for (const unsigned char ch : entries[index].first) {
+            if (ch == '%' || ch == ',' || ch == ':' || ch == '\t' || ch == '\n' || ch == '\r') {
+                output << '%' << hex[(ch >> 4) & 0x0F] << hex[ch & 0x0F];
+            } else {
+                output << static_cast<char>(ch);
+            }
+        }
+        output << ':' << entries[index].second;
+    }
+    return output.str();
 }
 
 }  // namespace
@@ -236,12 +287,41 @@ std::vector<WorkflowCandidate> MemoryManager::workflow_candidates() const {
         }
 
         stats.success_count += 1;
-        stats.latest_steps = std::move(ordered_steps);
+        const auto signature = MakeStepSignature(ordered_steps);
+        stats.step_signature_counts[signature] += 1;
+        // Only insert the parsed step list the first time we see this signature
+        // so promotion picks a stable representative for the argmax winner.
+        stats.steps_by_signature.emplace(signature, std::move(ordered_steps));
     }
 
     std::vector<WorkflowCandidate> workflows;
     for (const auto& [task_type, stats] : stats_by_task_type) {
-        if (stats.success_count < 2 || stats.latest_steps.empty()) {
+        if (stats.success_count <= 0 || stats.step_signature_counts.empty()) {
+            continue;
+        }
+
+        // Pick the signature that has accumulated the most successful runs;
+        // ties break alphabetically descending for a deterministic shape.
+        const auto winner = std::max_element(
+            stats.step_signature_counts.begin(),
+            stats.step_signature_counts.end(),
+            [](const auto& left, const auto& right) {
+                if (left.second != right.second) {
+                    return left.second < right.second;
+                }
+                return left.first > right.first;
+            });
+        const auto max_signature_count = winner->second;
+        const auto max_signature_ratio = static_cast<double>(max_signature_count) /
+                                         static_cast<double>(stats.success_count);
+
+        if (max_signature_count < kPromotionMinSignatureCount ||
+            max_signature_ratio < kPromotionMinSignatureRatio) {
+            continue;
+        }
+
+        const auto steps_it = stats.steps_by_signature.find(winner->first);
+        if (steps_it == stats.steps_by_signature.end() || steps_it->second.empty()) {
             continue;
         }
 
@@ -250,13 +330,14 @@ std::vector<WorkflowCandidate> MemoryManager::workflow_candidates() const {
         workflows.push_back(WorkflowCandidate{
             .name = task_type + "_workflow",
             .trigger_task_type = task_type,
-            .ordered_steps = stats.latest_steps,
+            .ordered_steps = steps_it->second,
             .use_count = stats.use_count,
             .success_count = stats.success_count,
             .failure_count = stats.failure_count,
             .success_rate = success_rate,
             .avg_duration_ms = avg_duration_ms,
             .score = ScoreWorkflow(stats),
+            .step_signature_counts = stats.step_signature_counts,
         });
     }
 
@@ -275,6 +356,8 @@ void MemoryManager::refresh_workflow_store() const {
         return;
     }
 
+    EnsureWorkflowCandidatesSchema();
+
     std::ostringstream output;
     for (const auto& workflow : workflow_candidates()) {
         std::ostringstream steps;
@@ -285,6 +368,12 @@ void MemoryManager::refresh_workflow_store() const {
             steps << workflow.ordered_steps[index];
         }
 
+        // Schema v2 appends a 10th column carrying the per-signature recurrence
+        // counts that the v2 promotion gate uses ("sig1:3,sig2:1"). Older v1
+        // rows with only 9 columns remain parseable: missing column means
+        // empty map. tasks_ is rebuilt from task_log.tsv + step_log.tsv on
+        // restart, so legacy rows are simply overwritten on the next
+        // record_task — no migration of pre-existing rows needed at read time.
         output
             << EncodeField(workflow.name) << kDelimiter
             << EncodeField(workflow.trigger_task_type) << kDelimiter
@@ -294,11 +383,30 @@ void MemoryManager::refresh_workflow_store() const {
             << workflow.failure_count << kDelimiter
             << workflow.success_rate << kDelimiter
             << workflow.avg_duration_ms << kDelimiter
-            << workflow.score
+            << workflow.score << kDelimiter
+            << EncodeField(EncodeSignatureCounts(workflow.step_signature_counts))
             << '\n';
     }
 
     WriteFileAtomically(storage_dir_ / "workflow_candidates.tsv", output.str());
+}
+
+void MemoryManager::EnsureWorkflowCandidatesSchema() const {
+    // Lightweight per-store schema versioning: bump the file when promotion
+    // logic changes shape so external readers can branch on it. We treat any
+    // legacy stamp ("1" or absent) as v1 and rewrite to v2; the rewrite is
+    // safe because refresh_workflow_store always recomputes candidates from
+    // tasks_ (hydrated from task_log + step_log) before writing.
+    const auto schema_path = storage_dir_ / ".workflow_candidates_schema_version";
+    std::string current;
+    if (std::filesystem::exists(schema_path)) {
+        std::ifstream input(schema_path, std::ios::binary);
+        std::getline(input, current);
+    }
+    if (current == "2") {
+        return;
+    }
+    WriteFileAtomically(schema_path, std::string("2\n"));
 }
 
 void MemoryManager::load_persisted_logs() {

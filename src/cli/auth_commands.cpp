@@ -4,6 +4,7 @@
 #include "auth/oauth_pkce.hpp"
 #include "auth/secure_token_store.hpp"
 #include "auth/session_store.hpp"
+#include "cli/auth_interactive.hpp"
 #include "hosts/cli/cli_host.hpp"
 #include "utils/spec_parsing.hpp"
 
@@ -152,10 +153,12 @@ void PrintAuthUsage() {
         << "  agentos auth oauth-refresh-request token_endpoint=URL client_id=ID refresh_token=TOKEN\n"
         << "  agentos auth login <provider> mode=api-key api_key_env=ENV_NAME [profile=name] [set_default=true]\n"
         << "  agentos auth login <provider> mode=cli-session [profile=name] [set_default=true]\n"
+        << "  agentos auth login-interactive [provider=<id>]\n"
         << "  agentos auth default-profile <provider> profile=name\n"
         << "  agentos auth refresh <provider> [profile=name]\n"
         << "  agentos auth probe <provider>\n"
-        << "  agentos auth logout <provider> [profile=name]\n";
+        << "  agentos auth logout <provider> [profile=name]\n"
+        << "oauth-defaults and oauth-config-validate print endpoint_status=available|deferred|missing; deferred means the provider is a registered stub waiting for stable public PKCE endpoints.\n";
 }
 
 void PrintAuthSession(const AuthSession& session) {
@@ -260,16 +263,69 @@ OAuthProviderDefaults EffectiveOAuthDefaultsForProvider(
     return MergeOAuthProviderDefaults(builtin, *configured);
 }
 
+std::string OAuthEndpointStatus(const OAuthProviderDefaults& defaults, const std::string& origin) {
+    if (defaults.supported) {
+        return "available";
+    }
+    if (origin == "stub") {
+        return "deferred";
+    }
+    return "missing";
+}
+
+std::string OAuthDefaultsOrigin(const OAuthProviderDefaults& defaults) {
+    if (!defaults.origin.empty()) {
+        return defaults.origin;
+    }
+    return defaults.supported ? "builtin" : "none";
+}
+
+std::string JoinFieldNames(const std::vector<std::string>& fields) {
+    std::ostringstream output;
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+        if (index > 0) {
+            output << ',';
+        }
+        output << fields[index];
+    }
+    return output.str();
+}
+
+void PrintOAuthInputError(
+    const std::string& command,
+    const AuthProviderDescriptor& provider,
+    const OAuthProviderDefaults& defaults,
+    const std::vector<std::string>& missing_fields,
+    const std::filesystem::path& workspace) {
+    const auto origin = OAuthDefaultsOrigin(defaults);
+    std::cerr
+        << "oauth_input_error"
+        << " command=" << command
+        << " provider=" << provider.provider_name
+        << " missing_fields=\"" << JoinFieldNames(missing_fields) << "\""
+        << " origin=" << origin
+        << " endpoint_status=" << OAuthEndpointStatus(defaults, origin)
+        << " config_file=\"" << OAuthDefaultsConfigPath(workspace).string() << "\""
+        << '\n';
+}
+
+void PrintOAuthInputError(const std::string& command, const std::vector<std::string>& missing_fields) {
+    std::cerr
+        << "oauth_input_error"
+        << " command=" << command
+        << " missing_fields=\"" << JoinFieldNames(missing_fields) << "\""
+        << '\n';
+}
+
 void PrintOAuthDefaultsForProvider(const std::filesystem::path& workspace, const AuthProviderDescriptor& provider) {
     const auto defaults = EffectiveOAuthDefaultsForProvider(workspace, provider.provider);
-    const std::string origin = defaults.origin.empty()
-        ? (defaults.supported ? std::string("builtin") : std::string("none"))
-        : defaults.origin;
+    const std::string origin = OAuthDefaultsOrigin(defaults);
     std::cout
         << "oauth_defaults provider=" << provider.provider_name
         << " browser=" << (provider.browser_login_supported ? "true" : "false")
         << " supported=" << (defaults.supported ? "true" : "false")
         << " origin=" << origin
+        << " endpoint_status=" << OAuthEndpointStatus(defaults, origin)
         << " authorization_endpoint=\"" << defaults.authorization_endpoint << "\""
         << " token_endpoint=\"" << defaults.token_endpoint << "\""
         << " scopes=\"";
@@ -366,14 +422,13 @@ int ValidateOAuthDefaultsConfig(const AuthManager& auth_manager, const std::file
         // providers are not counted as diagnostics.
         for (const auto& provider : auth_manager.providers()) {
             const auto defaults = EffectiveOAuthDefaultsForProvider(workspace, provider.provider);
-            const std::string origin = defaults.origin.empty()
-                ? (defaults.supported ? std::string("builtin") : std::string("none"))
-                : defaults.origin;
+            const std::string origin = OAuthDefaultsOrigin(defaults);
             std::cout
                 << "oauth_config_provider provider=" << provider.provider_name
                 << " browser=" << (provider.browser_login_supported ? "true" : "false")
                 << " supported=" << (defaults.supported ? "true" : "false")
-                << " origin=" << origin;
+                << " origin=" << origin
+                << " endpoint_status=" << OAuthEndpointStatus(defaults, origin);
             if (!defaults.note.empty()) {
                 std::cout << " note=\"" << defaults.note << "\"";
             }
@@ -524,6 +579,21 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
                 ? options.at("profile")
                 : auth_manager.default_profile(*provider);
             const auto scopes = options.contains("scopes") ? SplitCommaList(options.at("scopes")) : defaults.scopes;
+            std::vector<std::string> missing_fields;
+            if (authorization_endpoint.empty()) {
+                missing_fields.push_back("authorization_endpoint");
+            }
+            if (client_id.empty()) {
+                missing_fields.push_back("client_id");
+            }
+            if (redirect_uri.empty()) {
+                missing_fields.push_back("redirect_uri");
+            }
+            if (!missing_fields.empty()) {
+                PrintOAuthInputError("oauth-start", *descriptor, defaults, missing_fields, workspace);
+                std::cerr << "authorization_endpoint (or provider default), client_id, and redirect_uri are required\n";
+                return 1;
+            }
 
             const auto start = CreateOAuthPkceStart(OAuthPkceStartRequest{
                 .provider = *provider,
@@ -572,7 +642,21 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
                 ? options.at("profile")
                 : auth_manager.default_profile(*provider);
             const auto scopes = options.contains("scopes") ? SplitCommaList(options.at("scopes")) : defaults.scopes;
-            if (authorization_endpoint.empty() || token_endpoint.empty() || client_id.empty() || redirect_uri.empty()) {
+            std::vector<std::string> missing_fields;
+            if (authorization_endpoint.empty()) {
+                missing_fields.push_back("authorization_endpoint");
+            }
+            if (token_endpoint.empty()) {
+                missing_fields.push_back("token_endpoint");
+            }
+            if (client_id.empty()) {
+                missing_fields.push_back("client_id");
+            }
+            if (redirect_uri.empty()) {
+                missing_fields.push_back("redirect_uri");
+            }
+            if (!missing_fields.empty()) {
+                PrintOAuthInputError("oauth-login", *descriptor, defaults, missing_fields, workspace);
                 std::cerr << "authorization_endpoint (or provider default), token_endpoint (or provider default), client_id, and redirect_uri are required\n";
                 return 1;
             }
@@ -633,13 +717,35 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
 
         if (command == "oauth-token-request") {
             const auto options = ParseOptionsFromArgs(argc, argv, 3);
-            PrintOAuthTokenRequest(BuildOAuthTokenRequest(OAuthTokenRequestInput{
+            const OAuthTokenRequestInput input{
                 .token_endpoint = options.contains("token_endpoint") ? options.at("token_endpoint") : "",
                 .client_id = options.contains("client_id") ? options.at("client_id") : "",
                 .redirect_uri = options.contains("redirect_uri") ? options.at("redirect_uri") : "",
                 .code = options.contains("code") ? options.at("code") : "",
                 .code_verifier = options.contains("code_verifier") ? options.at("code_verifier") : "",
-            }));
+            };
+            std::vector<std::string> missing_fields;
+            if (input.token_endpoint.empty()) {
+                missing_fields.push_back("token_endpoint");
+            }
+            if (input.client_id.empty()) {
+                missing_fields.push_back("client_id");
+            }
+            if (input.redirect_uri.empty()) {
+                missing_fields.push_back("redirect_uri");
+            }
+            if (input.code.empty()) {
+                missing_fields.push_back("code");
+            }
+            if (input.code_verifier.empty()) {
+                missing_fields.push_back("code_verifier");
+            }
+            if (!missing_fields.empty()) {
+                PrintOAuthInputError("oauth-token-request", missing_fields);
+                std::cerr << missing_fields.front() << " is required\n";
+                return 1;
+            }
+            PrintOAuthTokenRequest(BuildOAuthTokenRequest(input));
             return 0;
         }
 
@@ -647,12 +753,16 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
             const auto options = ParseOptionsFromArgs(argc, argv, 3);
             const auto callback_url = options.contains("callback_url") ? options.at("callback_url") : "";
             const auto state = options.contains("state") ? options.at("state") : "";
+            std::vector<std::string> missing_fields;
             if (callback_url.empty()) {
-                std::cerr << "callback_url is required\n";
-                return 1;
+                missing_fields.push_back("callback_url");
             }
             if (state.empty()) {
-                std::cerr << "state is required\n";
+                missing_fields.push_back("state");
+            }
+            if (!missing_fields.empty()) {
+                PrintOAuthInputError("oauth-callback", missing_fields);
+                std::cerr << missing_fields.front() << " is required\n";
                 return 1;
             }
             PrintOAuthCallbackResult(ValidateOAuthCallbackUrl(OAuthPkceStart{
@@ -664,13 +774,17 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
         if (command == "oauth-listen") {
             const auto options = ParseOptionsFromArgs(argc, argv, 3);
             const auto state = options.contains("state") ? options.at("state") : "";
-            if (state.empty()) {
-                std::cerr << "state is required\n";
-                return 1;
-            }
             const auto port = ParseIntOption(options, "port", 0);
+            std::vector<std::string> missing_fields;
+            if (state.empty()) {
+                missing_fields.push_back("state");
+            }
             if (port <= 0) {
-                std::cerr << "port is required\n";
+                missing_fields.push_back("port");
+            }
+            if (!missing_fields.empty()) {
+                PrintOAuthInputError("oauth-listen", missing_fields);
+                std::cerr << missing_fields.front() << " is required\n";
                 return 1;
             }
             const auto timeout_ms = ParseIntOption(options, "timeout_ms", 120000);
@@ -694,6 +808,11 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
                 std::cerr << "unknown provider: " << argv[3] << '\n';
                 return 1;
             }
+            const auto descriptor = FindAuthProviderDescriptor(auth_manager, *provider);
+            if (!descriptor.has_value()) {
+                std::cerr << "provider is not registered: " << argv[3] << '\n';
+                return 1;
+            }
             const auto options = ParseOptionsFromArgs(argc, argv, 4);
             const auto state = options.contains("state") ? options.at("state") : "";
             const auto callback_url = options.contains("callback_url") ? options.at("callback_url") : "";
@@ -702,8 +821,27 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
             const auto defaults = EffectiveOAuthDefaultsForProvider(workspace, *provider);
             const auto token_endpoint = options.contains("token_endpoint") ? options.at("token_endpoint") : defaults.token_endpoint;
             const auto client_id = options.contains("client_id") ? options.at("client_id") : "";
-            if (state.empty() || callback_url.empty() || code_verifier.empty() || redirect_uri.empty() ||
-                token_endpoint.empty() || client_id.empty()) {
+            std::vector<std::string> missing_fields;
+            if (callback_url.empty()) {
+                missing_fields.push_back("callback_url");
+            }
+            if (state.empty()) {
+                missing_fields.push_back("state");
+            }
+            if (code_verifier.empty()) {
+                missing_fields.push_back("code_verifier");
+            }
+            if (redirect_uri.empty()) {
+                missing_fields.push_back("redirect_uri");
+            }
+            if (client_id.empty()) {
+                missing_fields.push_back("client_id");
+            }
+            if (token_endpoint.empty()) {
+                missing_fields.push_back("token_endpoint");
+            }
+            if (!missing_fields.empty()) {
+                PrintOAuthInputError("oauth-complete", *descriptor, defaults, missing_fields, workspace);
                 std::cerr << "callback_url, state, code_verifier, redirect_uri, client_id, and token_endpoint (or provider default) are required\n";
                 return 1;
             }
@@ -748,11 +886,27 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
 
         if (command == "oauth-refresh-request") {
             const auto options = ParseOptionsFromArgs(argc, argv, 3);
-            PrintOAuthTokenRequest(BuildOAuthRefreshTokenRequest(OAuthRefreshTokenRequestInput{
+            const OAuthRefreshTokenRequestInput input{
                 .token_endpoint = options.contains("token_endpoint") ? options.at("token_endpoint") : "",
                 .client_id = options.contains("client_id") ? options.at("client_id") : "",
                 .refresh_token = options.contains("refresh_token") ? options.at("refresh_token") : "",
-            }));
+            };
+            std::vector<std::string> missing_fields;
+            if (input.token_endpoint.empty()) {
+                missing_fields.push_back("token_endpoint");
+            }
+            if (input.client_id.empty()) {
+                missing_fields.push_back("client_id");
+            }
+            if (input.refresh_token.empty()) {
+                missing_fields.push_back("refresh_token");
+            }
+            if (!missing_fields.empty()) {
+                PrintOAuthInputError("oauth-refresh-request", missing_fields);
+                std::cerr << missing_fields.front() << " is required\n";
+                return 1;
+            }
+            PrintOAuthTokenRequest(BuildOAuthRefreshTokenRequest(input));
             return 0;
         }
 
@@ -776,6 +930,71 @@ int RunAuthCommand(AuthManager& auth_manager, SessionStore& session_store, const
                     PrintAuthStatus(auth_manager.status(descriptor.provider, profile));
                 }
             }
+            return 0;
+        }
+
+        if (command == "login-interactive") {
+            const auto options = ParseOptionsFromArgs(argc, argv, 3);
+            std::optional<AuthProviderId> preselected;
+            if (options.contains("provider")) {
+                const auto parsed = ParseAuthProviderId(options.at("provider"));
+                if (!parsed.has_value()) {
+                    std::cerr << "unknown provider: " << options.at("provider") << '\n';
+                    std::cerr << "available providers:";
+                    for (const auto& descriptor : auth_manager.providers()) {
+                        std::cerr << ' ' << ToString(descriptor.provider);
+                    }
+                    std::cerr << '\n';
+                    return 1;
+                }
+                preselected = *parsed;
+            }
+
+            const auto resolution = PromptInteractiveLogin(
+                auth_manager.providers(),
+                [&](AuthProviderId provider) {
+                    return EffectiveOAuthDefaultsForProvider(workspace, provider);
+                },
+                preselected,
+                std::cin,
+                std::cout);
+
+            if (!resolution.ok) {
+                std::cerr << resolution.error_message << '\n';
+                return 1;
+            }
+
+            // Re-enter the existing `auth login` handler with a synthetic
+            // argv so we don't duplicate AuthManager wiring.  Materialize the
+            // string vector first so the char* pointers stay live for the
+            // duration of the recursive call.
+            const auto inner_argv_strings = BuildLoginArgvFromResolution(resolution);
+            std::vector<char*> inner_argv;
+            inner_argv.reserve(inner_argv_strings.size() + 1);
+            for (const auto& argument : inner_argv_strings) {
+                inner_argv.push_back(const_cast<char*>(argument.c_str()));
+            }
+            inner_argv.push_back(nullptr);
+
+            const auto inner_status = RunAuthCommand(
+                auth_manager,
+                session_store,
+                token_store,
+                cli_host,
+                workspace,
+                static_cast<int>(inner_argv_strings.size()),
+                inner_argv.data());
+            if (inner_status != 0) {
+                return inner_status;
+            }
+
+            std::cout
+                << "interactive_login"
+                << " provider=" << ToString(resolution.provider)
+                << " mode=" << ToString(resolution.mode)
+                << " profile=" << resolution.profile_name
+                << " set_default=" << (resolution.set_default ? "true" : "false")
+                << '\n';
             return 0;
         }
 

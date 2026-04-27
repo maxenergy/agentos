@@ -1,11 +1,12 @@
 #include "skills/builtin/file_read_skill.hpp"
 
-#include "utils/json_utils.hpp"
 #include "utils/path_utils.hpp"
 
 #include <chrono>
 #include <fstream>
 #include <sstream>
+
+#include <nlohmann/json.hpp>
 
 namespace agentos {
 
@@ -41,12 +42,12 @@ SkillResult FileReadSkill::execute(const SkillCall& call) {
     std::ostringstream buffer;
     buffer << input.rdbuf();
 
+    nlohmann::json output;
+    output["path"] = resolved_path.string();
+    output["content"] = buffer.str();
     return {
         .success = true,
-        .json_output = MakeJsonObject({
-            {"path", QuoteJson(resolved_path.string())},
-            {"content", QuoteJson(buffer.str())},
-        }),
+        .json_output = output.dump(),
         .duration_ms = static_cast<int>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count()),
     };

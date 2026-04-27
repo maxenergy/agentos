@@ -1,75 +1,57 @@
 #include "hosts/plugin/plugin_host.hpp"
 
-#include "utils/json_utils.hpp"
+#include "hosts/plugin/plugin_json_rpc.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
-#include <sstream>
+#include <optional>
 
 namespace agentos {
 
 namespace {
 
-std::string PluginSkillOutputJson(const PluginSpec& spec, const PluginRunResult& run_result) {
-    auto plugin_output = run_result.stdout_text;
-    if (run_result.success && spec.protocol == "json-rpc-v0") {
-        const auto result_key = std::string("\"result\"");
-        const auto key_pos = plugin_output.find(result_key);
-        if (key_pos != std::string::npos) {
-            const auto colon_pos = plugin_output.find(':', key_pos + result_key.size());
-            const auto object_start = colon_pos == std::string::npos
-                ? std::string::npos
-                : plugin_output.find('{', colon_pos + 1);
-            if (object_start != std::string::npos) {
-                int depth = 0;
-                bool in_string = false;
-                bool escaped = false;
-                for (std::size_t pos = object_start; pos < plugin_output.size(); ++pos) {
-                    const char ch = plugin_output[pos];
-                    if (escaped) {
-                        escaped = false;
-                        continue;
-                    }
-                    if (ch == '\\') {
-                        escaped = true;
-                        continue;
-                    }
-                    if (ch == '"') {
-                        in_string = !in_string;
-                        continue;
-                    }
-                    if (in_string) {
-                        continue;
-                    }
-                    if (ch == '{') {
-                        ++depth;
-                    } else if (ch == '}') {
-                        --depth;
-                        if (depth == 0) {
-                            plugin_output = plugin_output.substr(object_start, pos - object_start + 1);
-                            break;
-                        }
-                    }
-                }
-            }
+std::optional<nlohmann::ordered_json> ParseObject(const std::string& json_text) {
+    try {
+        auto parsed = nlohmann::ordered_json::parse(json_text);
+        if (parsed.is_object()) {
+            return parsed;
         }
+    } catch (const nlohmann::json::exception&) {
+    }
+    return std::nullopt;
+}
+
+nlohmann::ordered_json PluginOutputValue(const PluginSpec& spec, const PluginRunResult& run_result) {
+    if (!run_result.success) {
+        return nullptr;
     }
 
-    std::ostringstream output;
-    output
-        << "{"
-        << R"("plugin":")" << EscapeJson(spec.name) << R"(",)"
-        << R"("manifest_version":")" << EscapeJson(spec.manifest_version) << R"(",)"
-        << R"("protocol":")" << EscapeJson(spec.protocol) << R"(",)"
-        << R"("lifecycle_mode":")" << EscapeJson(spec.lifecycle_mode) << R"(",)"
-        << R"("lifecycle_event":")" << EscapeJson(run_result.lifecycle_event.empty() ? "oneshot" : run_result.lifecycle_event) << R"(",)"
-        << R"("plugin_output":)";
-    if (run_result.success) {
-        output << plugin_output;
-    } else {
-        output << "null";
+    if (spec.protocol == "json-rpc-v0") {
+        const auto result_object = JsonRpcResultObject(run_result.stdout_text);
+        if (result_object.has_value()) {
+            if (auto parsed = ParseObject(*result_object); parsed.has_value()) {
+                return *parsed;
+            }
+        }
+        return nullptr;
     }
-    output << "}";
-    return output.str();
+
+    if (auto parsed = ParseObject(run_result.stdout_text); parsed.has_value()) {
+        return *parsed;
+    }
+    return nullptr;
+}
+
+std::string PluginSkillOutputJson(const PluginSpec& spec, const PluginRunResult& run_result) {
+    nlohmann::ordered_json output;
+    output["plugin"] = spec.name;
+    output["manifest_version"] = spec.manifest_version;
+    output["protocol"] = spec.protocol;
+    output["lifecycle_mode"] = spec.lifecycle_mode;
+    output["lifecycle_event"] = run_result.lifecycle_event.empty() ? "oneshot" : run_result.lifecycle_event;
+    output["plugin_output"] = PluginOutputValue(spec, run_result);
+    return output.dump();
 }
 
 }  // namespace
@@ -96,7 +78,7 @@ SkillResult PluginSkillInvoker::execute(const SkillCall& call) {
     const auto run_result = plugin_host_.run(PluginRunRequest{
         .spec = spec_,
         .arguments = call.arguments,
-        .workspace_path = std::filesystem::current_path(),
+        .workspace_path = std::filesystem::path(call.workspace_id),
     });
 
     SkillResult result{

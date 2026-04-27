@@ -45,7 +45,7 @@ PluginHealthStatus CheckPluginHealth(
                 .reason = "persistent health startup failed: " + start_error,
             };
         }
-        auto probe = session->request({});
+        auto probe = session->request({}, true);
         if (!probe.success) {
             return {
                 .supported = true,

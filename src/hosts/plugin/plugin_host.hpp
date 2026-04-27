@@ -114,8 +114,10 @@ struct PluginSessionInfo {
     std::int64_t started_at_unix_ms = 0;
     std::int64_t last_used_at_unix_ms = 0;
     int idle_for_ms = 0;
+    int idle_timeout_ms = 0;
     int request_count = 0;
     bool alive = false;
+    bool idle_expired = false;
 };
 
 class PluginHost {
@@ -128,6 +130,8 @@ public:
     std::size_t close_all_sessions() const;
     std::size_t close_sessions_for_plugin(const std::string& plugin_name) const;
     std::size_t restart_sessions_for_plugin(const std::string& plugin_name) const;
+    std::size_t count_inactive_sessions(const std::string& plugin_name = {}) const;
+    std::size_t prune_inactive_sessions(const std::string& plugin_name = {}) const;
     std::vector<PluginSessionInfo> list_sessions() const;
 
 private:

@@ -2,7 +2,6 @@
 
 #include "auth/oauth_pkce.hpp"
 #include "utils/command_utils.hpp"
-#include "utils/json_utils.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -11,9 +10,33 @@
 #include <fstream>
 #include <stdexcept>
 
+#include <nlohmann/json.hpp>
+
 namespace agentos {
 
 namespace {
+
+bool ClaudeAuthStatusReportsLoggedIn(const std::string& stdout_text) {
+    // Claude CLI's `auth status` emits a JSON object with a `loggedIn` boolean.
+    // Previously we did a substring match on the literal text
+    // `"loggedIn": true`, which broke on whitespace, key ordering, and any
+    // re-encoding by the CLI. Parse the response properly and inspect the
+    // field; on any parse error preserve the legacy semantics by returning
+    // false (i.e. treat malformed output as "not logged in").
+    try {
+        const auto parsed = nlohmann::json::parse(stdout_text);
+        if (!parsed.is_object()) {
+            return false;
+        }
+        const auto it = parsed.find("loggedIn");
+        if (it == parsed.end() || !it->is_boolean()) {
+            return false;
+        }
+        return it->get<bool>();
+    } catch (const nlohmann::json::exception&) {
+        return false;
+    }
+}
 
 bool SupportsMode(const std::vector<AuthMode>& modes, const AuthMode mode) {
     return std::find(modes.begin(), modes.end(), mode) != modes.end();
@@ -489,7 +512,7 @@ std::optional<AuthSession> AnthropicAuthProviderAdapter::probe_cli_session() {
         .workspace_path = workspace_path_,
     });
 
-    if (!result.success || result.stdout_text.find("\"loggedIn\": true") == std::string::npos) {
+    if (!result.success || !ClaudeAuthStatusReportsLoggedIn(result.stdout_text)) {
         return std::nullopt;
     }
 

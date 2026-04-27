@@ -7,10 +7,13 @@
 #include "memory/memory_manager.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace agentos {
+
+class CancellationToken;
 
 enum class SubagentExecutionMode {
     sequential,
@@ -31,14 +34,23 @@ public:
         std::size_t max_parallel_subagents = 4,
         double max_estimated_cost = 0.0);
 
+    // `cancel` (if non-null) is forwarded into each V2 AgentInvocation and
+    // checked before per-agent dispatch so the orchestrator can interrupt a
+    // batch from outside. Legacy adapters honor it on the pre-dispatch check
+    // only — they have no in-flight cancellation hook.
     TaskRunResult run(
         const TaskRequest& task,
         const std::vector<std::string>& agent_names,
-        SubagentExecutionMode mode = SubagentExecutionMode::sequential);
+        SubagentExecutionMode mode = SubagentExecutionMode::sequential,
+        std::shared_ptr<CancellationToken> cancel = {});
 
 private:
     std::vector<std::string> select_agent_candidates(const TaskRequest& task) const;
-    TaskStepRecord run_one(const TaskRequest& task, const std::string& agent_name, const std::string& role) const;
+    TaskStepRecord run_one(
+        const TaskRequest& task,
+        const std::string& agent_name,
+        const std::string& role,
+        const std::shared_ptr<CancellationToken>& cancel) const;
 
     AgentRegistry& agent_registry_;
     PolicyEngine& policy_engine_;

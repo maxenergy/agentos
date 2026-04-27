@@ -39,6 +39,9 @@ std::set<std::string> PluginValidateConflictNames(
     return names;
 }
 
+std::string PluginIsolationProfile(const PluginSpec& spec);
+bool HasPluginResourceLimits(const PluginSpec& spec);
+
 bool PrintPlugins(
     const std::filesystem::path& workspace,
     const std::set<std::string>& conflict_names,
@@ -53,6 +56,8 @@ bool PrintPlugins(
             << " protocol=" << spec.protocol
             << " manifest_version=" << spec.manifest_version
             << " sandbox_mode=" << spec.sandbox_mode
+            << " isolation_profile=" << PluginIsolationProfile(spec)
+            << " resource_limits_configured=" << (HasPluginResourceLimits(spec) ? "true" : "false")
             << " lifecycle_mode=" << spec.lifecycle_mode
             << " startup_timeout_ms=" << spec.startup_timeout_ms
             << " idle_timeout_ms=" << spec.idle_timeout_ms
@@ -125,10 +130,53 @@ bool InspectShouldCheckHealth(const int argc, char* argv[]) {
     return false;
 }
 
+bool HasPluginResourceLimits(const PluginSpec& spec) {
+    return spec.memory_limit_bytes != 0 ||
+        spec.max_processes != 0 ||
+        spec.cpu_time_limit_seconds != 0 ||
+        spec.file_descriptor_limit != 0;
+}
+
+std::string PluginIsolationProfile(const PluginSpec& spec) {
+    std::string profile;
+    if (spec.sandbox_mode == "workspace") {
+        profile = "workspace-paths";
+    }
+    if (HasPluginResourceLimits(spec)) {
+        if (!profile.empty()) {
+            profile += "+";
+        }
+        profile += "process-resource-limits";
+    }
+    return profile.empty() ? "none" : profile;
+}
+
+std::size_t EffectivePersistentPoolSize(const PluginSpec& spec, const std::size_t max_persistent_sessions) {
+    if (spec.lifecycle_mode != "persistent") {
+        return 0;
+    }
+    const auto requested = static_cast<std::size_t>((std::max)(1, spec.pool_size));
+    return max_persistent_sessions == 0
+        ? requested
+        : (std::min)(requested, max_persistent_sessions);
+}
+
+void PrintPluginHostConfigDiagnostics(const std::vector<PluginHostOptionsDiagnostic>& diagnostics) {
+    for (const auto& diagnostic : diagnostics) {
+        std::cout
+            << "plugin_host_config_diagnostic"
+            << " line=" << diagnostic.line_number
+            << " reason=\"" << diagnostic.reason << "\""
+            << '\n';
+    }
+}
+
 void PrintPluginInspect(
     const PluginSpec& spec,
     const bool conflicts_with_registered_skill,
+    const std::size_t max_persistent_sessions,
     const std::optional<PluginHealthStatus>& health = std::nullopt) {
+    const auto effective_pool_size = EffectivePersistentPoolSize(spec, max_persistent_sessions);
     std::cout
         << "name=" << spec.name << '\n'
         << "description=" << spec.description << '\n'
@@ -150,10 +198,14 @@ void PrintPluginInspect(
         << "health_args_template=" << JoinStrings(spec.health_args_template) << '\n'
         << "health_timeout_ms=" << spec.health_timeout_ms << '\n'
         << "sandbox_mode=" << spec.sandbox_mode << '\n'
+        << "isolation_profile=" << PluginIsolationProfile(spec) << '\n'
+        << "resource_limits_configured=" << (HasPluginResourceLimits(spec) ? "true" : "false") << '\n'
         << "lifecycle_mode=" << spec.lifecycle_mode << '\n'
         << "startup_timeout_ms=" << spec.startup_timeout_ms << '\n'
         << "idle_timeout_ms=" << spec.idle_timeout_ms << '\n'
         << "pool_size=" << spec.pool_size << '\n'
+        << "max_persistent_sessions=" << max_persistent_sessions << '\n'
+        << "effective_pool_size=" << effective_pool_size << '\n'
         << "source=" << spec.source_file.string() << '\n'
         << "line=" << spec.source_line_number << '\n'
         << "valid=" << (conflicts_with_registered_skill ? "false" : "true") << '\n';
@@ -183,6 +235,7 @@ int InspectPlugin(
     }
 
     const auto loaded = LoadPluginSpecsWithDiagnostics(workspace / "runtime" / "plugin_specs");
+    const auto host_options = LoadPluginHostOptionsWithDiagnostics(workspace);
     for (const auto& spec : loaded.specs) {
         if (spec.name != name) {
             continue;
@@ -193,7 +246,8 @@ int InspectPlugin(
             CliHost cli_host;
             health = CheckPluginHealth(spec, cli_host, workspace);
         }
-        PrintPluginInspect(spec, conflicts_with_registered_skill, health);
+        PrintPluginInspect(spec, conflicts_with_registered_skill, host_options.options.max_persistent_sessions, health);
+        PrintPluginHostConfigDiagnostics(host_options.diagnostics);
         if (conflicts_with_registered_skill) {
             PrintSpecDiagnostic(
                 "conflicting_plugin",
@@ -207,7 +261,7 @@ int InspectPlugin(
         if (health.has_value() && !health->healthy) {
             return 1;
         }
-        return 0;
+        return host_options.diagnostics.empty() ? 0 : 1;
     }
 
     for (const auto& diagnostic : loaded.diagnostics) {
@@ -224,6 +278,7 @@ int PrintPluginLifecycle(
     std::size_t persistent_count = 0;
     std::size_t oneshot_count = 0;
     std::size_t conflict_count = 0;
+    const auto host_options = LoadPluginHostOptionsWithDiagnostics(workspace);
     for (const auto& spec : loaded.specs) {
         if (spec.lifecycle_mode == "persistent") {
             ++persistent_count;
@@ -238,9 +293,13 @@ int PrintPluginLifecycle(
             << "plugin_lifecycle name=" << spec.name
             << " lifecycle_mode=" << spec.lifecycle_mode
             << " protocol=" << spec.protocol
+            << " sandbox_mode=" << spec.sandbox_mode
+            << " isolation_profile=" << PluginIsolationProfile(spec)
+            << " resource_limits_configured=" << (HasPluginResourceLimits(spec) ? "true" : "false")
             << " startup_timeout_ms=" << spec.startup_timeout_ms
             << " idle_timeout_ms=" << spec.idle_timeout_ms
             << " pool_size=" << spec.pool_size
+            << " effective_pool_size=" << EffectivePersistentPoolSize(spec, host_options.options.max_persistent_sessions)
             << " source=" << spec.source_file.string()
             << " line=" << spec.source_line_number
             << " valid=" << (conflicts_with_registered_skill ? "false" : "true");
@@ -252,14 +311,7 @@ int PrintPluginLifecycle(
     for (const auto& diagnostic : loaded.diagnostics) {
         PrintSpecDiagnostic("skipped_plugin", diagnostic.file, diagnostic.line_number, diagnostic.reason);
     }
-    const auto host_options = LoadPluginHostOptionsWithDiagnostics(workspace);
-    for (const auto& diagnostic : host_options.diagnostics) {
-        std::cout
-            << "plugin_host_config_diagnostic"
-            << " line=" << diagnostic.line_number
-            << " reason=\"" << diagnostic.reason << "\""
-            << '\n';
-    }
+    PrintPluginHostConfigDiagnostics(host_options.diagnostics);
 
     std::cout
         << "plugin_lifecycle_summary"
@@ -286,13 +338,68 @@ std::string SessionAdminPluginName(const int argc, char* argv[]) {
     return {};
 }
 
-int PrintPluginSessions(const PluginHost* plugin_host) {
+bool SessionAdminDryRun(const int argc, char* argv[]) {
+    for (int index = 3; index < argc; ++index) {
+        const std::string value = argv[index];
+        if (value == "dry_run=true" || value == "dry-run=true") {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string SessionAdminScope(const int argc, char* argv[]) {
+    for (int index = 3; index < argc; ++index) {
+        std::string value = argv[index];
+        constexpr std::string_view kPrefix = "scope=";
+        if (value.starts_with(kPrefix)) {
+            value.erase(0, kPrefix.size());
+            return value;
+        }
+    }
+    return "process";
+}
+
+bool RejectUnsupportedSessionScope(const std::string& scope) {
+    if (scope == "process") {
+        return false;
+    }
+    std::cout
+        << "plugin_sessions_unavailable"
+        << " scope=" << scope
+        << " supported_scope=process"
+        << " reason=\"cross-process plugin session admin not implemented\""
+        << '\n';
+    return true;
+}
+
+int PrintPluginSessions(
+    const PluginHost* plugin_host,
+    const int argc,
+    char* argv[]) {
     if (plugin_host == nullptr) {
         std::cout << "plugin_sessions_unavailable reason=\"plugin host runtime not available\"\n";
         return 2;
     }
+    const auto scope = SessionAdminScope(argc, argv);
+    if (RejectUnsupportedSessionScope(scope)) {
+        return 2;
+    }
+    const auto filter_name = SessionAdminPluginName(argc, argv);
     const auto sessions = plugin_host->list_sessions();
+    std::size_t printed = 0;
+    std::size_t expired = 0;
+    std::size_t dead = 0;
     for (const auto& session : sessions) {
+        if (!filter_name.empty() && session.plugin_name != filter_name) {
+            continue;
+        }
+        if (session.idle_expired) {
+            ++expired;
+        }
+        if (!session.alive) {
+            ++dead;
+        }
         std::cout
             << "plugin_session"
             << " name=" << session.plugin_name
@@ -302,14 +409,27 @@ int PrintPluginSessions(const PluginHost* plugin_host) {
             << " started_at_unix_ms=" << session.started_at_unix_ms
             << " last_used_at_unix_ms=" << session.last_used_at_unix_ms
             << " idle_for_ms=" << session.idle_for_ms
+            << " idle_timeout_ms=" << session.idle_timeout_ms
+            << " idle_expired=" << (session.idle_expired ? "true" : "false")
             << " request_count=" << session.request_count
             << " alive=" << (session.alive ? "true" : "false")
             << '\n';
+        ++printed;
     }
     std::cout
         << "plugin_sessions_summary"
-        << " total=" << sessions.size()
-        << " active=" << plugin_host->active_session_count()
+        << " total=" << printed
+        << " active=" << plugin_host->active_session_count();
+    if (!filter_name.empty()) {
+        std::cout
+            << " name=" << filter_name
+            << " matched=" << (printed > 0 ? "true" : "false");
+    }
+    std::cout
+        << " idle_expired=" << expired
+        << " dead=" << dead
+        << " scope=process"
+        << " persistence=none"
         << '\n';
     return 0;
 }
@@ -320,6 +440,10 @@ int RestartPluginSession(
     char* argv[]) {
     if (plugin_host == nullptr) {
         std::cout << "plugin_sessions_unavailable reason=\"plugin host runtime not available\"\n";
+        return 2;
+    }
+    const auto scope = SessionAdminScope(argc, argv);
+    if (RejectUnsupportedSessionScope(scope)) {
         return 2;
     }
     const auto name = SessionAdminPluginName(argc, argv);
@@ -333,6 +457,7 @@ int RestartPluginSession(
         << "plugin_session_restart"
         << " name=" << name
         << " restarted=" << restarted
+        << " matched=" << (restarted > 0 ? "true" : "false")
         << '\n';
     return 0;
 }
@@ -343,6 +468,10 @@ int ClosePluginSession(
     char* argv[]) {
     if (plugin_host == nullptr) {
         std::cout << "plugin_sessions_unavailable reason=\"plugin host runtime not available\"\n";
+        return 2;
+    }
+    const auto scope = SessionAdminScope(argc, argv);
+    if (RejectUnsupportedSessionScope(scope)) {
         return 2;
     }
     const auto name = SessionAdminPluginName(argc, argv);
@@ -356,6 +485,41 @@ int ClosePluginSession(
         << "plugin_session_close"
         << " name=" << name
         << " closed=" << closed
+        << " matched=" << (closed > 0 ? "true" : "false")
+        << '\n';
+    return 0;
+}
+
+int PrunePluginSessions(
+    const PluginHost* plugin_host,
+    const int argc,
+    char* argv[]) {
+    if (plugin_host == nullptr) {
+        std::cout << "plugin_sessions_unavailable reason=\"plugin host runtime not available\"\n";
+        return 2;
+    }
+    const auto scope = SessionAdminScope(argc, argv);
+    if (RejectUnsupportedSessionScope(scope)) {
+        return 2;
+    }
+    const auto name = SessionAdminPluginName(argc, argv);
+    const auto dry_run = SessionAdminDryRun(argc, argv);
+    const auto would_prune = dry_run ? plugin_host->count_inactive_sessions(name) : std::size_t{0};
+    const auto pruned = dry_run ? std::size_t{0} : plugin_host->prune_inactive_sessions(name);
+    const auto matched = dry_run ? would_prune > 0 : pruned > 0;
+    std::cout
+        << "plugin_session_prune";
+    if (!name.empty()) {
+        std::cout << " name=" << name;
+    }
+    std::cout
+        << " pruned=" << pruned
+        << " matched=" << (matched ? "true" : "false")
+        << " dry_run=" << (dry_run ? "true" : "false")
+        << " would_prune=" << would_prune
+        << " reason=idle_expired_or_dead"
+        << " scope=process"
+        << " persistence=none"
         << '\n';
     return 0;
 }
@@ -380,13 +544,16 @@ int RunPluginsCommand(
         return PrintPluginLifecycle(workspace, conflict_names);
     }
     if (argc >= 3 && std::string(argv[2]) == "sessions") {
-        return PrintPluginSessions(plugin_host);
+        return PrintPluginSessions(plugin_host, argc, argv);
     }
     if (argc >= 3 && std::string(argv[2]) == "session-restart") {
         return RestartPluginSession(plugin_host, argc, argv);
     }
     if (argc >= 3 && std::string(argv[2]) == "session-close") {
         return ClosePluginSession(plugin_host, argc, argv);
+    }
+    if (argc >= 3 && std::string(argv[2]) == "session-prune") {
+        return PrunePluginSessions(plugin_host, argc, argv);
     }
     if (argc >= 3 && std::string(argv[2]) == "validate") {
         const bool valid = PrintPlugins(workspace, conflict_names, false);

@@ -1,10 +1,11 @@
 #include "skills/builtin/file_write_skill.hpp"
 
-#include "utils/json_utils.hpp"
 #include "utils/path_utils.hpp"
 
 #include <chrono>
 #include <fstream>
+
+#include <nlohmann/json.hpp>
 
 namespace agentos {
 
@@ -53,12 +54,12 @@ SkillResult FileWriteSkill::execute(const SkillCall& call) {
     output << *maybe_content;
     output.flush();
 
+    nlohmann::json output_json;
+    output_json["path"] = resolved_path.string();
+    output_json["bytes_written"] = static_cast<long long>(maybe_content->size());
     return {
         .success = true,
-        .json_output = MakeJsonObject({
-            {"path", QuoteJson(resolved_path.string())},
-            {"bytes_written", NumberAsJson(static_cast<long long>(maybe_content->size()))},
-        }),
+        .json_output = output_json.dump(),
         .duration_ms = static_cast<int>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count()),
     };

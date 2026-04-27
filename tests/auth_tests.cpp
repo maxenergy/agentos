@@ -5,7 +5,9 @@
 #include "auth/provider_adapters.hpp"
 #include "auth/secure_token_store.hpp"
 #include "auth/session_store.hpp"
+#include "cli/auth_interactive.hpp"
 #include "hosts/cli/cli_host.hpp"
+#include "utils/secure_random.hpp"
 #include "test_command_fixtures.hpp"
 
 #include <chrono>
@@ -16,6 +18,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -62,13 +65,28 @@ std::filesystem::path FreshWorkspace() {
     return workspace;
 }
 
+// Writes a curl fixture that records its argv to `args_file` AND, for any
+// argument starting with `@`, appends the dereferenced file contents to the
+// sibling path `<args_file>.deref`. This mirrors how real curl reads
+// `--data @file` / `-H @file` while letting tests inspect both the argv
+// (to verify secrets do NOT appear there) and the request payload (to
+// verify it still contains the expected grant_type / refresh_token / etc.).
 void WriteOAuthCurlFixture(const std::filesystem::path& bin_dir, const std::filesystem::path& args_file) {
+    const auto deref_file = args_file.string() + ".deref";
 #ifdef _WIN32
     WriteCliFixture(
         bin_dir,
         "curl",
         "@echo off\n"
         "echo %* > \"" + args_file.generic_string() + "\"\n"
+        "type nul > \"" + deref_file + "\"\n"
+        ":next\n"
+        "set \"arg=%~1\"\n"
+        "if \"%arg%\"==\"\" goto done\n"
+        "if \"%arg:~0,1%\"==\"@\" type \"%arg:~1%\" >> \"" + deref_file + "\"\n"
+        "shift\n"
+        "goto next\n"
+        ":done\n"
         "echo {\"access_token\":\"curl-access\",\"refresh_token\":\"curl-refresh\",\"token_type\":\"Bearer\",\"expires_in\":1800}\n"
         "exit /b 0\n");
 #else
@@ -77,6 +95,12 @@ void WriteOAuthCurlFixture(const std::filesystem::path& bin_dir, const std::file
         "curl",
         "#!/usr/bin/env sh\n"
         "printf '%s\\n' \"$*\" > '" + args_file.string() + "'\n"
+        ": > '" + deref_file + "'\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    @*) cat \"${arg#@}\" >> '" + deref_file + "' ;;\n"
+        "  esac\n"
+        "done\n"
         "printf '%s\\n' '{\"access_token\":\"curl-access\",\"refresh_token\":\"curl-refresh\",\"token_type\":\"Bearer\",\"expires_in\":1800}'\n");
 #endif
 }
@@ -152,7 +176,7 @@ std::string SendHttpGetForTest(const int port, const std::string& target) {
     }
     const auto request =
         "GET " + target + " HTTP/1.1\r\n"
-        "Host: 127.0.0.1\r\n"
+        "Host: 127.0.0.1:" + std::to_string(port) + "\r\n"
         "Connection: close\r\n\r\n";
     (void)send(socket_handle, request.c_str(), static_cast<int>(request.size()), 0);
     std::string response(1024, '\0');
@@ -163,6 +187,121 @@ std::string SendHttpGetForTest(const int port, const std::string& target) {
     }
     response.resize(static_cast<std::size_t>(received));
     return response;
+}
+
+std::string SendHttpGetWithHostForTest(const int port, const std::string& target, const std::string& host_header) {
+    TestWinsockSession winsock;
+    const TestSocketHandle socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket_handle == kInvalidTestSocket) {
+        return {};
+    }
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<unsigned short>(port));
+    inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+    if (connect(socket_handle, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        CloseTestSocket(socket_handle);
+        return {};
+    }
+    const auto request =
+        "GET " + target + " HTTP/1.1\r\n"
+        "Host: " + host_header + "\r\n"
+        "Connection: close\r\n\r\n";
+    (void)send(socket_handle, request.c_str(), static_cast<int>(request.size()), 0);
+    std::string response(1024, '\0');
+    const auto received = recv(socket_handle, response.data(), static_cast<int>(response.size()), 0);
+    CloseTestSocket(socket_handle);
+    if (received <= 0) {
+        return {};
+    }
+    response.resize(static_cast<std::size_t>(received));
+    return response;
+}
+
+void TestOAuthListenerRequestValidation(const std::filesystem::path& workspace) {
+    (void)workspace;
+
+    Expect(agentos::ExtractRedirectUriPathForTest("http://127.0.0.1:48177/callback") == "/callback",
+        "ExtractRedirectUriPath should return path component");
+    Expect(agentos::ExtractRedirectUriPathForTest("http://127.0.0.1:48177") == "/",
+        "ExtractRedirectUriPath should default to / when path missing");
+    Expect(agentos::ExtractRedirectUriPathForTest("http://127.0.0.1:48177/cb?x=1") == "/cb",
+        "ExtractRedirectUriPath should strip query string");
+
+    Expect(agentos::TargetPathOnlyForTest("/callback?code=X&state=Y") == "/callback",
+        "TargetPathOnly should strip query");
+    Expect(agentos::TargetPathOnlyForTest("/callback") == "/callback",
+        "TargetPathOnly should pass through path-only target");
+
+    const auto host = agentos::ExtractHttpHostHeaderForTest(
+        "GET /x HTTP/1.1\r\nHost: 127.0.0.1:48177\r\nConnection: close\r\n\r\n");
+    Expect(host.has_value() && *host == "127.0.0.1:48177",
+        "ExtractHttpHostHeader should parse Host header value");
+    const auto missing_host = agentos::ExtractHttpHostHeaderForTest(
+        "GET /x HTTP/1.1\r\nConnection: close\r\n\r\n");
+    Expect(!missing_host.has_value(), "ExtractHttpHostHeader should return nullopt when Host missing");
+
+    Expect(agentos::HostHeaderMatchesLoopbackForTest("127.0.0.1:48177", 48177),
+        "HostHeaderMatchesLoopback should accept 127.0.0.1 with matching port");
+    Expect(agentos::HostHeaderMatchesLoopbackForTest("localhost:48177", 48177),
+        "HostHeaderMatchesLoopback should accept localhost with matching port");
+    Expect(!agentos::HostHeaderMatchesLoopbackForTest("127.0.0.1", 48177),
+        "HostHeaderMatchesLoopback should reject Host without port");
+    Expect(!agentos::HostHeaderMatchesLoopbackForTest("example.com:48177", 48177),
+        "HostHeaderMatchesLoopback should reject non-loopback hosts");
+    Expect(!agentos::HostHeaderMatchesLoopbackForTest("127.0.0.1:48180", 48177),
+        "HostHeaderMatchesLoopback should reject mismatched port");
+
+    const auto start = agentos::CreateOAuthPkceStart(agentos::OAuthPkceStartRequest{
+        .provider = agentos::AuthProviderId::gemini,
+        .profile_name = "listener-paths",
+        .authorization_endpoint = "https://accounts.example.test/o/oauth2/v2/auth",
+        .client_id = "client-id",
+        .redirect_uri = "http://127.0.0.1:48177/callback",
+        .state = "fixed-state",
+        .code_verifier = "fixed-verifier-value-with-enough-length-1234567890",
+    });
+
+    {
+        const auto port = FindFreeLoopbackPortForTest();
+        auto listener = std::async(std::launch::async, [&]() {
+            return agentos::ListenForOAuthCallbackOnce(agentos::OAuthCallbackListenRequest{
+                .start = start,
+                .port = port,
+                .timeout_ms = 5000,
+            });
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto response = SendHttpGetForTest(port, "/garbage?state=fixed-state&code=X");
+        const auto result = listener.get();
+        Expect(!result.success, "OAuth listener must reject callbacks with non-redirect_uri path");
+        Expect(result.error == "InvalidCallbackRequest",
+            "OAuth listener must surface InvalidCallbackRequest for path mismatch");
+        Expect(response.find("400 Bad Request") != std::string::npos,
+            "OAuth listener should respond 400 to a path-mismatched GET");
+    }
+
+    {
+        const auto port = FindFreeLoopbackPortForTest();
+        auto listener = std::async(std::launch::async, [&]() {
+            return agentos::ListenForOAuthCallbackOnce(agentos::OAuthCallbackListenRequest{
+                .start = start,
+                .port = port,
+                .timeout_ms = 5000,
+            });
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto response = SendHttpGetWithHostForTest(
+            port,
+            "/callback?state=fixed-state&code=X",
+            "evil.example.com:" + std::to_string(port));
+        const auto result = listener.get();
+        Expect(!result.success, "OAuth listener must reject callbacks with non-loopback Host header");
+        Expect(result.error == "InvalidCallbackRequest",
+            "OAuth listener must surface InvalidCallbackRequest for Host mismatch");
+        Expect(response.find("400 Bad Request") != std::string::npos,
+            "OAuth listener should respond 400 to a Host-mismatched GET");
+    }
 }
 
 void TestAuthApiKeySession(const std::filesystem::path& workspace) {
@@ -216,6 +355,26 @@ void TestAuthApiKeySession(const std::filesystem::path& workspace) {
         refresh_failed = true;
     }
     Expect(refresh_failed, "api-key session refresh should be unsupported");
+}
+
+void TestSecureRandomBytesContract(const std::filesystem::path& workspace) {
+    (void)workspace;
+    const auto first = agentos::SecureRandomBytes(32);
+    const auto second = agentos::SecureRandomBytes(32);
+    Expect(first.size() == 32, "SecureRandomBytes should fill the requested length");
+    Expect(second.size() == 32, "SecureRandomBytes should fill the requested length");
+    Expect(first != second, "SecureRandomBytes consecutive draws must differ (non-deterministic CSPRNG)");
+    bool all_zero = true;
+    for (const auto byte : first) {
+        if (byte != 0) {
+            all_zero = false;
+            break;
+        }
+    }
+    Expect(!all_zero, "SecureRandomBytes must not return all-zero output");
+
+    const auto empty = agentos::SecureRandomBytes(0);
+    Expect(empty.empty(), "SecureRandomBytes(0) should return empty without throwing");
 }
 
 void TestOAuthPkceScaffold(const std::filesystem::path& workspace) {
@@ -411,8 +570,14 @@ void TestOAuthPkceScaffold(const std::filesystem::path& workspace) {
     const auto bin_dir = workspace / "oauth_pkce" / "bin";
     std::filesystem::create_directories(bin_dir);
     const auto args_file = workspace / "oauth_pkce" / "curl_args.txt";
+    const auto deref_file = std::filesystem::path(args_file.string() + ".deref");
     WriteOAuthCurlFixture(bin_dir, args_file);
     ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+
+    auto read_text_file = [](const std::filesystem::path& path) -> std::string {
+        std::ifstream input(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    };
 
     agentos::CliHost cli_host;
     const auto exchanged = agentos::ExecuteOAuthTokenExchange(
@@ -422,36 +587,58 @@ void TestOAuthPkceScaffold(const std::filesystem::path& workspace) {
             .client_id = "client-id",
             .redirect_uri = "http://127.0.0.1:48177/callback",
             .code = "auth-code",
-            .code_verifier = "verifier",
+            .code_verifier = "verifier-secret-must-not-leak",
         },
         workspace);
     Expect(exchanged.success, "OAuth token exchange should execute through the controlled CLI host");
     Expect(exchanged.access_token == "curl-access", "OAuth token exchange should parse access token from curl response");
     Expect(exchanged.refresh_token == "curl-refresh", "OAuth token exchange should parse refresh token from curl response");
     Expect(exchanged.expires_in_seconds == 1800, "OAuth token exchange should parse token expiry from curl response");
-    std::ifstream args_input(args_file, std::ios::binary);
-    const std::string curl_args((std::istreambuf_iterator<char>(args_input)), std::istreambuf_iterator<char>());
+    const std::string curl_args = read_text_file(args_file);
+    const std::string curl_body = read_text_file(deref_file);
     Expect(curl_args.find("-X POST") != std::string::npos, "OAuth token exchange should use POST");
     Expect(curl_args.find("Content-Type: application/x-www-form-urlencoded") != std::string::npos,
         "OAuth token exchange should send form content type");
-    Expect(curl_args.find("grant_type=authorization_code") != std::string::npos,
-        "OAuth token exchange should send authorization_code grant body");
+    Expect(curl_body.find("grant_type=authorization_code") != std::string::npos,
+        "OAuth token exchange should send authorization_code grant in deref'd body");
+
+    // Phase 1.1: code_verifier / authorization code MUST NOT appear on argv;
+    // they belong inside the @file body, not on /proc/<pid>/cmdline.
+    Expect(curl_args.find("code_verifier=") == std::string::npos,
+        "OAuth token exchange must NOT pass code_verifier as argv");
+    Expect(curl_args.find("verifier-secret-must-not-leak") == std::string::npos,
+        "OAuth token exchange must NOT leak code_verifier value as argv");
+    Expect(curl_args.find("code=auth-code") == std::string::npos,
+        "OAuth token exchange must NOT pass authorization code as argv");
+    Expect(curl_args.find("@") != std::string::npos,
+        "OAuth token exchange must reference its body via curl @file syntax");
+    Expect(curl_body.find("code_verifier=verifier-secret-must-not-leak") != std::string::npos,
+        "OAuth token exchange should still send the code_verifier inside the deref'd body");
 
     const auto refreshed = agentos::ExecuteOAuthRefreshTokenExchange(
         cli_host,
         agentos::OAuthRefreshTokenRequestInput{
             .token_endpoint = "https://oauth2.example.test/token",
             .client_id = "client-id",
-            .refresh_token = "refresh-token",
+            .refresh_token = "refresh-token-must-not-leak",
         },
         workspace);
     Expect(refreshed.success, "OAuth refresh token exchange should execute through the controlled CLI host");
     Expect(refreshed.access_token == "curl-access", "OAuth refresh token exchange should parse refreshed access token");
-    std::ifstream refresh_args_input(args_file, std::ios::binary);
-    const std::string refresh_curl_args(
-        (std::istreambuf_iterator<char>(refresh_args_input)), std::istreambuf_iterator<char>());
-    Expect(refresh_curl_args.find("grant_type=refresh_token") != std::string::npos,
-        "OAuth refresh token exchange should send refresh_token grant body");
+    const std::string refresh_curl_args = read_text_file(args_file);
+    const std::string refresh_curl_body = read_text_file(deref_file);
+    Expect(refresh_curl_body.find("grant_type=refresh_token") != std::string::npos,
+        "OAuth refresh token exchange should send refresh_token grant in deref'd body");
+
+    // Phase 1.1: refresh_token MUST NOT appear on argv.
+    Expect(refresh_curl_args.find("refresh_token=") == std::string::npos,
+        "OAuth refresh token exchange must NOT pass refresh_token as argv");
+    Expect(refresh_curl_args.find("refresh-token-must-not-leak") == std::string::npos,
+        "OAuth refresh token exchange must NOT leak refresh_token value as argv");
+    Expect(refresh_curl_args.find("@") != std::string::npos,
+        "OAuth refresh token exchange must reference its body via curl @file syntax");
+    Expect(refresh_curl_body.find("refresh_token=refresh-token-must-not-leak") != std::string::npos,
+        "OAuth refresh token exchange should still send the refresh_token inside the deref'd body");
 
 #ifdef _WIN32
     agentos::SessionStore oauth_session_store(workspace / "oauth_pkce" / "sessions.tsv");
@@ -1019,13 +1206,274 @@ void TestOAuthDefaultsCoverageAndConfigOverride(const std::filesystem::path& wor
     Expect(override_only->origin == "config", "single-provider loader should preserve origin=config");
 }
 
+// Phase 1.1 dedicated leak guard. Confirms that OAuth token-exchange and
+// refresh-token-exchange route their form bodies (which contain
+// `code_verifier`, `code`, and `refresh_token`) through curl's `--data
+// @file` syntax rather than spilling them onto argv.
+void TestOAuthExchangeDoesNotLeakSecretsOnArgv(const std::filesystem::path& workspace) {
+    const auto isolated = workspace / "oauth_argv_leak_guard";
+    std::filesystem::remove_all(isolated);
+    std::filesystem::create_directories(isolated);
+    const auto bin_dir = isolated / "bin";
+    std::filesystem::create_directories(bin_dir);
+    const auto args_file = isolated / "leak_guard_args.txt";
+    const auto deref_file = std::filesystem::path(args_file.string() + ".deref");
+    WriteOAuthCurlFixture(bin_dir, args_file);
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+
+    auto read_text = [](const std::filesystem::path& path) -> std::string {
+        std::ifstream input(path, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    };
+
+    constexpr const char* kVerifier = "phase11-pkce-verifier-must-not-leak-on-argv";
+    constexpr const char* kAuthCode = "phase11-auth-code-secret-arg";
+    constexpr const char* kRefreshToken = "phase11-refresh-token-must-not-leak-on-argv";
+
+    agentos::CliHost cli_host;
+
+    // Token exchange: code_verifier + authorization code must not appear on argv.
+    const auto exchanged = agentos::ExecuteOAuthTokenExchange(
+        cli_host,
+        agentos::OAuthTokenRequestInput{
+            .token_endpoint = "https://oauth2.example.test/token",
+            .client_id = "client-id",
+            .redirect_uri = "http://127.0.0.1:48177/callback",
+            .code = kAuthCode,
+            .code_verifier = kVerifier,
+        },
+        isolated);
+    Expect(exchanged.success, "Phase 1.1 leak-guard token exchange should succeed");
+
+    const auto exchange_args = read_text(args_file);
+    const auto exchange_body = read_text(deref_file);
+    Expect(exchange_args.find(kVerifier) == std::string::npos,
+        "Phase 1.1: ExecuteOAuthTokenExchange must NOT spill code_verifier onto curl argv");
+    Expect(exchange_args.find(kAuthCode) == std::string::npos,
+        "Phase 1.1: ExecuteOAuthTokenExchange must NOT spill authorization code onto curl argv");
+    Expect(exchange_args.find("code_verifier=") == std::string::npos,
+        "Phase 1.1: ExecuteOAuthTokenExchange must NOT pass code_verifier= as argv");
+    Expect(exchange_args.find("@") != std::string::npos,
+        "Phase 1.1: ExecuteOAuthTokenExchange must reference body via curl @file syntax");
+    Expect(exchange_body.find(kVerifier) != std::string::npos,
+        "Phase 1.1: code_verifier should still reach the request body via the deref'd file");
+    Expect(exchange_body.find(kAuthCode) != std::string::npos,
+        "Phase 1.1: authorization code should still reach the request body via the deref'd file");
+
+    // Refresh exchange: refresh_token must not appear on argv.
+    const auto refreshed = agentos::ExecuteOAuthRefreshTokenExchange(
+        cli_host,
+        agentos::OAuthRefreshTokenRequestInput{
+            .token_endpoint = "https://oauth2.example.test/token",
+            .client_id = "client-id",
+            .refresh_token = kRefreshToken,
+        },
+        isolated);
+    Expect(refreshed.success, "Phase 1.1 leak-guard refresh exchange should succeed");
+
+    const auto refresh_args = read_text(args_file);
+    const auto refresh_body = read_text(deref_file);
+    Expect(refresh_args.find(kRefreshToken) == std::string::npos,
+        "Phase 1.1: ExecuteOAuthRefreshTokenExchange must NOT spill refresh_token onto curl argv");
+    Expect(refresh_args.find("refresh_token=") == std::string::npos,
+        "Phase 1.1: ExecuteOAuthRefreshTokenExchange must NOT pass refresh_token= as argv");
+    Expect(refresh_args.find("@") != std::string::npos,
+        "Phase 1.1: ExecuteOAuthRefreshTokenExchange must reference body via curl @file syntax");
+    Expect(refresh_body.find(kRefreshToken) != std::string::npos,
+        "Phase 1.1: refresh_token should still reach the request body via the deref'd file");
+}
+
+std::vector<agentos::AuthProviderDescriptor> SampleInteractiveProviders() {
+    using agentos::AuthMode;
+    using agentos::AuthProviderDescriptor;
+    using agentos::AuthProviderId;
+    return {
+        AuthProviderDescriptor{
+            .provider = AuthProviderId::openai,
+            .provider_name = "openai",
+            .supported_modes = {AuthMode::api_key, AuthMode::cli_session_passthrough},
+            .browser_login_supported = false,
+            .cli_session_passthrough_supported = true,
+        },
+        AuthProviderDescriptor{
+            .provider = AuthProviderId::gemini,
+            .provider_name = "gemini",
+            .supported_modes = {AuthMode::api_key, AuthMode::browser_oauth, AuthMode::cli_session_passthrough},
+            .browser_login_supported = true,
+            .cli_session_passthrough_supported = true,
+        },
+        AuthProviderDescriptor{
+            .provider = AuthProviderId::qwen,
+            .provider_name = "qwen",
+            .supported_modes = {AuthMode::api_key},
+            .browser_login_supported = false,
+        },
+    };
+}
+
+agentos::OAuthProviderDefaults SampleInteractiveDefaults(const agentos::AuthProviderId provider) {
+    return agentos::OAuthDefaultsForProvider(provider);
+}
+
+void TestInteractiveLoginPromptHappyPath() {
+    // qwen + all defaults: empty input on every remaining prompt should
+    // select api-key (the only mode), the AGENTOS_QWEN_API_KEY env hint,
+    // profile=default, and set_default=true.  Provider is preselected so the
+    // prompt sequence is: mode, api-key env, profile, set-default = 4 lines.
+    std::stringstream input;
+    input << "\n\n\n\n";
+    std::stringstream out;
+    const auto resolution = agentos::PromptInteractiveLogin(
+        SampleInteractiveProviders(),
+        SampleInteractiveDefaults,
+        agentos::AuthProviderId::qwen,
+        input,
+        out);
+    Expect(resolution.ok, "interactive prompt should succeed for preselected qwen + all defaults");
+    Expect(resolution.provider == agentos::AuthProviderId::qwen,
+        "interactive prompt should resolve qwen as the provider");
+    Expect(resolution.mode == agentos::AuthMode::api_key,
+        "interactive prompt should default qwen to api-key (the only supported mode)");
+    Expect(resolution.api_key_env == "AGENTOS_QWEN_API_KEY",
+        "interactive prompt should default api-key env to AGENTOS_<PROVIDER>_API_KEY");
+    Expect(resolution.profile_name == "default",
+        "interactive prompt should default profile name to 'default'");
+    Expect(resolution.set_default,
+        "interactive prompt should default set_default to true on empty answer");
+
+    // The transcript should surface origin and note metadata for qwen, since
+    // its OAuth defaults are stubbed and have a note describing why.
+    const auto transcript = out.str();
+    Expect(transcript.find("origin=stub") != std::string::npos,
+        "interactive prompt should print origin metadata from OAuthProviderDefaults");
+    Expect(transcript.find("note:") != std::string::npos,
+        "interactive prompt should surface note metadata when present");
+}
+
+void TestInteractiveLoginCustomEnvAndProfile() {
+    // Custom answers: provider is preselected so we only need to drive
+    // mode, env, profile, set-default in that order.
+    std::stringstream input;
+    input << "\n"               // mode index (default 1 = api-key)
+          << "MY_QWEN_KEY\n"    // api key env
+          << "team\n"            // profile
+          << "n\n";               // set as default? -> false
+    std::stringstream out;
+    const auto resolution = agentos::PromptInteractiveLogin(
+        SampleInteractiveProviders(),
+        SampleInteractiveDefaults,
+        agentos::AuthProviderId::qwen,
+        input,
+        out);
+    Expect(resolution.ok, "interactive prompt should accept custom env/profile/no-default answers");
+    Expect(resolution.api_key_env == "MY_QWEN_KEY",
+        "non-empty env answer should override the default");
+    Expect(resolution.profile_name == "team",
+        "non-empty profile answer should override the default");
+    Expect(!resolution.set_default,
+        "explicit 'n' to set-default should resolve to false");
+
+    const auto argv = agentos::BuildLoginArgvFromResolution(resolution);
+    Expect(argv.size() == 8,
+        "argv should contain agentos auth login <provider> mode=... api_key_env=... profile=... set_default=...");
+    bool found_env = false;
+    bool found_profile = false;
+    bool found_set_default = false;
+    bool found_mode = false;
+    for (const auto& argument : argv) {
+        if (argument == "api_key_env=MY_QWEN_KEY") found_env = true;
+        if (argument == "profile=team") found_profile = true;
+        if (argument == "set_default=false") found_set_default = true;
+        if (argument == "mode=api-key") found_mode = true;
+    }
+    Expect(found_env, "BuildLoginArgvFromResolution should emit api_key_env arg");
+    Expect(found_profile, "BuildLoginArgvFromResolution should emit profile arg");
+    Expect(found_set_default, "BuildLoginArgvFromResolution should emit set_default=false");
+    Expect(found_mode, "BuildLoginArgvFromResolution should emit mode=api-key");
+}
+
+void TestInteractiveLoginEofIsClean() {
+    // An empty stream simulates EOF before any answer can be read.  The
+    // prompt should not loop forever and should report a clear error.
+    std::stringstream empty_input;
+    std::stringstream out;
+    const auto resolution = agentos::PromptInteractiveLogin(
+        SampleInteractiveProviders(),
+        SampleInteractiveDefaults,
+        std::nullopt,
+        empty_input,
+        out);
+    Expect(!resolution.ok, "interactive prompt should fail on EOF before provider selection");
+    Expect(resolution.error_message.find("stdin closed") != std::string::npos,
+        "EOF error message should mention stdin");
+}
+
+void TestInteractiveLoginBrowserOAuthRedirects() {
+    // Preselect gemini (which has browser_oauth defaults).  The mode menu
+    // order is api-key (1), cli-session (2), browser_oauth (3).
+    std::stringstream input;
+    input << "3\n";  // mode index 3 = browser_oauth for gemini
+    std::stringstream out;
+    const auto resolution = agentos::PromptInteractiveLogin(
+        SampleInteractiveProviders(),
+        SampleInteractiveDefaults,
+        agentos::AuthProviderId::gemini,
+        input,
+        out);
+    Expect(!resolution.ok, "browser_oauth selection should not produce an ok resolution");
+    Expect(resolution.redirect_to_oauth_login,
+        "browser_oauth selection should set redirect_to_oauth_login");
+    Expect(resolution.error_message.find("auth oauth-login") != std::string::npos,
+        "browser_oauth redirect message should point to auth oauth-login");
+}
+
+void TestInteractiveLoginIndexedProviderChoice() {
+    // "3\n" picks the third provider (qwen), then \n on every remaining
+    // prompt (mode, env, profile, set-default) accepts defaults.
+    std::stringstream input;
+    input << "3\n\n\n\n\n";
+    std::stringstream out;
+    const auto resolution = agentos::PromptInteractiveLogin(
+        SampleInteractiveProviders(),
+        SampleInteractiveDefaults,
+        std::nullopt,
+        input,
+        out);
+    Expect(resolution.ok, "non-preselected provider choice should succeed");
+    Expect(resolution.provider == agentos::AuthProviderId::qwen,
+        "indexed choice 3 should resolve to qwen given the sample provider list");
+}
+
+void TestInteractiveLoginInvalidIndexFallsBackToFirst() {
+    // "abc\n" is not numeric; the prompt should fall back to index 1 (openai)
+    // and emit a hint, but otherwise continue.  Default mode (api-key) for
+    // openai then triggers env/profile/set-default prompts.
+    std::stringstream input;
+    input << "abc\n\n\n\n\n";
+    std::stringstream out;
+    const auto resolution = agentos::PromptInteractiveLogin(
+        SampleInteractiveProviders(),
+        SampleInteractiveDefaults,
+        std::nullopt,
+        input,
+        out);
+    Expect(resolution.ok, "non-numeric answer should fall back to default and continue");
+    Expect(resolution.provider == agentos::AuthProviderId::openai,
+        "non-numeric provider answer should fall back to provider index 1 (openai)");
+    Expect(out.str().find("invalid selection") != std::string::npos,
+        "non-numeric answer should print a single-line hint");
+}
+
 }  // namespace
 
 int main() {
     const auto workspace = FreshWorkspace();
 
     TestAuthApiKeySession(workspace);
+    TestSecureRandomBytesContract(workspace);
+    TestOAuthListenerRequestValidation(workspace);
     TestOAuthPkceScaffold(workspace);
+    TestOAuthExchangeDoesNotLeakSecretsOnArgv(workspace);
     TestAuthRefreshSession(workspace);
     TestAuthDefaultProfileMapping(workspace);
     TestAuthStatusReloadLogoutAndMissingEnv(workspace);
@@ -1037,6 +1485,12 @@ int main() {
     TestAuthMissingSessionAndUnregisteredProviderFailures(workspace);
     TestSecureTokenStoreInMemoryBackend(workspace);
     TestOAuthDefaultsCoverageAndConfigOverride(workspace);
+    TestInteractiveLoginPromptHappyPath();
+    TestInteractiveLoginCustomEnvAndProfile();
+    TestInteractiveLoginEofIsClean();
+    TestInteractiveLoginBrowserOAuthRedirects();
+    TestInteractiveLoginIndexedProviderChoice();
+    TestInteractiveLoginInvalidIndexFallsBackToFirst();
 
     if (failures != 0) {
         std::cerr << failures << " auth test assertion(s) failed\n";

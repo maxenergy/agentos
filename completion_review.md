@@ -9,11 +9,15 @@
 
 | 维度 | 评分 | 说明 |
 |------|------|------|
-| **MVP 完成度** | **~90%** | 本地可运行 MVP 已达标，所有核心子系统均有实现并完成多项审核后硬化 |
-| **产品级完成度** | **~55-60%** | Auth 硬化、Plugin 生命周期、存储事务性、Agent 编排深度仍有明确缺口 |
+| **MVP 完成度** | **~92%** | 本地可运行 MVP 已达标，所有核心子系统均有实现，现已支持 Interactive REPL 和 HTTP API Server 常驻模式 |
+| **产品级完成度** | **~60-65%** | Auth 硬化、Plugin 生命周期、存储事务性、Agent 编排深度仍有明确缺口 |
 | **plan.md 执行率** | **~98%** | Phase A-I 已完成；Post-Review Phase J-N 中仅剩少量生产化/依赖评估项 |
 | **文档一致性** | **良好** | README / ROADMAP / ARCH_ALIGNMENT / plan.md 四文档基本同步 |
-| **测试覆盖** | **良好** | 11 个 CTest 目标 + GitHub Actions CI（Windows + Ubuntu） |
+| **测试覆盖** | **良好** | 12 个 CTest 目标 + GitHub Actions CI（Windows + Ubuntu） |
+
+> 2026-04-26 update: 测试目标已增至 12 个（新增 `agentos_cancellation_tests`），并已落地 V2 streaming adapter 迁移、CancellationToken/InstallSignalCancellation、nlohmann/json wired-in 和 secure_random/curl_secret 安全硬化；详见 §11。
+
+> 2026-04-27 update: 新增两种常驻运行模式 — Interactive REPL (`agentos interactive`) 和 HTTP API Server (`agentos serve`)。默认无参数运行现进入交互式控制台。新增 cpp-httplib v0.18.3 依赖。87/87 构建目标，12/12 CTest 通过。
 
 > [!IMPORTANT]
 > 项目定位为 **"可运行的本地 MVP，而非生产级系统"**。在此定位下，完成度已经较高。生产化的主要剩余阻塞项是 Auth 交互 UX/非 Windows 凭据存储、Plugin 更深进程池/隔离策略、Timezone/DST 与结构化 JSON 依赖迁移。
@@ -26,7 +30,7 @@
 
 ```
 src/                        ← 主源码
-├── main.cpp                  ~850 lines (Runtime 组合根 + demo/run 分发；命令组已拆到 src/cli)
+├── main.cpp                  ~920 lines (Runtime 组合根 + demo/run/interactive/serve 分发；命令组已拆到 src/cli)
 ├── core/                     ← 内核
 │   ├── models.hpp              5,799 bytes
 │   ├── audit/                  AuditLogger
@@ -65,9 +69,12 @@ src/                        ← 主源码
 | `agentos_agent_provider_tests` | [agent_provider_tests.cpp](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/tests/agent_provider_tests.cpp) | 23 KB |
 | `agentos_auth_tests` | [auth_tests.cpp](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/tests/auth_tests.cpp) | 21 KB |
 | `agentos_spec_parsing_tests` | [spec_parsing_tests.cpp](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/tests/spec_parsing_tests.cpp) | 3 KB |
+| `agentos_cancellation_tests` | [cancellation_tests.cpp](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/tests/cancellation_tests.cpp) | ~180 行（新增） |
 | **共享夹具** | [test_command_fixtures.hpp](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/tests/test_command_fixtures.hpp) | 6.5 KB |
 
 > 测试代码总量约 **400+ KB**，测试代码量已超过不少源模块。
+
+> 2026-04-26 update: V2 adapter 迁移、CancellationToken/Signal handler、auth_interactive、secure_random/curl_secret 与 nlohmann/json 接入后 `src/` 体量明显增长（当前 `src/**/*.{cpp,hpp}` 共 172 个文件、约 30,678 行；`tests/**/*.{cpp,hpp}` 共 13 个文件、约 13,145 行；逐文件字节数留待后续刷新）。新增源文件：`src/utils/cancellation.{hpp,cpp}`、`src/utils/signal_cancellation.{hpp,cpp}`、`src/utils/secure_random.{hpp,cpp}`、`src/utils/curl_secret.{hpp,cpp}`、`src/cli/auth_interactive.{hpp,cpp}`；新增测试 `tests/cancellation_tests.cpp`（约 180 行）。
 
 ### 1.3 运行时持久化文件
 
@@ -125,6 +132,8 @@ runtime/
 > [!NOTE]
 > 原报告中“唯一显式未完成项”已过期：当前工作区已实现原生 OAuth authorization-code / refresh-token exchange helper、session persistence 和 Gemini 默认配置。剩余 Auth 生产化缺口集中在浏览器启动 UX、更广泛 provider discovery 与非 Windows credential store。
 
+> 2026-04-26 update: 已落地 macOS Keychain 与 Linux Secret Service 后端（`ISecureTokenBackend` 抽象 + 可选 libsecret CMake 依赖），非 Windows credential store 缺口大部分关闭；新增 `agentos auth login-interactive [provider=<id>]` 单条 stdin 交互 UX 入口（实现 `src/cli/auth_interactive.{hpp,cpp}`，复用现有 `auth login` 路径），多 provider 交互式登录 UX 已不再缺失基础形态；OAuth provider 默认表加入 openai / anthropic / qwen 的 stub 条目，公开 PKCE endpoint 仍待上游放出。OAuth 端到端凭据传递经 `src/utils/curl_secret.{hpp,cpp}` 临时文件中转（`--data @file` / `-H @file`），不再经 argv；OAuth callback 路径校验和 Host 头 loopback 检查已加固。
+
 ---
 
 ### Phase C: Scheduler 硬化 ✅ 全部完成
@@ -170,6 +179,8 @@ runtime/
 | Provider adapters 扩展 | ✅ | Gemini + Anthropic + Qwen + local_planner |
 
 > 实际 agent adapter 数量 **5 个** (local_planner, codex_cli, gemini, anthropic, qwen)，超过 PRD 要求的 "至少 1 个二级代理"。
+
+> 2026-04-26 update: 五个 adapter 均已同时实现 `IAgentAdapter` 与 `IAgentAdapterV2`（参见 `src/hosts/agents/*.hpp` `: public IAgentAdapter, public IAgentAdapterV2` 声明）；CodexCli/Anthropic/Qwen 走 SSE/NDJSON streaming 路径，Gemini 与 LocalPlanning 是 sync 包装（`profile().supports_streaming = false`）。`SubagentManager::run_one` 与 `AgentLoop::run_agent_task` 通过 `dynamic_cast<IAgentAdapterV2*>` 优先 `invoke()`，并把 `AgentResult.usage.cost_usd` 提升为 `step.estimated_cost` 的优先来源；CancellationToken 已贯通到 `AgentInvocation::cancel`。
 
 ---
 
@@ -220,6 +231,8 @@ runtime/
 | GitHub Actions CI | ✅ | ci.yml, Windows + Ubuntu |
 | 跨平台命令夹具 | ✅ | test_command_fixtures.hpp |
 
+> 2026-04-26 update: 测试目标增至 **12 个**——新增 `agentos_cancellation_tests`，覆盖 `CancellationToken` 幂等取消 / `wait_for_cancel` 超时与多线程 notify_all 释放、`InstallSignalCancellation` 幂等安装与跨线程可观测性。Round 1 还在已有目标内追加了 `auth login-interactive` 的 6 个单测 + 1 个 CLI 集成测试，以及 `agent_provider_tests` 中 Gemini / Subagent / AgentLoop 的 V2 路由覆盖。
+
 ---
 
 ## 3. PRD 需求交叉核查
@@ -247,6 +260,8 @@ runtime/
 > [!TIP]
 > **PRD MVP 范围已 100% 覆盖**，多数模块超额完成。
 
+> 2026-04-26 update: PRD/AGENT_SYSTEM 一直预留的 "streaming-aware adapter / cancel token / measured usage" 现已落地——`IAgentAdapterV2` + `AgentInvocation` + `AgentEvent`（SessionInit / TextDelta / Thinking / ToolUseStart / ToolUseResult / Status / CompactBoundary / Usage / Final / Error） + `AgentUsage(cost_usd/turns/per_model)` + `AgentResult.from_stream_fallback` 全部就绪并接入 SubagentManager / AgentLoop。`agentos run` 与 `agentos subagents run` 已通过 `InstallSignalCancellation` 接入 Ctrl-C / SIGINT / SIGTERM 取消语义，第二次信号会还原 OS 默认处置以允许强杀。
+
 ---
 
 ## 4. 剩余缺口汇总
@@ -259,6 +274,7 @@ runtime/
 |------|---------|------|
 | OAuth provider-specific UX/config | Auth | PKCE start/callback URL 解析校验、一次性 localhost callback listener、authorization-code/refresh-token request 构建、curl-backed exchange helper、response 解析、managed AuthSession persistence helper、single-command `oauth-login`、scriptable oauth-complete、Gemini Google OAuth 默认 endpoint/scope、repo-local `runtime/auth_oauth_providers.tsv` defaults 覆盖、`oauth-config-validate`、`oauth-defaults` 和参数化 provider adapter 原生 login/refresh 已落地，但仍缺更广泛 provider discovery 和完整多 provider 交互式 login UX |
 | 非 Windows 系统 credential store 集成 | Auth | Windows 已接入 Credential Manager；macOS/Linux 仍为 env-ref-only dev fallback |
+<!-- 2026-04-26 update: 上一行已过期；macOS Keychain 与 Linux Secret Service（libsecret 可选 CMake 依赖）后端均已落地，仅在 Linux 缺失 libsecret 时退化为 env-ref-only。该行的真实剩余项是“非 Windows 平台运行时环境验证 + 多账号策略对接”。 -->
 | Plugin 进程池与 lifecycle admin UX | Plugin Host | persistent `json-rpc-v0` session manager 已实现 MVP，并覆盖 crash/restart、session close、idle restart、LRU eviction 与 lifecycle_event；模块拆分、workspace-configurable session cap、plugin_host config diagnostics、`plugins inspect name=<plugin> [health=true]` 和 `plugins lifecycle` 已完成；新增 `PluginSpec.pool_size` 每 plugin 进程池上限（受全局 `max_persistent_sessions` 约束）和 `agentos plugins sessions` / `session-restart` / `session-close` 运行时 session admin 命令，剩余主要是 daemon 化跨进程 session 共享与更细的 OS 级隔离策略 |
 | 更强 Plugin sandbox 模型 | Plugin Host | 已有 `sandbox_mode=workspace|none` 的路径参数约束；更强隔离仍需 OS sandbox/cgroup/job 策略 |
 
@@ -282,6 +298,8 @@ runtime/
 | 部分旧设计文档与实现的持续同步 | Docs |
 | 扩展 failure/regression 测试套件 | Tests |
 
+> 2026-04-26 update: 高优先级缺口整体收窄——非 Windows credential store 大部分关闭；CancellationToken 与 SignalCancellation 解决了"对长时任务无外部中断点"这一隐性生产化阻塞；nlohmann/json 的 phase-1 wire-in（CMake FetchContent + json_utils + subagent_manager + 五个 V2 adapter 内部解析）部分关闭了 §6 历史标注的"hand-rolled JSON"风险。
+
 ---
 
 ## 5. 文档一致性审查
@@ -295,6 +313,8 @@ runtime/
 | [PRD.md](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/docs/PRD.md) | ⚠️ 中 | PRD 列出的 OAuth / 多账号 / session 型工具在 Auth 仍有缺口 |
 | [AUTH_PRD.md](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/docs/AUTH_PRD.md) | ⚠️ 中 | 描述了 OAuth/refresh/cloud credentials，代码尚未完全实现 |
 | [AUTH_DESIGN.md](file:///c:/Users/rogers/Downloads/agentos_docs_bundle/agentos/docs/AUTH_DESIGN.md) | ⚠️ 中 | 同上，已有 Known Gaps 标注 |
+
+> 2026-04-26 update: 新增 `docs/V2_ADAPTER_INTERFACE.md` 全量参考；`docs/AGENT_SYSTEM.md` §4.7 已加入 V2 摘要并指回 V2_ADAPTER_INTERFACE.md。`README.md` "当前实现状态"段仍写"11 个测试目标"（实际 12），需要刷新；`docs/CANCELLATION.md` 由本轮另一并发切片编写中，本切片不覆盖；`AUTH_PRD.md` / `AUTH_DESIGN.md` 暂未加入 macOS/Linux credential store 后端与 `auth login-interactive` 子命令描述，后续应同步。
 
 ---
 
@@ -312,9 +332,12 @@ runtime/
 ### ⚠️ 需要关注的方面
 
 1. **结构化 JSON 依赖仍未接入**: 当前仍靠本地 `json_utils` 和专用解析/校验路径支撑 schema、provider 与 plugin 协议。决策已写入 [`docs/ADR-JSON-001.md`](docs/ADR-JSON-001.md)（Status: Proposed，推荐 nlohmann/json + 分阶段迁移；尚未执行任何代码或构建系统修改），转为 ✅ 需在该 ADR 的迁移阶段全部落地后。
+   > 2026-04-26 update: ADR-JSON-001 phase 1 已落地——`CMakeLists.txt` 通过 FetchContent 拉取 `nlohmann_json v3.11.3` 并 `target_link_libraries(agentos_core PUBLIC nlohmann_json::nlohmann_json)`，`src/utils/json_utils.cpp::NumberAsJson(double)` 改为委托 nlohmann（移除固定 2 位小数截断），`src/core/orchestration/subagent_manager.cpp::ExtractPlanActions` 重写为 nlohmann（拒绝 substring-style action 注入），五个 V2 adapter 的 streaming event parsing 与 request-body 构造内部均使用 nlohmann。Plugin Host 校验路径与部分 Schema 校验路径仍是手写实现，phase 2-N 尚未启动。
 2. **TSV 作为 MVP 存储后端**: 对复杂查询和跨进程并发仍有固有限制；已有 atomic write、append-intent recovery、prepare/commit/recover 和 ADR-STORAGE-001，SQLite 仍按边界延后。
 3. **Auth 交互 UX 仍需产品化**: 已有 `oauth-login` 单命令 PKCE/token exchange/session persistence 和可选浏览器启动，但尚不是完整产品级多 provider login 流。
 4. **Plugin 隔离仍是路径约束级别**: `sandbox_mode=workspace|none` 能限制路径参数，但不是 OS sandbox/cgroup/job 完整隔离。
+
+> 2026-04-26 update: 新增 ✅ "运行时取消骨架"——`src/utils/cancellation.{hpp,cpp}` 提供 `CancellationToken`（cancel / is_cancelled / wait_for_cancel），`src/utils/signal_cancellation.{hpp,cpp}` 提供 `InstallSignalCancellation()`（幂等进程级 Ctrl-C/SIGINT/SIGTERM handler；二次信号还原 OS 默认处置并 re-raise）。token 已贯通 `AgentLoop::run` / `SubagentManager::run` / `AgentInvocation::cancel`，sequential 模式短路、parallel 模式向 `std::async` 内部传播；`agentos run` 与 `agentos subagents run` 已接线。新增 ✅ "凭据/随机源安全硬化"——`src/utils/secure_random.{hpp,cpp}` 直连平台 CSPRNG（BCryptGenRandom / SecRandomCopyBytes / getrandom，无 `std::random_device` fallback），`src/utils/curl_secret.{hpp,cpp}` 用短生命周期临时文件中转 `--data @file` / `-H @file` 让 OAuth body 与 bearer token 不再经 argv，已被 oauth_pkce.cpp 与四个 model-provider agent 使用。
 
 ---
 
@@ -398,5 +421,115 @@ Documentation       ██████████████████░░
 - 已修正：ExecutionCache 现在以 `idempotency_key` + task input/context fingerprint 共同决定缓存命中；同 key 不同 inputs/context 会重新执行，同时兼容读取旧 9 列 TSV 缓存。
 - 成立：auto_decompose 过去主要覆盖 happy path，已补充 planner 失败与 planner 输出缺少 `plan_steps[].action` 的负面路径测试。
 - 已大部分完成：拆分 `main.cpp`、拆分 `plugin_host.cpp`、收敛 PolicyEngine 构造、抽 shared step lifecycle、抽 LessonHintProvider 均已落地；仍待评估引入结构化 JSON 依赖。
+  > 2026-04-26 update: ADR-JSON-001 phase 1（FetchContent + json_utils + subagent_manager + 五个 V2 adapter 内部解析）已落地，"评估"步骤事实上已开始执行，详见 §11。
 - 2026-04-26：补齐 Plugin Host per-plugin process pool 与 admin UX——`PluginSpec.pool_size` 受全局 `max_persistent_sessions` 约束、`PluginHost::list_sessions/close_sessions_for_plugin/restart_sessions_for_plugin`，并新增 `agentos plugins sessions / session-restart / session-close` 子命令、TSV/JSON manifest pool_size 解析及 pool/admin 回归测试。
 - 2026-04-26：纳入 `docs/ADR-JSON-001.md`（Status: Proposed），明确 nlohmann/json 推荐与分阶段迁移路径；尚未执行任何代码或构建系统修改。
+
+---
+
+## 11. 多代理并行开发轮次复核（2026-04-26）
+
+本节是在 §9（Codex 复核）/ §10（Opus 审核复核）之后，针对 2026-04-26 当天后续两轮"多代理并行开发"产出做的增量审核。审核方法与前面一致：以源码、CMake、测试目标和文档实际状态为准，不复述未落地的设想。
+
+### 11.1 本轮交付摘要
+
+- **V2 streaming adapter 迁移（端到端）**
+  - `src/core/models.hpp` 新增 `IAgentAdapterV2`、`AgentInvocation`、`AgentEvent`（`Kind` 枚举：SessionInit / TextDelta / Thinking / ToolUseStart / ToolUseResult / Status / CompactBoundary / Usage / Final / Error）、`AgentEventCallback`、`AgentUsage(input_tokens / output_tokens / reasoning_tokens / cost_usd / turns / per_model)`，并在 `AgentResult` 上新增 `usage`、`session_id`、`from_stream_fallback`。
+  - 五个 adapter 全部声明 `: public IAgentAdapter, public IAgentAdapterV2`：`AnthropicAgent` / `CodexCliAgent` / `QwenAgent` 走真正的 SSE/NDJSON streaming 路径（`profile().supports_streaming = true`，逐事件回调）；`GeminiAgent` 与 `LocalPlanningAgent` 是同步包装（`supports_streaming = false`，一次性发出 SessionInit → Status → Usage → Final）。
+  - `SubagentManager::run_one` 与 `AgentLoop::run_agent_task` 通过 `dynamic_cast<IAgentAdapterV2*>` 优先调用 `invoke()`，并把 `AgentResult.usage.cost_usd` 提升为 `step.estimated_cost` 的优先来源；legacy adapter 仍走 `run_task()`。`AgentInvocation::cancel` 是端到端取消通道。
+- **Cancellation 基础设施**
+  - 新增 `src/utils/cancellation.{hpp,cpp}`（`CancellationToken`：`cancel()` / `is_cancelled()` / `wait_for_cancel(timeout)`，使用 `std::atomic<bool>` + `condition_variable` 双层结构以支持快速 poll 与阻塞 wait）。
+  - 新增 `src/utils/signal_cancellation.{hpp,cpp}`（`InstallSignalCancellation()`：幂等进程级 Ctrl-C / SIGINT / SIGTERM handler；首信号吞掉并提示"再按一次将立即退出"，二次信号还原 OS 默认处置——Windows 控制台 handler 返回 FALSE，POSIX `sigaction(SIG_DFL)` 后 re-raise——保证强杀通道始终可用）。
+  - 已贯通：`AgentLoop::run` 与 `SubagentManager::run` / `run_one` 形参新增可选 `std::shared_ptr<CancellationToken>`；sequential 模式短路后续 dispatch；parallel 模式把 token 传入 `std::async` 闭包；`run_agent_task` 把 token 注入 `AgentInvocation::cancel`。`agentos run` 和 `agentos subagents run` CLI 入口已 `InstallSignalCancellation()` 并把同一 token 注入 driver。
+- **安全硬化（先于本轮但近期落地）**
+  - `src/utils/secure_random.{hpp,cpp}`：平台 CSPRNG 直连——Windows `BCryptGenRandom` / macOS `SecRandomCopyBytes` / Linux `getrandom`；明确不再回退到 `std::random_device`。
+  - `src/utils/curl_secret.{hpp,cpp}`：短生命周期临时文件中转 OAuth body 与 bearer token（`curl --data @file` / `-H @file`），`oauth_pkce.cpp` 与 Anthropic / Codex / Gemini / Qwen 四个 model-provider agent 已切换。argv 不再泄漏 token。
+  - `src/auth/oauth_pkce.cpp`：callback 路径 strict 校验、Host 头 loopback 检查。
+- **nlohmann/json 接入（ADR-JSON-001 phase 1）**
+  - `CMakeLists.txt` `FetchContent` v3.11.3 并 `target_link_libraries(agentos_core PUBLIC nlohmann_json::nlohmann_json)`。
+  - `src/utils/json_utils.cpp::NumberAsJson(double)` 委托 nlohmann，移除原先固定 2 位小数截断。
+  - `src/core/orchestration/subagent_manager.cpp::ExtractPlanActions` 重写为 nlohmann（拒绝 substring 注入，要求 `plan_steps[].action` 是含 string `action` 字段的对象数组）。
+  - 五个 V2 adapter 内部 streaming-event parsing 与 request-body 构造均使用 nlohmann。
+- **多代理并行开发轮次（两轮）**
+  - Round 1：三个文件不相交切片落地 —— `docs/V2_ADAPTER_INTERFACE.md` + AGENT_SYSTEM.md §4.7 / `tests/cancellation_tests.cpp` + 第 12 个 ctest 目标 / `agentos auth login-interactive`（`src/cli/auth_interactive.{hpp,cpp}` + dispatch + 6 个单测 + 1 个 CLI 集成测试）。
+  - Round 2（与本切片并行）：本切片之外另两个并发切片为 `docs/CANCELLATION.md` 编写者与 `agentos diagnostics` CLI 实现者；本切片仅写 `completion_review.md`，不触碰其他文件。
+
+### 11.2 测试目标计数刷新
+
+CTest 目标由 11 个升至 **12 个**。完整列表（见 `CMakeLists.txt`）：
+
+1. `agentos_cli_integration_tests`
+2. `agentos_storage_tests`
+3. `agentos_auth_tests`
+4. `agentos_agent_provider_tests`
+5. `agentos_policy_trust_tests`
+6. `agentos_scheduler_tests`
+7. `agentos_workflow_router_tests`
+8. `agentos_subagent_session_tests`
+9. **`agentos_cancellation_tests`（新增，slot 9）**
+10. `agentos_cli_plugin_tests`
+11. `agentos_spec_parsing_tests`
+12. `agentos_file_skill_policy_tests`
+
+`CLAUDE.md` 已同步为"12 test executables"。`agentos_cancellation_tests` 直接覆盖 `CancellationToken` 幂等取消、`wait_for_cancel` 超时 vs. 立即触发、多线程 `notify_all` 唤醒所有 waiter，以及 `InstallSignalCancellation()` 多次调用返回同一 shared token 与 worker 线程跨边界可观测性。Round 1 还在已有目标内追加：
+
+- `agentos_subagent_session_tests`：`TestSubagentManagerPrefersV2InvokeWhenAvailable`、`TestSubagentManagerCancellationShortCircuitsSequential`、`TestSubagentManagerCancellationShortCircuitsParallel`、`TestAgentLoopRoutesThroughV2InvokeAndForwardsUsageCost`、`TestAgentLoopHonorsCancellationBeforeAgentDispatch`、`TestSignalCancellationIsIdempotent`。
+- `agentos_agent_provider_tests`：`TestGeminiAgentV2InvokeEmitsLifecycleEvents`、`TestGeminiAgentV2InvokeCancelsBeforeDispatch`。
+- 6 个 `auth_interactive` 单测 + 1 个 CLI 集成测试覆盖 stdin 驱动的 provider 选择、mode 选择回退、与现有 `auth login` 路径复用。
+
+### 11.3 plan.md 状态盘点（不修改 plan.md，仅描述）
+
+按 plan.md 当前 `[ ]` 项做诚实分类。
+
+- **明确仍开放**：
+  - Phase J: "Document and ship public PKCE endpoints for OpenAI / Anthropic once the providers expose stable customer flows"——上游条件未达。
+  - Phase J: "Polish multi-provider interactive login UX"——`auth login-interactive` 已落地基础形态（stdin 驱动、provider 元数据展示、mode 选择），可视为**部分关闭**；UX 打磨（per-provider 提示语、错误恢复路径、持续会话）仍开。
+  - Phase N: "Evaluate replacing ad hoc JSON parsing paths with a structured JSON dependency"——nlohmann/json 已接入并迁移了三处关键路径（ADR phase 1），可视为**部分关闭**；Plugin Host schema validator、CLI spec loader、storage 文件 IO 等仍是手写 JSON，phase 2-N 未启动。
+  - Post-Review Work: "Structured JSON dependency"——同上，部分关闭。
+  - Post-Review Work: "Storage backend boundary / SQLite migration"——决策已写入 ADR-STORAGE-001，仍是 open research item。
+- **被本轮工作隐式关闭但 plan.md 尚未勾选的项目**：plan.md `Phase J` 中"Add macOS Keychain backend"、"Add Linux Secret Service backend"、"Refactor `SecureTokenStore` around an `ISecureTokenBackend` abstraction"等已在 Progress Log 中标 `[x]`；没有发现错标的开放项。
+- **新生但 plan.md 未列出的工作**（建议下一次刷新时新增条目）：
+  - V2 adapter 迁移工作流（IAgentAdapterV2 / AgentInvocation / AgentEvent / AgentUsage 设计与五个 adapter 迁移）。
+  - 进程级 Cancellation 骨架（CancellationToken + InstallSignalCancellation + AgentLoop / SubagentManager 形参贯通 + CLI 接线）。
+  - secure_random / curl_secret / OAuth callback 加固这条安全硬化轨道。
+  - `agentos auth login-interactive` 与待编写中的 `agentos diagnostics` CLI（另一切片）。
+
+### 11.4 当前文档/代码漂移盘点
+
+- **README.md "当前实现状态"段**：仍写 "11 个测试目标"（实际 12），仍未提 `IAgentAdapterV2` / `CancellationToken` / `secure_random` / `curl_secret` / `auth login-interactive` / `agentos diagnostics`。需要刷新。
+- **docs/AGENT_SYSTEM.md §4.7 "V2 adapter interface"**：已加入并指回 `V2_ADAPTER_INTERFACE.md`，与代码一致 ✅。
+- **docs/V2_ADAPTER_INTERFACE.md**：存在；类型签名、事件序列、cancellation contract、V1→V2 迁移 recipe（以 LocalPlanningAgent 为示例）、SubagentManager / AgentLoop 路由语义、已知缺口齐全 ✅。
+- **docs/CANCELLATION.md**：本轮另一切片正在编写中，本审核不涉及。
+- **docs/ARCHITECTURE.md**：尚未提及 V2 adapter、CancellationToken、`signal_cancellation`、nlohmann/json，未来需要在"Composition root / Execution path / Capability surfaces"章节补充。
+- **docs/AUTH_DESIGN.md / AUTH_PRD.md**：未提 macOS Keychain / Linux Secret Service 后端、`ISecureTokenBackend` 抽象、`auth login-interactive` 子命令；与代码偏差较大。
+- **docs/ADR-JSON-001.md**：Status 仍标 Proposed，但 phase 1 已落地，应升级为 Accepted（phase 1 partial）或追加进展段。
+- **CLAUDE.md**：已同步至 "12 test executables"。
+- **plan.md**：Completion Snapshot 评论文字提到 "11/11 tests passing"（未刷新到 12）。Progress Log 详尽，未见过期。
+
+### 11.5 刷新后的分模块完成度雷达
+
+```
+Core Runtime        ████████████████████ 96%  ← V2 路由 + Cancellation 接入闭合关键失控点；剩余 failure recovery
+Builtin Skills      ████████████████████ 95%  ← 与 §7 持平
+CLI Integration     ██████████████████░░ 91%  ← 仍缺 Windows file-handle limits；CLI 命令组拆分完成度提升
+Agent System        ███████████████████░ 92%  ← 五 adapter 全部 V2 迁移（3 个 streaming + 2 个 sync wrap）；剩余复杂任务拆分仍开
+Auth System         ███████████████████░ 94%  ← macOS/Linux 后端到位 + login-interactive 雏形 + curl_secret 端到端；剩余 PKCE endpoint 上游缺位 / 多 provider UX 打磨
+Memory & Evolution  ██████████████████░░ 90%  ← 与 §7 持平
+Identity / Trust    ██████████████████░░ 90%  ← 与 §7 持平
+Scheduler           ██████████████████░░ 95%  ← 与 §7 持平（cron + timezone 在前一轮已闭合）
+Plugin Host         ██████████████████░░ 90%  ← 与 §7 持平；本轮无 Plugin 改动
+Storage             ██████████████████░░ 91%  ← 与 §7 持平
+Tests & CI          ███████████████████░ 92%  ← +1 ctest 目标 + V2 / Cancellation 路径专项覆盖 + auth_interactive 单测 + CLI 集成
+Documentation       █████████████████░░░ 88%  ← V2 文档双保险；README / ARCHITECTURE / AUTH 文档存在已识别漂移
+Security Hardening  ████████████████░░░░ 80%  ← 新增独立维度：secure_random + curl_secret + OAuth callback 加固；剩余沙箱 / Plugin OS 隔离
+Cancellation/Signal ███████████████████░ 92%  ← 新增独立维度：CancellationToken + InstallSignalCancellation 已贯通 AgentLoop / SubagentManager / CLI；剩余 V1 adapter 兼容路径无法响应 mid-call 取消
+```
+
+> 雷达说明：Auth、Agent、Tests、Documentation 行较 §7 上调；新增 "Security Hardening" 与 "Cancellation/Signal" 两条独立维度以反映本轮新交付的横切能力。其余模块本轮无显著改动，按持平处理。
+
+### 11.6 总评微调建议
+
+- **MVP 完成度** 可由 ~90% 微升至 **~92%**：长时任务取消通道补齐 + Auth 跨平台 credential store 闭合，是过去几轮一直拖累的硬阻塞。
+- **产品级完成度** 可由 ~55-60% 升至 **~62-65%**：streaming adapter / measured usage / 跨平台凭据存储显著缩小生产化差距，但 multi-provider login UX、Plugin OS 隔离、storage 事务/SQLite 迁移仍是产品化关键路径上的剩余重负载。
+- **plan.md 执行率** 维持 ~98%：plan.md 显式开放项以"上游条件未达"和"评估类研究项"为主，本轮工作大量是 plan.md 未显式列出的新轨道。
+- **测试覆盖** 维持"良好"，列数刷新为 12。

@@ -1,5 +1,7 @@
 #include "cli/subagents_commands.hpp"
 
+#include "utils/signal_cancellation.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <iostream>
@@ -195,7 +197,11 @@ int RunSubagentsCommand(
             : std::vector<std::string>{};
         const auto mode = ParseSubagentExecutionMode(options.contains("mode") ? options.at("mode") : "sequential");
         const auto task = BuildSubagentTaskFromOptions(options, workspace);
-        const auto result = subagent_manager.run(task, agent_names, mode);
+        // Bind a process-wide Ctrl-C / SIGINT handler so the orchestrator can
+        // unwind in-flight V2 invocations cooperatively. Second signal hard-
+        // kills (handler restores OS default disposition and re-raises).
+        auto cancel = InstallSignalCancellation();
+        const auto result = subagent_manager.run(task, agent_names, mode, std::move(cancel));
         PrintResult(result);
         return result.success ? 0 : 1;
     }

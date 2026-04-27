@@ -12,5 +12,6 @@ struct PluginSpec;
 std::optional<std::string> JsonRpcResultObject(const std::string& output_json);
 std::string JsonRpcOutputError(const std::string& output_json);
 std::string JsonRpcRequestForPlugin(const PluginSpec& spec, const StringMap& arguments, int request_id);
+std::string JsonRpcHealthRequest(int request_id);
 
 }  // namespace agentos

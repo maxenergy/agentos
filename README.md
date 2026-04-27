@@ -40,6 +40,8 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - 结构化记忆
 - Workflow 自动沉淀
 - 基于评分的路由优化
+- Interactive REPL 交互式控制台
+- HTTP REST API 服务器模式
 
 ## 当前实现状态
 
@@ -51,7 +53,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - 内建 Skill：file_read / file_write / file_patch / http_fetch / workflow_run
 - CLI Host：受控 cwd、timeout、stdout/stderr 捕获、输出限流、env 白名单、敏感参数脱敏，Windows Job Object 与 POSIX `setrlimit` 资源限制（如 `max_processes` / `memory_limit_bytes` / `cpu_time_limit_seconds`）
 - CLI Skill：rg_search / git_status / git_diff / jq_transform / curl_fetch
-- Plugin Host：`runtime/plugin_specs/*.tsv` 与 `runtime/plugin_specs/*.json` 可声明 repo-local `plugin.v1` / `stdio-json-v0` / `json-rpc-v0` 插件 skill，manifest 必须声明 `process.spawn` 权限，`stdio-json-v0` 成功执行的 stdout 必须是 JSON object；`json-rpc-v0` 成功执行的 stdout 必须是 JSON-RPC 2.0 response 且 `result` 为 JSON object，并会按 `output_schema_json.required`、`properties.*.type`、string `const` / `enum` / length / pattern、`additionalProperties:false`、numeric range / `multipleOf` 校验后作为结构化 `plugin_output` 返回，同时保留原始 stdout，并透传 CLI 资源限制字段；manifest 支持 `sandbox_mode=workspace|none`、`lifecycle_mode=oneshot|persistent`、`startup_timeout_ms` 和 `idle_timeout_ms`，其中 `persistent` 当前要求 `json-rpc-v0`；`runtime/plugin_host.tsv` 可配置 `max_persistent_sessions`；`agentos plugins` / `validate` / `health` 会显示 loaded plugin 的 source file/line 和 lifecycle 字段，`agentos plugins lifecycle` 汇总 oneshot/persistent 配置、当前 session cap 和 plugin host config diagnostics，`agentos plugins inspect name=<plugin> [health=true]` 可脚本化查看单个 manifest 的协议、权限、参数、资源限制、sandbox 和 lifecycle，并可按需执行单插件 health probe；`agentos plugins health` 支持 binary 可用性检查和可选 `health_args_template` 探针，探针不能引用运行期输入占位符；无效外部 CLI/plugin spec 会在启动时写入 `runtime/audit.log`
+- Plugin Host：`runtime/plugin_specs/*.tsv` 与 `runtime/plugin_specs/*.json` 可声明 repo-local `plugin.v1` / `stdio-json-v0` / `json-rpc-v0` 插件 skill，manifest 必须声明 `process.spawn` 权限，`stdio-json-v0` 成功执行的 stdout 必须是 JSON object；`json-rpc-v0` 成功执行的 stdout 必须是 JSON-RPC 2.0 response 且 `result` 为 JSON object，并会按 `output_schema_json.required`、`properties.*.type`、string `const` / `enum` / length / pattern、array `minItems` / `maxItems` / `uniqueItems` / `prefixItems` / `contains` / `minContains` / `maxContains` / `items.type` / `items.const` / `items.enum` / `items.minLength` / `items.maxLength` / `items.pattern` / `items.minimum` / `items.maximum` / `items.multipleOf` / object-item `items.required` / `items.properties.*.type` / `items.propertyNames` / `items.dependentRequired` / `items.dependencies` / `items.not.required` / `items.additionalProperties:false` / `items.minProperties` / `items.maxProperties`、`additionalProperties:false`、numeric range / `multipleOf` 校验后作为结构化 `plugin_output` 返回，同时保留原始 stdout，并透传 CLI 资源限制字段；manifest 支持 `sandbox_mode=workspace|none`、`lifecycle_mode=oneshot|persistent`、`startup_timeout_ms` 和 `idle_timeout_ms`，其中 `persistent` 当前要求 `json-rpc-v0`；`runtime/plugin_host.tsv` 可配置 `max_persistent_sessions`；`agentos plugins` / `validate` / `health` 会显示 loaded plugin 的 source file/line 和 lifecycle 字段，`agentos plugins lifecycle` 汇总 oneshot/persistent 配置、当前 session cap 和 plugin host config diagnostics，`agentos plugins inspect name=<plugin> [health=true]` 可脚本化查看单个 manifest 的协议、权限、参数、资源限制、sandbox 和 lifecycle，并可按需执行单插件 health probe；`agentos plugins health` 支持 binary 可用性检查和可选 `health_args_template` 探针，探针不能引用运行期输入占位符；无效外部 CLI/plugin spec 会在启动时写入 `runtime/audit.log`
 - 本地规划二级代理：local_planner（离线确定性分析、任务拆解、会话状态和结构化计划输出）
 - Codex CLI 二级代理适配器：codex_cli（显式 target 调用）
 - Model provider agents：Gemini、Anthropic、Qwen 均可通过现有 auth session/default profile 调用；Qwen 使用 Alibaba Cloud Model Studio OpenAI-compatible Chat Completions
@@ -78,12 +80,17 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 - External CLI Specs：`runtime/cli_specs/*.tsv` 可声明 repo-local CLI skill，并启动时动态注册
 - Scheduler：一次性 / interval 任务持久化，`schedule run-due` / `schedule tick` / `schedule daemon` 复用 AgentLoop 执行，支持 retry/backoff、missed-run policy、五字段 cron、`@hourly` / `@daily` / `@weekly` / `@monthly` / `@yearly` / `@annually` 别名，以及 day-of-month / day-of-week OR 语义，并记录独立 run history
 - Subagent Orchestration：显式或自动候选 agent 的 sequential / parallel 编排，支持 `roles=agent:role` 确定性角色分配、`subtasks=role_or_agent=objective;...` 或 `subtask_<agent|role>=...` 的 per-agent objective 分派；也支持 `auto_decompose=true` 调用具备 `decomposition` capability 的规划 agent 生成 plan_steps 并映射到 subtask objective；subagent step 会保留 agent structured output，并在总输出中聚合 `agent_outputs[].normalized` 的 `agent_result.v1` 结果；并发/成本限制与 WorkspaceSession 基础生命周期，复用 Policy / Audit / Memory
-- CTest 模块化测试：11 个测试目标覆盖 CLI integration、storage、auth、agent provider、policy/trust、scheduler、workflow/router、subagent/session、CLI/plugin、shared spec parsing、file skill/policy
+- V2 Streaming Adapter：`IAgentAdapterV2::invoke(AgentInvocation, AgentEventCallback)` 与 legacy `IAgentAdapter` 共存；五个适配器（`local_planner` / `codex_cli` / `anthropic` / `qwen` / `gemini`）已双继承并实现 `invoke()`；`SubagentManager::run_one` 与 `AgentLoop::run_agent_task` 通过 `dynamic_cast<IAgentAdapterV2*>` 优先走 V2 路径，未迁移的适配器回退到 `run_task()`；`AgentResult.usage.cost_usd` 在非零时优先于 legacy `estimated_cost` 流入 `step.estimated_cost`。完整参考见 [docs/V2_ADAPTER_INTERFACE.md](docs/V2_ADAPTER_INTERFACE.md)
+- Cooperative Cancellation：`src/utils/cancellation.{hpp,cpp}` 提供 `CancellationToken`（`cancel` / `is_cancelled` / `wait_for_cancel`，`notify_all` 唤醒所有等待者）；`src/utils/signal_cancellation.{hpp,cpp}` 提供进程级 `InstallSignalCancellation()`，幂等地注册 Windows `SetConsoleCtrlHandler` 与 POSIX `sigaction(SIGINT/SIGTERM)`，首次信号触发 token、二次信号还原 OS 默认处理并放行强制退出；`agentos run` 与 `agentos subagents run` 已绑定该 token 并贯穿 `AgentLoop::run` / `SubagentManager::run` / `AgentInvocation::cancel`，sequential 模式短路剩余 dispatch、parallel 模式向每个 future 传递 token，已取消步骤记为 `error_code=Cancelled`
+- Auth Login UX：`agentos auth login-interactive [provider=<id>]` 使用 stdin 提示驱动 provider 选择、mode 选择、API key env / profile / set_default 输入，提示文本会回显 `OAuthDefaultsForProvider` 的 `origin` / `note` 元数据；`browser_oauth` 选项会重定向到 `agentos auth oauth-login <provider>` 而非内嵌 PKCE
+- Interactive REPL：`agentos interactive` 提供 stdin 交互式命令循环（run/agents/skills/status/memory/schedule），默认无参数运行即进入 REPL
+- HTTP API Server：`agentos serve [port=18080] [host=127.0.0.1]` 提供 REST JSON API（`/api/health`、`/api/skills`、`/api/agents`、`/api/status`、`POST /api/run`、`/api/schedule/list`、`/api/memory/stats`），支持 CORS
+- CTest 模块化测试：12 个测试目标覆盖 CLI integration、storage、auth、agent provider、policy/trust、scheduler、workflow/router、subagent/session、cancellation、CLI/plugin、shared spec parsing、file skill/policy
 
 ## 开发计划
 
 当前完成度审查与后续 TODO 维护在 [plan.md](plan.md)。每完成一项能力，应同步更新该文件和相关 docs。
-当前状态是可运行的本地 MVP，不是生产级完成；Gemini 已支持复用 Gemini CLI 的浏览器 OAuth 登录态、原生 PKCE OAuth 登录、`oauth-defaults` OAuth 配置查询、repo-local `runtime/auth_oauth_providers.tsv` OAuth defaults 覆盖、`oauth-start open_browser=true` 系统浏览器启动尝试、`oauth-login` start/listen/token-exchange/session-persist 单命令编排和 Google OAuth 默认 endpoint/scope，Windows 已接入 Credential Manager，但生产化仍需补齐更完整的多 provider 交互式登录 UX、非 Windows credential store、存储事务/恢复和更完整的 agent orchestration。
+当前状态是可运行的本地 MVP，不是生产级完成；Gemini 已支持复用 Gemini CLI 的浏览器 OAuth 登录态、原生 PKCE OAuth 登录、`oauth-defaults` OAuth 配置查询、repo-local `runtime/auth_oauth_providers.tsv` OAuth defaults 覆盖、`oauth-start open_browser=true` 系统浏览器启动尝试、`oauth-login` start/listen/token-exchange/session-persist 单命令编排和 Google OAuth 默认 endpoint/scope。OpenAI / Anthropic / Qwen 的公开 PKCE endpoint 仍作为 `stub` provider 延后，CLI 会输出 `endpoint_status=deferred`；如需测试可在 workspace TSV 中提供覆盖。Windows 已接入 Credential Manager，但生产化仍需补齐更完整的多 provider 交互式登录 UX、非 Windows credential store、存储事务/恢复和更完整的 agent orchestration。
 仓库已包含 GitHub Actions CI，默认在 `push` 和 `pull_request` 上执行 Windows + Ubuntu 的 `configure/build/test`。
 
 ## 构建与运行
@@ -92,7 +99,7 @@ AgentOS 不追求把所有能力都塞进内核，而是采用以下原则：
 cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure
-build\agentos.exe demo
+build\agentos.exe          # 进入交互式控制台 (等同于 build\agentos.exe interactive)
 ```
 
 如果当前 shell 没有加载 MSVC 环境，可先执行：
@@ -120,6 +127,14 @@ ctest --test-dir build --output-on-failure
 常用命令：
 
 ```powershell
+# 常驻运行模式
+build\agentos.exe                                       # 进入 Interactive REPL (默认)
+build\agentos.exe interactive                             # 同上
+build\agentos.exe serve                                    # HTTP API Server (默认 127.0.0.1:18080)
+build\agentos.exe serve port=9000 host=0.0.0.0            # 自定义端口和绑定地址
+build\agentos.exe demo                                    # 运行 demo 任务流程
+
+# 单次任务执行
 build\agentos.exe run read_file path=README.md
 build\agentos.exe run workflow_run workflow=write_patch_read path=runtime/wf.txt content=hello find=hello replace=done idempotency_key=demo-wf-1
 build\agentos.exe run write_file path=runtime/note.txt content=hello idempotency_key=demo-write-1
@@ -131,6 +146,9 @@ build\agentos.exe plugins validate
 build\agentos.exe plugins health
 build\agentos.exe plugins lifecycle
 build\agentos.exe plugins inspect name=cli_plugin health=true
+build\agentos.exe plugins sessions name=cli_plugin
+build\agentos.exe plugins session-prune name=cli_plugin dry_run=true
+build\agentos.exe plugins session-prune name=cli_plugin
 build\agentos.exe memory summary
 build\agentos.exe memory stats
 build\agentos.exe memory workflows
@@ -159,6 +177,14 @@ build\agentos.exe trust approval-request subject=critical-write reason=operator-
 build\agentos.exe trust approval-show approval=APPROVAL_ID
 build\agentos.exe trust user-role-remove user=alice
 build\agentos.exe trust role-remove role=reader
+# 常驻运行模式
+build\agentos.exe                                       # 进入 Interactive REPL (默认)
+build\agentos.exe interactive                             # 同上
+build\agentos.exe serve                                    # HTTP API Server (默认 127.0.0.1:18080)
+build\agentos.exe serve port=9000 host=0.0.0.0            # 自定义端口和绑定地址
+build\agentos.exe demo                                    # 运行 demo 任务流程
+
+# 单次任务执行
 build\agentos.exe run read_file path=README.md remote=true origin_identity=phone origin_device=device1
 build\agentos.exe trust block identity=phone device=device1
 build\agentos.exe trust remove identity=phone device=device1
@@ -202,6 +228,7 @@ build\agentos.exe auth probe openai
 build\agentos.exe auth login openai mode=cli-session
 build\agentos.exe auth default-profile qwen profile=work
 build\agentos.exe auth login qwen mode=api-key api_key_env=QWEN_API_KEY profile=default set_default=true
+build\agentos.exe auth login-interactive provider=qwen
 build\agentos.exe auth login gemini mode=api-key api_key_env=GEMINI_API_KEY profile=default
 build\agentos.exe auth login gemini mode=browser_oauth profile=default
 build\agentos.exe auth default-profile gemini profile=default
@@ -214,7 +241,7 @@ build\agentos.exe run analysis target=qwen model=qwen-plus objective=Explain_the
 build\agentos.exe run analysis target=codex_cli objective=Review_the_project_structure
 ```
 
-`runtime/auth_oauth_providers.tsv` 可覆盖或补充 OAuth defaults，并可用 `auth oauth-config-validate [--all]` 校验（`--all` 还会输出每个已注册 provider 的 builtin/config/stub 状态与提示信息）；字段为 `provider<TAB>authorization_endpoint<TAB>token_endpoint<TAB>scopes`，例如：
+`runtime/auth_oauth_providers.tsv` 可覆盖或补充 OAuth defaults，并可用 `auth oauth-config-validate [--all]` 校验（`--all` 还会输出每个已注册 provider 的 builtin/config/stub 状态、`endpoint_status=available|deferred|missing` 与提示信息）。`deferred` 表示该 provider 是等待稳定公开 PKCE endpoints 的内置 stub；`available` 表示 builtin 或 workspace config 已提供可用 authorization/token endpoints。OAuth PKCE 命令在缺少必填输入时会输出 `oauth_input_error ... missing_fields="..."`；provider 相关命令还会包含 `endpoint_status=... config_file="..."`，便于区分参数缺失和 workspace override 缺失。字段为 `provider<TAB>authorization_endpoint<TAB>token_endpoint<TAB>scopes`，例如：
 
 ```text
 gemini	https://accounts.example.test/custom-auth	https://accounts.example.test/custom-token	openid,email

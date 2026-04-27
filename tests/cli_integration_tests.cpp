@@ -92,6 +92,56 @@ CommandResult RunAgentos(const std::filesystem::path& workspace, const std::vect
     return {.exit_code = status, .output = std::move(output)};
 }
 
+// Spawns the built agentos binary with stdin redirected from a workspace-local
+// temp file containing `stdin_text`.  Used by the interactive-login test —
+// _popen with mode "r" only opens the child's stdout, so we drive stdin via a
+// shell-level `< file` redirect that works on both cmd.exe and POSIX sh.
+CommandResult RunAgentosWithStdin(
+    const std::filesystem::path& workspace,
+    const std::vector<std::string>& args,
+    const std::string& stdin_text) {
+    const auto stdin_path = workspace / "stdin_input.txt";
+    {
+        std::ofstream stream(stdin_path, std::ios::binary);
+        stream << stdin_text;
+    }
+
+    std::ostringstream command;
+#ifdef _WIN32
+    command << "cd /d " << QuoteShellArg(workspace.string()) << " && ";
+#else
+    command << "cd " << QuoteShellArg(workspace.string()) << " && ";
+#endif
+    command << QuoteShellArg(AGENTOS_CLI_TEST_EXE);
+    for (const auto& arg : args) {
+        command << ' ' << QuoteShellArg(arg);
+    }
+    command << " < " << QuoteShellArg(stdin_path.string());
+    command << " 2>&1";
+
+#ifdef _WIN32
+    FILE* pipe = _popen(command.str().c_str(), "r");
+#else
+    FILE* pipe = popen(command.str().c_str(), "r");
+#endif
+    if (!pipe) {
+        return {.exit_code = -1, .output = "failed to open process"};
+    }
+
+    std::string output;
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        output += buffer;
+    }
+
+#ifdef _WIN32
+    const int status = _pclose(pipe);
+#else
+    const int status = pclose(pipe);
+#endif
+    return {.exit_code = status, .output = std::move(output)};
+}
+
 std::string ReadTextFile(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     std::ostringstream buffer;
@@ -220,10 +270,10 @@ void TestPluginsCommand() {
     {
 #ifdef _WIN32
         const auto json_args_template = R"(  "args_template": ["/d", "/s", "/c", "echo {{message}}"],)";
-        const auto json_health_args_template = R"(  "health_args_template": ["/d", "/s", "/c", "exit 0"],)";
+        const auto json_health_args_template = R"(  "health_args_template": ["/d", "/s", "/c", "exit 0"])";
 #else
         const auto json_args_template = R"(  "args_template": ["-c", "printf '%s\\n' \"{{message}}\""],)";
-        const auto json_health_args_template = R"(  "health_args_template": ["-c", "exit 0"],)";
+        const auto json_health_args_template = R"(  "health_args_template": ["-c", "exit 0"])";
 #endif
         std::ofstream spec_file(workspace / "runtime" / "plugin_specs" / "json_cli_plugin.json", std::ios::binary);
         spec_file
@@ -296,6 +346,10 @@ void TestPluginsCommand() {
         "plugins inspect should print permissions");
     Expect(inspect.output.find("lifecycle_mode=oneshot") != std::string::npos,
         "plugins inspect should print lifecycle mode");
+    Expect(inspect.output.find("isolation_profile=workspace-paths") != std::string::npos,
+        "plugins inspect should print the plugin isolation profile");
+    Expect(inspect.output.find("resource_limits_configured=false") != std::string::npos,
+        "plugins inspect should state whether plugin resource limits are configured");
     Expect(inspect.output.find("valid=true") != std::string::npos,
         "plugins inspect should report loaded plugin validity");
 
@@ -315,6 +369,10 @@ void TestPluginsCommand() {
     Expect(lifecycle.exit_code == 0, "plugins lifecycle should succeed for valid plugin specs");
     Expect(lifecycle.output.find("plugin_lifecycle name=cli_plugin lifecycle_mode=oneshot") != std::string::npos,
         "plugins lifecycle should list per-plugin lifecycle settings");
+    Expect(lifecycle.output.find("isolation_profile=workspace-paths") != std::string::npos,
+        "plugins lifecycle should report each plugin isolation profile");
+    Expect(lifecycle.output.find("resource_limits_configured=false") != std::string::npos,
+        "plugins lifecycle should state when resource limits are not configured");
     Expect(lifecycle.output.find("plugin_lifecycle_summary total=2 oneshot=2 persistent=0") != std::string::npos,
         "plugins lifecycle should summarize lifecycle counts");
 
@@ -342,7 +400,7 @@ void TestPluginsCommand() {
             << "" << '\t'
             << "" << '\t'
             << "true" << '\t'
-            << "" << '\t'
+            << "1048576" << '\t'
             << "" << '\t'
             << "" << '\t'
             << "" << '\t'
@@ -351,19 +409,44 @@ void TestPluginsCommand() {
             << "workspace" << '\t'
             << "persistent" << '\t'
             << "1500" << '\t'
-            << "60000"
+            << "60000" << '\t'
+            << "5"
             << '\n';
     }
     const auto persistent_lifecycle = RunAgentos(lifecycle_workspace, {"plugins", "lifecycle"});
     Expect(persistent_lifecycle.exit_code == 0, "plugins lifecycle should not require starting persistent plugin processes");
     Expect(persistent_lifecycle.output.find("plugin_lifecycle name=persistent_plugin lifecycle_mode=persistent protocol=json-rpc-v0") != std::string::npos,
         "plugins lifecycle should report persistent JSON-RPC plugins");
+    Expect(persistent_lifecycle.output.find("sandbox_mode=workspace isolation_profile=workspace-paths+process-resource-limits resource_limits_configured=true") != std::string::npos,
+        "plugins lifecycle should report persistent plugin sandbox and resource-limit isolation profile");
     Expect(persistent_lifecycle.output.find("persistent=1") != std::string::npos,
         "plugins lifecycle summary should count persistent plugins");
     Expect(persistent_lifecycle.output.find("max_persistent_sessions=3") != std::string::npos,
         "plugins lifecycle summary should report workspace-configured persistent session cap");
-    Expect(persistent_lifecycle.output.find("pool_size=1") != std::string::npos,
+    Expect(persistent_lifecycle.output.find("pool_size=5") != std::string::npos,
         "plugins lifecycle should include the per-plugin pool_size manifest field");
+    Expect(persistent_lifecycle.output.find("effective_pool_size=3") != std::string::npos,
+        "plugins lifecycle should report the pool size after the global persistent-session cap");
+
+    const auto persistent_inspect = RunAgentos(lifecycle_workspace, {"plugins", "inspect", "name=persistent_plugin"});
+    Expect(persistent_inspect.exit_code == 0, "plugins inspect should succeed for persistent plugin specs");
+    Expect(persistent_inspect.output.find("max_persistent_sessions=3") != std::string::npos,
+        "plugins inspect should report the workspace persistent-session cap");
+    Expect(persistent_inspect.output.find("effective_pool_size=3") != std::string::npos,
+        "plugins inspect should report the capped effective persistent pool size");
+    Expect(persistent_inspect.output.find("isolation_profile=workspace-paths+process-resource-limits") != std::string::npos,
+        "plugins inspect should report combined workspace/resource-limit isolation");
+    Expect(persistent_inspect.output.find("resource_limits_configured=true") != std::string::npos,
+        "plugins inspect should state when plugin resource limits are configured");
+    {
+        std::ofstream options_file(lifecycle_workspace / "runtime" / "plugin_host.tsv", std::ios::binary);
+        options_file << "max_persistent_sessions\tinvalid\n";
+    }
+    const auto invalid_config_inspect = RunAgentos(lifecycle_workspace, {"plugins", "inspect", "name=persistent_plugin"});
+    Expect(invalid_config_inspect.exit_code != 0,
+        "plugins inspect should fail when plugin_host.tsv contains invalid pool policy");
+    Expect(invalid_config_inspect.output.find("plugin_host_config_diagnostic line=1") != std::string::npos,
+        "plugins inspect should report plugin host config diagnostics");
 
     const auto invalid_lifecycle_workspace = FreshWorkspace("plugins_lifecycle_invalid");
     std::filesystem::create_directories(invalid_lifecycle_workspace / "runtime" / "plugin_specs");
@@ -496,6 +579,18 @@ void TestPluginsCommand() {
     Expect(sessions.exit_code == 0, "plugins sessions should exit zero with no live sessions");
     Expect(sessions.output.find("plugin_sessions_summary total=0 active=0") != std::string::npos,
         "plugins sessions should print an empty session summary on a fresh workspace");
+    Expect(sessions.output.find("idle_expired=0 dead=0") != std::string::npos,
+        "plugins sessions should report empty idle/dead diagnostics on a fresh workspace");
+    Expect(sessions.output.find("scope=process persistence=none") != std::string::npos,
+        "plugins sessions should make the per-process in-memory scope explicit");
+
+    const auto daemon_scope_sessions = RunAgentos(sessions_workspace, {"plugins", "sessions", "scope=daemon"});
+    Expect(daemon_scope_sessions.exit_code == 2,
+        "plugins sessions scope=daemon should fail until cross-process session admin exists");
+    Expect(daemon_scope_sessions.output.find("plugin_sessions_unavailable scope=daemon supported_scope=process") != std::string::npos,
+        "plugins sessions scope=daemon should report the supported session admin scope");
+    Expect(daemon_scope_sessions.output.find("cross-process plugin session admin not implemented") != std::string::npos,
+        "plugins sessions scope=daemon should explain the daemon boundary");
 
     const auto session_close_missing = RunAgentos(sessions_workspace, {"plugins", "session-close"});
     Expect(session_close_missing.exit_code == 2,
@@ -512,14 +607,34 @@ void TestPluginsCommand() {
     const auto session_close_unknown = RunAgentos(sessions_workspace, {"plugins", "session-close", "name=does_not_exist"});
     Expect(session_close_unknown.exit_code == 0,
         "plugins session-close should exit zero when there is nothing to close");
-    Expect(session_close_unknown.output.find("plugin_session_close name=does_not_exist closed=0") != std::string::npos,
-        "plugins session-close should report zero closes for an unknown plugin");
+    Expect(session_close_unknown.output.find("plugin_session_close name=does_not_exist closed=0 matched=false") != std::string::npos,
+        "plugins session-close should report zero closes and matched=false for an unknown plugin");
 
     const auto session_restart_unknown = RunAgentos(sessions_workspace, {"plugins", "session-restart", "name=does_not_exist"});
     Expect(session_restart_unknown.exit_code == 0,
         "plugins session-restart should exit zero when there are no live sessions");
-    Expect(session_restart_unknown.output.find("plugin_session_restart name=does_not_exist restarted=0") != std::string::npos,
-        "plugins session-restart should report zero restarts for an unknown plugin");
+    Expect(session_restart_unknown.output.find("plugin_session_restart name=does_not_exist restarted=0 matched=false") != std::string::npos,
+        "plugins session-restart should report zero restarts and matched=false for an unknown plugin");
+
+    const auto session_prune_empty = RunAgentos(sessions_workspace, {"plugins", "session-prune"});
+    Expect(session_prune_empty.exit_code == 0,
+        "plugins session-prune should exit zero with no live sessions");
+    Expect(session_prune_empty.output.find("plugin_session_prune pruned=0 matched=false") != std::string::npos,
+        "plugins session-prune should report a scriptable no-op summary on a fresh workspace");
+    Expect(session_prune_empty.output.find("scope=process persistence=none") != std::string::npos,
+        "plugins session-prune should make the per-process in-memory scope explicit");
+
+    const auto session_prune_dry_run_empty = RunAgentos(sessions_workspace, {"plugins", "session-prune", "dry_run=true"});
+    Expect(session_prune_dry_run_empty.exit_code == 0,
+        "plugins session-prune dry_run=true should exit zero with no live sessions");
+    Expect(session_prune_dry_run_empty.output.find("pruned=0 matched=false dry_run=true would_prune=0") != std::string::npos,
+        "plugins session-prune dry_run=true should report a no-op preview on a fresh workspace");
+
+    const auto daemon_scope_prune = RunAgentos(sessions_workspace, {"plugins", "session-prune", "scope=daemon"});
+    Expect(daemon_scope_prune.exit_code == 2,
+        "plugins session-prune scope=daemon should fail until cross-process session admin exists");
+    Expect(daemon_scope_prune.output.find("plugin_sessions_unavailable scope=daemon supported_scope=process") != std::string::npos,
+        "plugins session-prune scope=daemon should report the supported session admin scope");
 }
 
 void TestCliSpecsCommand() {
@@ -719,12 +834,19 @@ void TestMemoryAndStorageCommands() {
     Expect(memory.exit_code == 0, "memory summary command should succeed");
     Expect(memory.output.find("tasks=0") != std::string::npos, "memory summary should start with zero tasks in a fresh workspace");
 
+    // Phase 2.2: workflow promotion now requires the same step signature to
+    // recur >= 3 times AND own >= 60% of successful runs. Three identical
+    // write_file invocations satisfy both gates and produce a `write_file`
+    // candidate that promote-workflow can canonicalize.
     const auto first_write = RunAgentos(workspace, {
         "run", "write_file", "path=memory_storage/workflow_a.txt", "content=a", "idempotency_key=workflow-cli-a"});
     Expect(first_write.exit_code == 0, "first workflow candidate write should succeed");
     const auto second_write = RunAgentos(workspace, {
         "run", "write_file", "path=memory_storage/workflow_b.txt", "content=b", "idempotency_key=workflow-cli-b"});
     Expect(second_write.exit_code == 0, "second workflow candidate write should succeed");
+    const auto third_write = RunAgentos(workspace, {
+        "run", "write_file", "path=memory_storage/workflow_c.txt", "content=c", "idempotency_key=workflow-cli-c"});
+    Expect(third_write.exit_code == 0, "third workflow candidate write should succeed");
     const auto promote = RunAgentos(workspace, {
         "memory", "promote-workflow", "write_file_workflow", "input_regex=branch=release/.*"});
     Expect(promote.exit_code == 0, "memory promote-workflow should accept input_regex conditions");
@@ -1417,6 +1539,8 @@ void TestAuthCommands() {
         "auth oauth-defaults should list Gemini defaults");
     Expect(oauth_defaults.output.find("supported=true") != std::string::npos,
         "auth oauth-defaults should mark supported provider defaults");
+    Expect(oauth_defaults.output.find("endpoint_status=available") != std::string::npos,
+        "auth oauth-defaults should mark providers with usable endpoints as available");
     Expect(oauth_defaults.output.find("https://oauth2.googleapis.com/token") != std::string::npos,
         "auth oauth-defaults should print token endpoints");
     Expect(oauth_defaults.output.find("cloud-platform") != std::string::npos,
@@ -1454,12 +1578,18 @@ void TestAuthCommands() {
         "oauth-config-validate --all should enumerate qwen provider audit row");
     Expect(all_oauth_config.output.find("origin=stub") != std::string::npos,
         "oauth-config-validate --all should mark stubbed providers with origin=stub");
+    Expect(all_oauth_config.output.find("endpoint_status=deferred") != std::string::npos,
+        "oauth-config-validate --all should mark stubbed provider endpoints as deferred");
     Expect(all_oauth_config.output.find("origin=config") != std::string::npos,
         "oauth-config-validate --all should mark provider with origin=config when overridden");
+    Expect(all_oauth_config.output.find("endpoint_status=available") != std::string::npos,
+        "oauth-config-validate --all should mark configured complete endpoints as available");
 
     const auto oauth_defaults_origin = RunAgentos(workspace, {"auth", "oauth-defaults", "anthropic"});
     Expect(oauth_defaults_origin.output.find("origin=stub") != std::string::npos,
         "auth oauth-defaults should report origin=stub for unsupported providers");
+    Expect(oauth_defaults_origin.output.find("endpoint_status=deferred") != std::string::npos,
+        "auth oauth-defaults should report deferred endpoint status for stubbed providers");
     Expect(oauth_defaults_origin.output.find("note=") != std::string::npos,
         "auth oauth-defaults should include a note for stubbed providers");
 
@@ -1470,6 +1600,8 @@ void TestAuthCommands() {
         "auth oauth-defaults should still print unsupported provider discovery data");
     Expect(qwen_oauth_defaults.output.find("supported=false") != std::string::npos,
         "auth oauth-defaults should mark unsupported provider defaults");
+    Expect(qwen_oauth_defaults.output.find("endpoint_status=deferred") != std::string::npos,
+        "auth oauth-defaults should mark stubbed provider endpoints as deferred");
 
     const auto oauth_start = RunAgentos(workspace, {
         "auth", "oauth-start", "gemini",
@@ -1487,15 +1619,48 @@ void TestAuthCommands() {
         "auth oauth-start should use repo-local configured authorization endpoint");
     Expect(oauth_start.output.find("scope=openid%20email") != std::string::npos,
         "auth oauth-start should encode configured scopes in authorization URL");
+    const auto missing_oauth_start_input = RunAgentos(workspace, {
+        "auth", "oauth-start", "gemini",
+        "client_id=test-client"});
+    Expect(missing_oauth_start_input.exit_code != 0,
+        "auth oauth-start should reject missing redirect_uri before building the authorization URL");
+    Expect(missing_oauth_start_input.output.find("oauth_input_error command=oauth-start provider=gemini") != std::string::npos,
+        "auth oauth-start should print a structured missing-input diagnostic");
+    Expect(missing_oauth_start_input.output.find("missing_fields=\"redirect_uri\"") != std::string::npos,
+        "auth oauth-start should name the missing redirect_uri field");
+    Expect(missing_oauth_start_input.output.find("endpoint_status=available") != std::string::npos,
+        "auth oauth-start missing-input diagnostics should include endpoint status");
+    const auto missing_oauth_login_input = RunAgentos(workspace, {
+        "auth", "oauth-login", "gemini",
+        "client_id=test-client",
+        "redirect_uri=http://127.0.0.1:48177/callback",
+        "token_endpoint="});
+    Expect(missing_oauth_login_input.exit_code != 0,
+        "auth oauth-login should reject explicit empty token endpoints");
+    Expect(missing_oauth_login_input.output.find("oauth_input_error command=oauth-login provider=gemini") != std::string::npos,
+        "auth oauth-login should print a structured missing-input diagnostic");
+    Expect(missing_oauth_login_input.output.find("missing_fields=\"token_endpoint\"") != std::string::npos,
+        "auth oauth-login should name the missing token_endpoint field");
+    Expect(missing_oauth_login_input.output.find("endpoint_status=available") != std::string::npos,
+        "auth oauth-login missing-input diagnostics should include endpoint status");
 
     {
         std::ofstream invalid_defaults(workspace / "runtime" / "auth_oauth_providers.tsv", std::ios::binary);
-        invalid_defaults << "gemini\thttps://accounts.example.test/custom-auth\t\n";
+        invalid_defaults << "qwen\thttps://accounts.example.test/custom-auth\t\n";
     }
     const auto invalid_oauth_config = RunAgentos(workspace, {"auth", "oauth-config-validate"});
     Expect(invalid_oauth_config.exit_code != 0, "auth oauth-config-validate should reject invalid repo-local defaults");
     Expect(invalid_oauth_config.output.find("token_endpoint is required") != std::string::npos,
         "auth oauth-config-validate should explain missing token endpoints");
+    const auto invalid_all_oauth_config = RunAgentos(workspace, {"auth", "oauth-config-validate", "--all"});
+    Expect(invalid_all_oauth_config.exit_code != 0,
+        "auth oauth-config-validate --all should reject invalid repo-local defaults");
+    Expect(invalid_all_oauth_config.output.find("oauth_config_provider provider=qwen") != std::string::npos,
+        "auth oauth-config-validate --all should still print the invalid provider audit row");
+    Expect(invalid_all_oauth_config.output.find("origin=config") != std::string::npos,
+        "auth oauth-config-validate --all should mark incomplete workspace endpoint overrides as config");
+    Expect(invalid_all_oauth_config.output.find("endpoint_status=missing") != std::string::npos,
+        "auth oauth-config-validate --all should mark incomplete endpoint overrides as missing");
 
     std::filesystem::remove(workspace / "runtime" / "auth_oauth_providers.tsv");
     const auto default_oauth_start = RunAgentos(workspace, {
@@ -1533,6 +1698,24 @@ void TestAuthCommands() {
     Expect(oauth_callback_invalid.exit_code == 0, "auth oauth-callback should report invalid callbacks as data");
     Expect(oauth_callback_invalid.output.find("success=false error=InvalidOAuthState") != std::string::npos,
         "auth oauth-callback should report invalid state");
+    const auto missing_oauth_callback_input = RunAgentos(workspace, {"auth", "oauth-callback"});
+    Expect(missing_oauth_callback_input.exit_code != 0,
+        "auth oauth-callback should reject missing callback_url and state");
+    Expect(missing_oauth_callback_input.output.find("oauth_input_error command=oauth-callback") != std::string::npos,
+        "auth oauth-callback should print a structured missing-input diagnostic");
+    Expect(missing_oauth_callback_input.output.find("missing_fields=\"callback_url,state\"") != std::string::npos,
+        "auth oauth-callback should name missing callback_url and state fields");
+    Expect(missing_oauth_callback_input.output.find("callback_url is required") != std::string::npos,
+        "auth oauth-callback should preserve the first missing-field message");
+    const auto missing_oauth_listen_input = RunAgentos(workspace, {"auth", "oauth-listen"});
+    Expect(missing_oauth_listen_input.exit_code != 0,
+        "auth oauth-listen should reject missing state and port");
+    Expect(missing_oauth_listen_input.output.find("oauth_input_error command=oauth-listen") != std::string::npos,
+        "auth oauth-listen should print a structured missing-input diagnostic");
+    Expect(missing_oauth_listen_input.output.find("missing_fields=\"state,port\"") != std::string::npos,
+        "auth oauth-listen should name missing state and port fields");
+    Expect(missing_oauth_listen_input.output.find("state is required") != std::string::npos,
+        "auth oauth-listen should preserve the first missing-field message");
 
     const auto token_request = RunAgentos(workspace, {
         "auth", "oauth-token-request",
@@ -1553,6 +1736,10 @@ void TestAuthCommands() {
 
     const auto missing_token_request = RunAgentos(workspace, {"auth", "oauth-token-request", "client_id=test"});
     Expect(missing_token_request.exit_code != 0, "auth oauth-token-request should reject missing required inputs");
+    Expect(missing_token_request.output.find("oauth_input_error command=oauth-token-request") != std::string::npos,
+        "auth oauth-token-request should print a structured missing-input diagnostic");
+    Expect(missing_token_request.output.find("missing_fields=\"token_endpoint,redirect_uri,code,code_verifier\"") != std::string::npos,
+        "auth oauth-token-request should name every missing token request field");
     Expect(missing_token_request.output.find("token_endpoint is required") != std::string::npos,
         "auth oauth-token-request should explain missing token endpoint");
 
@@ -1569,8 +1756,28 @@ void TestAuthCommands() {
 
     const auto missing_refresh_request = RunAgentos(workspace, {"auth", "oauth-refresh-request", "client_id=test"});
     Expect(missing_refresh_request.exit_code != 0, "auth oauth-refresh-request should reject missing required inputs");
+    Expect(missing_refresh_request.output.find("oauth_input_error command=oauth-refresh-request") != std::string::npos,
+        "auth oauth-refresh-request should print a structured missing-input diagnostic");
+    Expect(missing_refresh_request.output.find("missing_fields=\"token_endpoint,refresh_token\"") != std::string::npos,
+        "auth oauth-refresh-request should name every missing refresh request field");
     Expect(missing_refresh_request.output.find("token_endpoint is required") != std::string::npos,
         "auth oauth-refresh-request should explain missing token endpoint");
+
+    const auto missing_oauth_complete_input = RunAgentos(workspace, {
+        "auth", "oauth-complete", "gemini",
+        "state=state-123",
+        "code_verifier=verifier",
+        "redirect_uri=http://127.0.0.1:48177/callback",
+        "client_id=client-id",
+        "token_endpoint="});
+    Expect(missing_oauth_complete_input.exit_code != 0,
+        "auth oauth-complete should reject missing callback_url and explicit empty token_endpoint");
+    Expect(missing_oauth_complete_input.output.find("oauth_input_error command=oauth-complete provider=gemini") != std::string::npos,
+        "auth oauth-complete should print a structured missing-input diagnostic");
+    Expect(missing_oauth_complete_input.output.find("missing_fields=\"callback_url,token_endpoint\"") != std::string::npos,
+        "auth oauth-complete should name missing callback_url and token_endpoint fields");
+    Expect(missing_oauth_complete_input.output.find("endpoint_status=available") != std::string::npos,
+        "auth oauth-complete missing-input diagnostics should include endpoint status");
 
 #ifdef _WIN32
     const auto old_path = ReadEnvForTest("PATH").value_or("");
@@ -1646,6 +1853,78 @@ void TestAuthCommands() {
     Expect(default_status.exit_code == 0, "auth status should use the provider default profile when no profile is provided");
     Expect(default_status.output.find("qwen profile=team") != std::string::npos,
         "auth status should resolve the default profile set during login");
+
+    // ---- login-interactive: stdin-driven wrapper around `auth login` ----
+    const auto old_qwen_key2 = ReadEnvForTest("AGENTOS_QWEN_API_KEY").value_or("");
+    SetEnvForTest("AGENTOS_QWEN_API_KEY", "test-interactive-key");
+    // Stdin script: empty mode answer (default api-key), empty env answer
+    // (default AGENTOS_QWEN_API_KEY), profile=interactive, set_default=Y.
+    const std::string interactive_stdin = "\n\ninteractive\nY\n";
+    const auto interactive = RunAgentosWithStdin(
+        workspace,
+        {"auth", "login-interactive", "provider=qwen"},
+        interactive_stdin);
+    SetEnvForTest("AGENTOS_QWEN_API_KEY", old_qwen_key2);
+    Expect(interactive.exit_code == 0,
+        "auth login-interactive should drive `auth login` to success when stdin defaults are accepted");
+    Expect(
+        interactive.output.find(
+            "interactive_login provider=qwen mode=api_key profile=interactive set_default=true")
+            != std::string::npos,
+        "auth login-interactive should print a final summary line with provider/mode/profile/set_default");
+    Expect(interactive.output.find("origin=stub") != std::string::npos,
+        "auth login-interactive should surface OAuth defaults origin metadata for the chosen provider");
+
+    const auto interactive_status = RunAgentos(workspace, {"auth", "status", "qwen", "profile=interactive"});
+    Expect(interactive_status.exit_code == 0,
+        "auth status should succeed for the profile created by login-interactive");
+    Expect(interactive_status.output.find("qwen profile=interactive") != std::string::npos,
+        "auth login-interactive should persist a real session via the existing AuthManager path");
+}
+
+void TestDiagnosticsCommand() {
+    const auto workspace = FreshWorkspace("diagnostics");
+
+    const auto text_result = RunAgentos(workspace, {"diagnostics"});
+    Expect(text_result.exit_code == 0, "diagnostics command should succeed with default text format");
+    Expect(text_result.output.find("[platform]") != std::string::npos,
+        "diagnostics text output should include [platform] section header");
+    Expect(text_result.output.find("[auth]") != std::string::npos,
+        "diagnostics text output should include [auth] section header");
+    Expect(text_result.output.find("[agents]") != std::string::npos,
+        "diagnostics text output should include [agents] section header");
+    Expect(text_result.output.find("[plugins]") != std::string::npos,
+        "diagnostics text output should include [plugins] section header");
+    Expect(text_result.output.find("[scheduler]") != std::string::npos,
+        "diagnostics text output should include [scheduler] section header");
+    Expect(text_result.output.find("[storage]") != std::string::npos,
+        "diagnostics text output should include [storage] section header");
+    Expect(text_result.output.find("[trust]") != std::string::npos,
+        "diagnostics text output should include [trust] section header");
+    Expect(text_result.output.find("local_planner") != std::string::npos,
+        "diagnostics text output should list registered agents");
+
+    const auto json_result = RunAgentos(workspace, {"diagnostics", "format=json"});
+    Expect(json_result.exit_code == 0, "diagnostics command should succeed with format=json");
+    Expect(!json_result.output.empty() && json_result.output.front() == '{',
+        "diagnostics json output should start with '{'");
+    const auto trimmed_end = json_result.output.find_last_not_of(" \t\r\n");
+    Expect(trimmed_end != std::string::npos && json_result.output[trimmed_end] == '}',
+        "diagnostics json output should end with '}'");
+    Expect(json_result.output.find("\"platform\"") != std::string::npos,
+        "diagnostics json output should include platform key");
+    Expect(json_result.output.find("\"auth\"") != std::string::npos,
+        "diagnostics json output should include auth key");
+    Expect(json_result.output.find("\"agents\"") != std::string::npos,
+        "diagnostics json output should include agents key");
+    Expect(json_result.output.find("\"plugins\"") != std::string::npos,
+        "diagnostics json output should include plugins key");
+    Expect(json_result.output.find("\"scheduler\"") != std::string::npos,
+        "diagnostics json output should include scheduler key");
+    Expect(json_result.output.find("\"storage\"") != std::string::npos,
+        "diagnostics json output should include storage key");
+    Expect(json_result.output.find("\"trust\"") != std::string::npos,
+        "diagnostics json output should include trust key");
 }
 
 }  // namespace
@@ -1661,6 +1940,7 @@ int main() {
     TestScheduleCommands();
     TestSubagentsCommand();
     TestAuthCommands();
+    TestDiagnosticsCommand();
 
     if (failures != 0) {
         std::cerr << failures << " cli integration test assertion(s) failed\n";

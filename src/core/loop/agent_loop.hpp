@@ -9,7 +9,11 @@
 #include "core/router/router.hpp"
 #include "memory/memory_manager.hpp"
 
+#include <memory>
+
 namespace agentos {
+
+class CancellationToken;
 
 class AgentLoop {
 public:
@@ -22,11 +26,17 @@ public:
         MemoryManager& memory_manager,
         ExecutionCache& execution_cache);
 
-    TaskRunResult run(const TaskRequest& task);
+    // `cancel` (if non-null) is forwarded into V2 AgentInvocation::cancel for
+    // the agent dispatch path and checked before routing/policy work so the
+    // caller can interrupt long-running tasks externally (e.g. Ctrl-C).
+    TaskRunResult run(const TaskRequest& task,
+                      std::shared_ptr<CancellationToken> cancel = {});
 
 private:
     TaskRunResult run_skill_task(const TaskRequest& task, const RouteDecision& route);
-    TaskRunResult run_agent_task(const TaskRequest& task, const RouteDecision& route);
+    TaskRunResult run_agent_task(const TaskRequest& task,
+                                 const RouteDecision& route,
+                                 const std::shared_ptr<CancellationToken>& cancel);
 
     SkillRegistry& skill_registry_;
     AgentRegistry& agent_registry_;

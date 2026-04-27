@@ -177,5 +177,9 @@ AuthSession RefreshOAuthSession(
     int timeout_ms = 10000);
 
 std::string CreatePkceCodeChallengeForTest(const std::string& verifier);
+std::string ExtractRedirectUriPathForTest(const std::string& redirect_uri);
+std::string TargetPathOnlyForTest(const std::string& target);
+std::optional<std::string> ExtractHttpHostHeaderForTest(const std::string& request_text);
+bool HostHeaderMatchesLoopbackForTest(const std::string& host_header, int port);
 
 }  // namespace agentos

@@ -237,12 +237,14 @@ Gemini 是第一阶段最适合自己实现标准 OAuth 的 provider。
 - Codex CLI / Claude CLI session probe 与导入 fixture 测试
 - `agentos auth providers/profiles/status/oauth-defaults/oauth-config-validate/oauth-start/oauth-login/oauth-callback/oauth-listen/oauth-complete/oauth-token-request/oauth-refresh-request/login/logout/refresh/probe`
 - Gemini browser OAuth passthrough 已通过 Gemini CLI OAuth 文件导入；无可导入会话时返回 `BrowserOAuthUnavailable`
-- Browser OAuth PKCE 基础设施：S256 challenge、authorization URL 构建、`oauth-defaults` provider 默认 OAuth 配置查询（含 origin/note 元数据，区分 builtin / config / stub）、repo-local `runtime/auth_oauth_providers.tsv` OAuth defaults 覆盖与 `oauth-config-validate [--all]` 全 provider 诊断、`oauth-start open_browser=true` 系统默认浏览器启动尝试、`oauth-login` 单命令 start/listen/token-exchange/session-persist 编排、一次性 localhost callback listener、callback URL query 解析、callback state/code/error 校验、authorization-code / refresh-token request form-body 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、provider adapter 参数化原生 login/refresh 编排、Gemini Google OAuth 默认 endpoint/scope；`openai` / `anthropic` / `qwen` 已作为 stub provider 在 discovery 输出中可见
+- Browser OAuth PKCE 基础设施：S256 challenge、authorization URL 构建、`oauth-defaults` provider 默认 OAuth 配置查询（含 origin/note 元数据，区分 builtin / config / stub，并输出 `endpoint_status=available|deferred|missing`）、repo-local `runtime/auth_oauth_providers.tsv` OAuth defaults 覆盖与 `oauth-config-validate [--all]` 全 provider 诊断、`oauth-start open_browser=true` 系统默认浏览器启动尝试、`oauth-login` 单命令 start/listen/token-exchange/session-persist 编排、一次性 localhost callback listener、callback URL query 解析、callback state/code/error 校验、authorization-code / refresh-token request form-body 构建、curl-backed HTTP exchange helper、token response 解析、managed AuthSession 持久化 helper、scriptable `oauth-complete` 编排桥接、provider adapter 参数化原生 login/refresh 编排、Gemini Google OAuth 默认 endpoint/scope；`openai` / `anthropic` / `qwen` 已作为 stub provider 在 discovery 输出中可见，并以 `endpoint_status=deferred` 标记为等待稳定公开 PKCE endpoint
+- `auth login-interactive [provider=<id>]` 交互式 stdin UX：列出已注册 provider、读取 `OAuthDefaultsForProvider` 的 `origin` / `note` 元数据并附带在提示中，按 provider 支持的 mode 选择 cli-session / api-key / browser_oauth，最终回到现有 `auth login` 路径执行；`browser_oauth` 选项指引用户改走 `auth oauth-login` 命令完成 PKCE 全流程
+- 凭据安全硬化：OAuth body 和 bearer token 经 `src/utils/curl_secret.{hpp,cpp}` 短生命周期临时文件中转给 curl（`--data @file` / `-H @file`），不再经 argv 暴露；callback 路径校验与 Host 头 loopback 检查在 `src/auth/oauth_pkce.cpp` 加固
 
 未实现或仍需补齐：
 
-- 更完整的多 provider 交互式登录 UX（OpenAI / Anthropic 公开 PKCE endpoints 仍未公开，已注册为 `stub` provider 等待官方文档）
-- 全 provider 的实际公网 OAuth 互操作性测试（目前仅 Gemini 有 builtin defaults，其他 provider 需通过 `runtime/auth_oauth_providers.tsv` 手动配置）
+- 更完整的多 provider 交互式登录 UX（OpenAI / Anthropic / Qwen 公开 PKCE endpoints 仍未公开，已注册为 `stub` provider 并报告 `endpoint_status=deferred`）
+- 全 provider 的实际公网 OAuth 互操作性测试（目前仅 Gemini 有 builtin defaults；其他 provider 需通过 `runtime/auth_oauth_providers.tsv` 手动配置 authorization/token endpoints，配置完整后 discovery 状态变为 `endpoint_status=available`）
 - Native cloud provider token exchange beyond Google ADC/gcloud passthrough
 - 更完整的多账号 profile 选择策略
 - 更完整的状态测试和失败路径测试

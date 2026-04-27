@@ -3,7 +3,9 @@
 #include "core/execution/task_lifecycle.hpp"
 #include "core/orchestration/agent_result_normalizer.hpp"
 #include "memory/lesson_hints.hpp"
-#include "utils/json_utils.hpp"
+#include "utils/cancellation.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -125,73 +127,73 @@ std::string SubtaskObjectiveFor(const TaskRequest& task, const std::string& agen
     return task.objective;
 }
 
-std::string JsonUnescape(const std::string& value) {
-    std::string output;
-    output.reserve(value.size());
-    for (std::size_t index = 0; index < value.size(); ++index) {
-        if (value[index] != '\\' || index + 1 >= value.size()) {
-            output.push_back(value[index]);
-            continue;
-        }
-
-        const auto escaped = value[++index];
-        switch (escaped) {
-        case '"':
-            output.push_back('"');
-            break;
-        case '\\':
-            output.push_back('\\');
-            break;
-        case 'n':
-            output.push_back('\n');
-            break;
-        case 'r':
-            output.push_back('\r');
-            break;
-        case 't':
-            output.push_back('\t');
-            break;
-        default:
-            output.push_back(escaped);
-            break;
-        }
-    }
-    return output;
-}
-
-std::vector<std::string> ExtractPlanActions(const std::string& structured_output_json) {
+// Strictly typed walk: substring search would let `{"summary":"action: x"}`
+// inject "x" as a subtask, so we require plan_steps to be an array of objects
+// with string `action` fields. The legacy `agent_result.v1` envelope nests the
+// raw planner payload under `raw_output`, so we accept either location.
+std::vector<std::string> ExtractPlanActionsFromArray(const nlohmann::json& steps) {
     std::vector<std::string> actions;
-    constexpr std::string_view key = R"("action")";
-    std::size_t cursor = 0;
-    while ((cursor = structured_output_json.find(key, cursor)) != std::string::npos) {
-        const auto colon = structured_output_json.find(':', cursor + key.size());
-        if (colon == std::string::npos) {
-            break;
+    if (!steps.is_array()) {
+        return {};
+    }
+    actions.reserve(steps.size());
+    for (const auto& element : steps) {
+        if (!element.is_object()) {
+            return {};
         }
-        const auto quote = structured_output_json.find('"', colon + 1);
-        if (quote == std::string::npos) {
-            break;
+        const auto action_it = element.find("action");
+        if (action_it == element.end() || !action_it->is_string()) {
+            return {};
         }
-
-        std::string value;
-        bool escaped = false;
-        for (std::size_t index = quote + 1; index < structured_output_json.size(); ++index) {
-            const auto ch = structured_output_json[index];
-            if (!escaped && ch == '"') {
-                if (!value.empty()) {
-                    actions.push_back(JsonUnescape(value));
-                }
-                cursor = index + 1;
-                break;
-            }
-            value.push_back(ch);
-            escaped = !escaped && ch == '\\';
-            if (ch != '\\') {
-                escaped = false;
-            }
-        }
+        actions.push_back(action_it->get<std::string>());
     }
     return actions;
+}
+
+std::vector<std::string> ExtractPlanActions(
+    const std::string& structured_output_json,
+    AuditLogger& audit_logger,
+    const std::string& task_id) {
+    nlohmann::json root;
+    try {
+        root = nlohmann::json::parse(structured_output_json);
+    } catch (const nlohmann::json::parse_error& error) {
+        audit_logger.record_config_diagnostic(
+            "subagent_decomposition", task_id, 0,
+            std::string("plan parse error: ") + error.what());
+        return {};
+    }
+
+    if (!root.is_object()) {
+        audit_logger.record_config_diagnostic(
+            "subagent_decomposition", task_id, 0, "plan root must be an object");
+        return {};
+    }
+
+    const auto walk = [](const nlohmann::json& container) -> std::vector<std::string> {
+        const auto it = container.find("plan_steps");
+        if (it == container.end()) {
+            return {};
+        }
+        return ExtractPlanActionsFromArray(*it);
+    };
+
+    auto actions = walk(root);
+    if (!actions.empty()) {
+        return actions;
+    }
+
+    if (const auto raw_it = root.find("raw_output"); raw_it != root.end() && raw_it->is_object()) {
+        actions = walk(*raw_it);
+        if (!actions.empty()) {
+            return actions;
+        }
+    }
+
+    audit_logger.record_config_diagnostic(
+        "subagent_decomposition", task_id, 0,
+        "plan_steps must be an array of objects with string action fields");
+    return {};
 }
 
 std::string BuildSubtasksFromPlanActions(
@@ -248,41 +250,46 @@ std::string BuildSummary(const std::size_t success_count, const std::size_t tota
            std::to_string(total_count) + " succeeded.";
 }
 
-bool IsJsonObjectLike(const std::string& value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
-    const auto last = value.find_last_not_of(" \t\r\n");
-    return first != std::string::npos && last != std::string::npos && value[first] == '{' && value[last] == '}';
+std::optional<nlohmann::ordered_json> ParseObjectJson(const std::string& value) {
+    try {
+        auto parsed = nlohmann::ordered_json::parse(value);
+        if (parsed.is_object()) {
+            return parsed;
+        }
+    } catch (const nlohmann::json::exception&) {
+    }
+    return std::nullopt;
 }
 
-std::string BuildAgentOutputsJson(const std::vector<TaskStepRecord>& steps) {
-    std::ostringstream output;
-    output << '[';
-    bool first = true;
-    for (const auto& step : steps) {
-        if (!first) {
-            output << ',';
-        }
-        first = false;
-        output << MakeJsonObject({
-            {"agent", QuoteJson(step.target_name)},
-            {"success", BoolAsJson(step.success)},
-            {"summary", QuoteJson(step.summary)},
-            {"normalized", BuildNormalizedAgentResultJson(NormalizedAgentResultInput{
-                .agent_name = step.target_name,
-                .success = step.success,
-                .summary = step.summary,
-                .structured_output_json = step.structured_output_json,
-                .artifacts = step.artifacts,
-                .duration_ms = step.duration_ms,
-                .estimated_cost = step.estimated_cost,
-                .error_code = step.error_code,
-                .error_message = step.error_message,
-            })},
-            {"output", IsJsonObjectLike(step.structured_output_json) ? step.structured_output_json : QuoteJson(step.structured_output_json)},
-        });
+nlohmann::ordered_json EmbeddedJsonOrString(const std::string& value) {
+    if (auto parsed = ParseObjectJson(value); parsed.has_value()) {
+        return *parsed;
     }
-    output << ']';
-    return output.str();
+    return value;
+}
+
+nlohmann::ordered_json BuildAgentOutputsJson(const std::vector<TaskStepRecord>& steps) {
+    auto outputs = nlohmann::ordered_json::array();
+    for (const auto& step : steps) {
+        nlohmann::ordered_json entry;
+        entry["agent"] = step.target_name;
+        entry["success"] = step.success;
+        entry["summary"] = step.summary;
+        entry["normalized"] = EmbeddedJsonOrString(BuildNormalizedAgentResultJson(NormalizedAgentResultInput{
+            .agent_name = step.target_name,
+            .success = step.success,
+            .summary = step.summary,
+            .structured_output_json = step.structured_output_json,
+            .artifacts = step.artifacts,
+            .duration_ms = step.duration_ms,
+            .estimated_cost = step.estimated_cost,
+            .error_code = step.error_code,
+            .error_message = step.error_message,
+        }));
+        entry["output"] = EmbeddedJsonOrString(step.structured_output_json);
+        outputs.push_back(std::move(entry));
+    }
+    return outputs;
 }
 
 std::string BuildOutputJson(
@@ -291,15 +298,48 @@ std::string BuildOutputJson(
     const std::vector<TaskStepRecord>& steps,
     const std::size_t success_count,
     const std::size_t total_count,
-    const double estimated_cost) {
-    return MakeJsonObject({
-        {"agents", QuoteJson(JoinAgentNames(agent_names))},
-        {"roles", QuoteJson(JoinAgentNames(roles))},
-        {"success_count", NumberAsJson(static_cast<int>(success_count))},
-        {"total_count", NumberAsJson(static_cast<int>(total_count))},
-        {"estimated_cost", NumberAsJson(estimated_cost)},
-        {"agent_outputs", BuildAgentOutputsJson(steps)},
-    });
+    const double estimated_cost,
+    const std::string& decomposition_agent_name) {
+    nlohmann::ordered_json output;
+    output["agents"] = JoinAgentNames(agent_names);
+    output["roles"] = JoinAgentNames(roles);
+    output["success_count"] = success_count;
+    output["total_count"] = total_count;
+    output["estimated_cost"] = estimated_cost;
+    output["agent_outputs"] = BuildAgentOutputsJson(steps);
+    if (!decomposition_agent_name.empty()) {
+        output["decomposition_agent"] = decomposition_agent_name;
+    }
+    return output.dump();
+}
+
+std::string DecompositionContextJson(
+    const TaskRequest& task,
+    const std::vector<std::string>& agent_names,
+    const std::vector<std::string>& roles) {
+    nlohmann::ordered_json context;
+    context["parent_task_id"] = task.task_id;
+    context["agents"] = JoinAgentNames(agent_names);
+    context["roles"] = JoinAgentNames(roles);
+    return context.dump();
+}
+
+std::string SubagentContextJson(
+    const TaskRequest& task,
+    const std::string& agent_name,
+    const std::string& role,
+    const std::string& subtask_objective) {
+    nlohmann::ordered_json context;
+    context["parent_task_id"] = task.task_id;
+    context["agent"] = agent_name;
+    context["role"] = role;
+    context["original_objective"] = task.objective;
+    context["subtask_objective"] = subtask_objective;
+    return context.dump();
+}
+
+std::string JsonNumber(const double value) {
+    return nlohmann::ordered_json(value).dump();
 }
 
 int LessonOccurrenceCount(
@@ -421,7 +461,8 @@ SubagentManager::SubagentManager(
 TaskRunResult SubagentManager::run(
     const TaskRequest& task,
     const std::vector<std::string>& agent_names,
-    const SubagentExecutionMode mode) {
+    const SubagentExecutionMode mode,
+    std::shared_ptr<CancellationToken> cancel) {
     const auto started_at = std::chrono::steady_clock::now();
     const bool automatic_selection = agent_names.empty();
     const auto normalized_agent_names = automatic_selection
@@ -485,11 +526,7 @@ TaskRunResult SubagentManager::run(
             .task_type = "decomposition",
             .objective = task.objective,
             .workspace_path = task.workspace_path.string(),
-            .context_json = MakeJsonObject({
-                {"parent_task_id", QuoteJson(task.task_id)},
-                {"agents", QuoteJson(JoinAgentNames(normalized_agent_names))},
-                {"roles", QuoteJson(JoinAgentNames(subagent_roles))},
-            }),
+            .context_json = DecompositionContextJson(task, normalized_agent_names, subagent_roles),
             .timeout_ms = task.timeout_ms,
             .budget_limit = task.budget_limit,
         };
@@ -518,7 +555,7 @@ TaskRunResult SubagentManager::run(
             return result;
         }
 
-        const auto actions = ExtractPlanActions(decomposition.structured_output_json);
+        const auto actions = ExtractPlanActions(decomposition.structured_output_json, audit_logger_, task.task_id);
         if (actions.empty()) {
             result.success = false;
             result.summary = "Decomposition agent did not return plan actions.";
@@ -559,8 +596,8 @@ TaskRunResult SubagentManager::run(
         for (std::size_t index = 0; index < normalized_agent_names.size(); ++index) {
             const auto agent_name = normalized_agent_names[index];
             const auto role = subagent_roles[index];
-            futures.push_back(std::async(std::launch::async, [this, &effective_task, agent_name, role]() {
-                return run_one(effective_task, agent_name, role);
+            futures.push_back(std::async(std::launch::async, [this, &effective_task, agent_name, role, cancel]() {
+                return run_one(effective_task, agent_name, role, cancel);
             }));
         }
 
@@ -569,7 +606,22 @@ TaskRunResult SubagentManager::run(
         }
     } else {
         for (std::size_t index = 0; index < normalized_agent_names.size(); ++index) {
-            result.steps.push_back(run_one(effective_task, normalized_agent_names[index], subagent_roles[index]));
+            // Sequential mode short-circuits as soon as the orchestrator
+            // cancels: subsequent agents record a Cancelled step instead of
+            // dispatching. (Parallel mode already started every future before
+            // we observe the cancel.)
+            if (cancel && cancel->is_cancelled()) {
+                result.steps.push_back(TaskStepRecord{
+                    .target_kind = RouteTargetKind::agent,
+                    .target_name = normalized_agent_names[index],
+                    .success = false,
+                    .duration_ms = 0,
+                    .error_code = "Cancelled",
+                    .error_message = "subagent dispatch was cancelled by the orchestrator",
+                });
+                continue;
+            }
+            result.steps.push_back(run_one(effective_task, normalized_agent_names[index], subagent_roles[index], cancel));
         }
     }
 
@@ -591,18 +643,15 @@ TaskRunResult SubagentManager::run(
         result.steps,
         success_count,
         result.steps.size(),
-        estimated_cost);
-    if (!decomposition_agent_name.empty()) {
-        result.output_json.pop_back();
-        result.output_json += ",\"decomposition_agent\":" + QuoteJson(decomposition_agent_name) + '}';
-    }
+        estimated_cost,
+        decomposition_agent_name);
     result.duration_ms = ElapsedMs(started_at);
     const auto effective_cost_limit = task.budget_limit > 0.0 ? task.budget_limit : max_estimated_cost_;
     if (effective_cost_limit > 0.0 && estimated_cost > effective_cost_limit) {
         result.success = false;
         result.error_code = "SubagentCostLimitExceeded";
-        result.error_message = "Estimated subagent cost " + NumberAsJson(estimated_cost) +
-                               " exceeded limit " + NumberAsJson(effective_cost_limit) + ".";
+        result.error_message = "Estimated subagent cost " + JsonNumber(estimated_cost) +
+                               " exceeded limit " + JsonNumber(effective_cost_limit) + ".";
     }
     if (!result.success) {
         if (result.error_code.empty()) {
@@ -673,8 +722,27 @@ std::vector<std::string> SubagentManager::select_agent_candidates(const TaskRequ
     return selected;
 }
 
-TaskStepRecord SubagentManager::run_one(const TaskRequest& task, const std::string& agent_name, const std::string& role) const {
+TaskStepRecord SubagentManager::run_one(
+    const TaskRequest& task,
+    const std::string& agent_name,
+    const std::string& role,
+    const std::shared_ptr<CancellationToken>& cancel) const {
     const auto started_at = std::chrono::steady_clock::now();
+
+    // Pre-dispatch cancellation: covers parallel futures that the executor
+    // launched before the orchestrator tripped the token. The check repeats
+    // after policy evaluation below for the legacy run_task path.
+    if (cancel && cancel->is_cancelled()) {
+        return {
+            .target_kind = RouteTargetKind::agent,
+            .target_name = agent_name,
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .error_code = "Cancelled",
+            .error_message = "subagent dispatch was cancelled by the orchestrator",
+        };
+    }
+
     const auto agent = agent_registry_.find(agent_name);
     if (!agent || !agent->healthy()) {
         return {
@@ -693,13 +761,7 @@ TaskStepRecord SubagentManager::run_one(const TaskRequest& task, const std::stri
         .task_type = task.task_type,
         .objective = "[" + role + "] " + subtask_objective,
         .workspace_path = task.workspace_path.string(),
-        .context_json = MakeJsonObject({
-            {"parent_task_id", QuoteJson(task.task_id)},
-            {"agent", QuoteJson(agent_name)},
-            {"role", QuoteJson(role)},
-            {"original_objective", QuoteJson(task.objective)},
-            {"subtask_objective", QuoteJson(subtask_objective)},
-        }),
+        .context_json = SubagentContextJson(task, agent_name, role, subtask_objective),
         .constraints_json = "",
         .timeout_ms = task.timeout_ms,
         .budget_limit = task.budget_limit,
@@ -719,13 +781,49 @@ TaskStepRecord SubagentManager::run_one(const TaskRequest& task, const std::stri
         };
     }
 
-    const auto agent_result = agent->run_task(agent_task);
+    // Phase 4 routing: prefer the V2 invoke() path on adapters that implement
+    // IAgentAdapterV2 so the orchestrator gets structured AgentUsage and a
+    // CancellationToken hook. Legacy-only adapters fall back to run_task().
+    AgentResult agent_result;
+    if (auto* v2 = dynamic_cast<IAgentAdapterV2*>(agent.get())) {
+        AgentInvocation invocation;
+        invocation.task_id = agent_task.task_id;
+        invocation.objective = agent_task.objective;
+        invocation.workspace_path = task.workspace_path;
+        invocation.context = {
+            {"task_type", task.task_type},
+            {"parent_task_id", task.task_id},
+            {"agent", agent_name},
+            {"role", role},
+            {"original_objective", task.objective},
+            {"subtask_objective", subtask_objective},
+        };
+        invocation.timeout_ms = task.timeout_ms;
+        invocation.budget_limit_usd = task.budget_limit;
+        // Forward the orchestrator-scoped cancel token. V2 adapters that
+        // honor it can interrupt mid-call (e.g. close the SSE socket); the
+        // rest still get the pre-dispatch check above.
+        invocation.cancel = cancel;
+        agent_result = v2->invoke(invocation);
+    } else {
+        // Legacy path has no in-flight cancellation hook; the pre-dispatch
+        // check above is the only interruption point.
+        agent_result = agent->run_task(agent_task);
+    }
+
+    // Prefer measured `usage.cost_usd` when the V2 adapter populated it; fall
+    // back to legacy `estimated_cost` when usage is empty (zero means "we
+    // measured zero", but V2 adapters that have nothing to measure leave
+    // both fields at 0.0 so the orchestrator behavior is unchanged).
+    const double effective_cost = agent_result.usage.cost_usd > 0.0
+        ? agent_result.usage.cost_usd
+        : agent_result.estimated_cost;
     return {
         .target_kind = RouteTargetKind::agent,
         .target_name = agent_name,
         .success = agent_result.success,
         .duration_ms = agent_result.duration_ms > 0 ? agent_result.duration_ms : ElapsedMs(started_at),
-        .estimated_cost = agent_result.estimated_cost,
+        .estimated_cost = effective_cost,
         .summary = agent_result.summary,
         .structured_output_json = agent_result.structured_output_json,
         .artifacts = agent_result.artifacts,

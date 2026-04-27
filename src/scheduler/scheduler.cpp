@@ -4,6 +4,7 @@
 #include "scheduler/cron.hpp"
 #include "scheduler/timezone.hpp"
 #include "utils/atomic_file.hpp"
+#include "utils/cancellation.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -322,11 +323,20 @@ std::vector<SchedulerExecutionRecord> Scheduler::run_history() const {
     return records;
 }
 
-std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long long now_epoch_ms) {
+std::vector<SchedulerRunRecord> Scheduler::run_due(
+    AgentLoop& loop,
+    const long long now_epoch_ms,
+    std::shared_ptr<CancellationToken> cancel) {
     std::vector<SchedulerRunRecord> records;
     bool changed = false;
 
     for (auto& scheduled_task : scheduled_tasks_) {
+        // Check cancellation between tasks so a Ctrl-C mid-tick stops dispatch
+        // promptly without waiting for every due task to fire.
+        if (cancel && cancel->is_cancelled()) {
+            break;
+        }
+
         if (!scheduled_task.enabled || scheduled_task.next_run_epoch_ms > now_epoch_ms) {
             continue;
         }
@@ -355,7 +365,7 @@ std::vector<SchedulerRunRecord> Scheduler::run_due(AgentLoop& loop, const long l
         }
 
         const auto started_epoch_ms = NowEpochMs();
-        const auto result = loop.run(task);
+        const auto result = loop.run(task, cancel);
         const auto completed_epoch_ms = NowEpochMs();
         scheduled_task.run_count += 1;
 

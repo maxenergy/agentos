@@ -6,10 +6,32 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
+    URL_HASH SHA256=0d8ef5af7f9794e3263480193c491549b2ba6cc74bb018906202ada498a79406
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+set(JSON_Install OFF CACHE INTERNAL "")
+FetchContent_MakeAvailable(nlohmann_json)
+
+FetchContent_Declare(
+    httplib
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.18.3.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_Populate(httplib)
+
 add_library(agentos_core
     src/cli/agents_commands.cpp
     src/cli/auth_commands.cpp
+    src/cli/auth_interactive.cpp
     src/cli/cli_specs_commands.cpp
+    src/cli/diagnostics_commands.cpp
+    src/cli/interactive_commands.cpp
+    src/cli/serve_commands.cpp
     src/cli/memory_commands.cpp
     src/cli/plugins_commands.cpp
     src/cli/schedule_commands.cpp
@@ -32,9 +54,12 @@ add_library(agentos_core
     src/trust/trust_policy.cpp
     src/utils/command_utils.cpp
     src/utils/atomic_file.cpp
-    src/utils/json_utils.cpp
+    src/utils/cancellation.cpp
+    src/utils/curl_secret.cpp
     src/utils/path_utils.cpp
     src/utils/secret_redaction.cpp
+    src/utils/secure_random.cpp
+    src/utils/signal_cancellation.cpp
     src/utils/spec_parsing.cpp
     src/core/registry/skill_registry.cpp
     src/core/registry/agent_registry.cpp
@@ -77,7 +102,6 @@ add_library(agentos_core
     src/hosts/plugin/plugin_health.cpp
     src/hosts/plugin/plugin_host.cpp
     src/hosts/plugin/plugin_json_rpc.cpp
-    src/hosts/plugin/plugin_json_utils.cpp
     src/hosts/plugin/plugin_manifest_loader.cpp
     src/hosts/plugin/plugin_sandbox.cpp
     src/hosts/plugin/plugin_schema_validator.cpp
@@ -94,7 +118,7 @@ add_library(agentos_core
 add_executable(agentos src/main.cpp)
 target_include_directories(agentos_core PUBLIC ${PROJECT_SOURCE_DIR}/src)
 if(WIN32)
-    target_link_libraries(agentos_core PUBLIC Advapi32 Ws2_32)
+    target_link_libraries(agentos_core PUBLIC Advapi32 Ws2_32 Bcrypt)
 endif()
 if(APPLE)
     # SecureTokenStore uses the macOS Security framework for the Keychain backend.
@@ -121,6 +145,8 @@ if(UNIX AND NOT APPLE)
         message(STATUS "AgentOS: libsecret not found; SecureTokenStore will use env-ref-only fallback on Linux")
     endif()
 endif()
+target_link_libraries(agentos_core PUBLIC nlohmann_json::nlohmann_json)
+target_include_directories(agentos_core PUBLIC ${CMAKE_BINARY_DIR}/_deps/httplib-src)
 target_link_libraries(agentos PRIVATE agentos_core)
 
 enable_testing()
@@ -158,6 +184,10 @@ add_executable(agentos_subagent_session_tests tests/subagent_session_tests.cpp)
 target_link_libraries(agentos_subagent_session_tests PRIVATE agentos_core)
 add_test(NAME agentos_subagent_session_tests COMMAND agentos_subagent_session_tests)
 
+add_executable(agentos_cancellation_tests tests/cancellation_tests.cpp)
+target_link_libraries(agentos_cancellation_tests PRIVATE agentos_core)
+add_test(NAME agentos_cancellation_tests COMMAND agentos_cancellation_tests)
+
 add_executable(agentos_cli_plugin_tests tests/cli_plugin_tests.cpp)
 target_link_libraries(agentos_cli_plugin_tests PRIVATE agentos_core)
 add_test(NAME agentos_cli_plugin_tests COMMAND agentos_cli_plugin_tests)
@@ -181,6 +211,7 @@ if(MSVC)
     target_compile_options(agentos_scheduler_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_workflow_router_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_subagent_session_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_cancellation_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_cli_plugin_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_spec_parsing_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_file_skill_policy_tests PRIVATE /W4 /permissive- /EHsc)
@@ -195,6 +226,7 @@ else()
     target_compile_options(agentos_scheduler_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_workflow_router_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_subagent_session_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_cancellation_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_cli_plugin_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_spec_parsing_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_file_skill_policy_tests PRIVATE -Wall -Wextra -Wpedantic)

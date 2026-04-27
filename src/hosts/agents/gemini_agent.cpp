@@ -2,14 +2,16 @@
 
 #include "auth/auth_models.hpp"
 #include "core/orchestration/agent_result_normalizer.hpp"
+#include "utils/cancellation.hpp"
 #include "utils/command_utils.hpp"
-#include "utils/json_utils.hpp"
+#include "utils/curl_secret.hpp"
 #include "utils/path_utils.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <optional>
 #include <sstream>
 
 namespace agentos {
@@ -54,53 +56,6 @@ std::string TrimWhitespace(std::string value) {
 int ElapsedMs(const std::chrono::steady_clock::time_point started_at) {
     return static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
-}
-
-std::optional<std::string> JsonStringValueAt(const std::string& json, std::size_t position) {
-    position = json.find('"', position);
-    if (position == std::string::npos) {
-        return std::nullopt;
-    }
-    ++position;
-
-    std::string value;
-    bool escaping = false;
-    for (; position < json.size(); ++position) {
-        const char ch = json[position];
-        if (escaping) {
-            switch (ch) {
-            case 'n':
-                value.push_back('\n');
-                break;
-            case 'r':
-                value.push_back('\r');
-                break;
-            case 't':
-                value.push_back('\t');
-                break;
-            case '"':
-            case '\\':
-            case '/':
-                value.push_back(ch);
-                break;
-            default:
-                value.push_back(ch);
-                break;
-            }
-            escaping = false;
-            continue;
-        }
-        if (ch == '\\') {
-            escaping = true;
-            continue;
-        }
-        if (ch == '"') {
-            return value;
-        }
-        value.push_back(ch);
-    }
-
-    return std::nullopt;
 }
 
 }  // namespace
@@ -275,6 +230,25 @@ AgentResult GeminiAgent::run_task_with_rest_session(
         : "Authorization: Bearer " + token;
     const auto body = BuildRequestBody(task);
 
+    // Stage the request body and the auth header to short-lived files under
+    // runtime/.tmp/. Passing `-d @file` and `-H @file` keeps the bearer token
+    // / API key (and the request body) out of the curl process command line,
+    // where they would otherwise be visible to other local users via
+    // /proc/<pid>/cmdline or Windows process listings.
+    CurlSecretFiles secret_files;
+    try {
+        secret_files = WriteCurlSecretFiles(workspace_path, body, /*header_lines=*/{auth_header});
+    } catch (const std::exception& error) {
+        return {
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .error_code = "AgentUnavailable",
+            .error_message = std::string("could not stage gemini request: ") + error.what(),
+        };
+    }
+    const auto body_arg = std::string("@") + secret_files.body_file.string();
+    const auto headers_arg = std::string("@") + secret_files.headers_file.string();
+
     const CliSpec spec{
         .name = "gemini_generate_content",
         .description = "Call the Gemini generateContent REST endpoint.",
@@ -290,14 +264,14 @@ AgentResult GeminiAgent::run_task_with_rest_session(
             "-H",
             "Content-Type: application/json",
             "-H",
-            "{{auth_header}}",
+            "{{auth_headers_file}}",
             "-X",
             "POST",
             "-d",
-            "{{request_body}}",
+            "{{request_body_file}}",
         },
-        .required_args = {"url", "auth_header", "request_body", "max_time_seconds"},
-        .input_schema_json = R"({"type":"object","required":["url","request_body"]})",
+        .required_args = {"url", "auth_headers_file", "request_body_file", "max_time_seconds"},
+        .input_schema_json = R"({"type":"object","required":["url","request_body_file"]})",
         .output_schema_json = R"({"type":"object","required":["stdout","stderr","exit_code"]})",
         .parse_mode = "json",
         .risk_level = "medium",
@@ -310,9 +284,14 @@ AgentResult GeminiAgent::run_task_with_rest_session(
         .spec = spec,
         .arguments = {
             {"url", url},
-            {"auth_header", auth_header},
+            {"auth_headers_file", headers_arg},
+            // Keep `api_key` and `auth_header` in the argument map even though
+            // they are no longer rendered into argv: SecretRedactor mines the
+            // map for sensitive field names so it can scrub the token from
+            // command_display, stdout, and stderr.
             {"api_key", token},
-            {"request_body", body},
+            {"auth_header", auth_header},
+            {"request_body_file", body_arg},
             {"max_time_seconds", std::to_string(std::max(1, spec.timeout_ms / 1000))},
         },
         .workspace_path = workspace_path,
@@ -320,17 +299,17 @@ AgentResult GeminiAgent::run_task_with_rest_session(
 
     const auto extracted_text = ExtractFirstTextPart(result.stdout_text);
     const auto summary = result.success ? (extracted_text.empty() ? result.stdout_text : extracted_text) : "";
-    const auto legacy_output = MakeJsonObject({
-        {"agent", QuoteJson("gemini")},
-        {"provider", QuoteJson("gemini")},
-        {"profile", QuoteJson(profile)},
-        {"model", QuoteJson(model)},
-        {"content", QuoteJson(summary)},
-        {"command", QuoteJson(result.command_display)},
-        {"exit_code", NumberAsJson(result.exit_code)},
-        {"response", QuoteJson(result.stdout_text)},
-        {"stderr", QuoteJson(result.stderr_text)},
-    });
+    nlohmann::ordered_json legacy_output_json;
+    legacy_output_json["agent"] = "gemini";
+    legacy_output_json["provider"] = "gemini";
+    legacy_output_json["profile"] = profile;
+    legacy_output_json["model"] = model;
+    legacy_output_json["content"] = summary;
+    legacy_output_json["command"] = result.command_display;
+    legacy_output_json["exit_code"] = result.exit_code;
+    legacy_output_json["response"] = result.stdout_text;
+    legacy_output_json["stderr"] = result.stderr_text;
+    const auto legacy_output = legacy_output_json.dump();
     AgentResult agent_result{
         .success = result.success,
         .summary = result.success ? summary : "Gemini generateContent request failed.",
@@ -413,18 +392,18 @@ AgentResult GeminiAgent::run_task_with_cli_session(
         .workspace_path = workspace_path,
     });
 
-    const auto legacy_output = MakeJsonObject({
-        {"agent", QuoteJson("gemini")},
-        {"provider", QuoteJson("gemini")},
-        {"profile", QuoteJson(session.profile_name)},
-        {"auth_source", QuoteJson("gemini_cli_oauth")},
-        {"model", QuoteJson(model)},
-        {"content", QuoteJson(result.success ? result.stdout_text : "")},
-        {"command", QuoteJson(result.command_display)},
-        {"exit_code", NumberAsJson(result.exit_code)},
-        {"stdout", QuoteJson(result.stdout_text)},
-        {"stderr", QuoteJson(result.stderr_text)},
-    });
+    nlohmann::ordered_json legacy_output_json;
+    legacy_output_json["agent"] = "gemini";
+    legacy_output_json["provider"] = "gemini";
+    legacy_output_json["profile"] = session.profile_name;
+    legacy_output_json["auth_source"] = "gemini_cli_oauth";
+    legacy_output_json["model"] = model;
+    legacy_output_json["content"] = result.success ? result.stdout_text : "";
+    legacy_output_json["command"] = result.command_display;
+    legacy_output_json["exit_code"] = result.exit_code;
+    legacy_output_json["stdout"] = result.stdout_text;
+    legacy_output_json["stderr"] = result.stderr_text;
+    const auto legacy_output = legacy_output_json.dump();
     AgentResult agent_result{
         .success = result.success,
         .summary = result.success ? result.stdout_text : "Gemini CLI task failed.",
@@ -456,9 +435,116 @@ AgentResult GeminiAgent::run_task_in_session(const std::string& session_id, cons
     return result;
 }
 
-bool GeminiAgent::cancel(const std::string& task_id) {
-    (void)task_id;
+bool GeminiAgent::cancel(const std::string& /*task_id*/) {
+    // Legacy cancel(task_id) is a no-op stub. V2 callers drive cancellation
+    // via AgentInvocation::cancel (CancellationToken).
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// V2 invoke path: wraps the existing run_task pipeline with a CancellationToken
+// pre-check and SessionInit/Status/Final events. Gemini's REST + CLI paths are
+// non-streaming today, so we do not attempt mid-call interruption — but the
+// orchestrator gets a consistent V2 entry point and zero-cost Usage so the
+// admission-control budget gate sees explicit data rather than missing fields.
+// ---------------------------------------------------------------------------
+AgentResult GeminiAgent::invoke(const AgentInvocation& invocation,
+                                const AgentEventCallback& on_event) {
+    const auto started_at = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [&]() {
+        return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_at).count());
+    };
+
+    auto emit = [&](AgentEvent ev) {
+        if (on_event) {
+            (void)on_event(ev);
+        }
+    };
+
+    if (invocation.cancel && invocation.cancel->is_cancelled()) {
+        return {
+            .success = false,
+            .duration_ms = elapsed_ms(),
+            .error_code = "Cancelled",
+            .error_message = "gemini invocation was cancelled before dispatch",
+        };
+    }
+
+    emit(AgentEvent{
+        .kind = AgentEvent::Kind::SessionInit,
+        .fields = {
+            {"agent", "gemini"},
+            {"profile", profile_name()},
+            {"model", ModelNameFromConstraints(invocation.constraints)},
+        },
+    });
+    emit(AgentEvent{
+        .kind = AgentEvent::Kind::Status,
+        .fields = {{"phase", "dispatch"}},
+        .payload_text = "calling gemini provider",
+    });
+
+    auto result = run_task(TaskFromInvocation(invocation));
+
+    // Gemini doesn't surface token usage in the current REST/CLI plumbing; emit
+    // an explicit zero so the orchestrator's budget gate sees data rather than
+    // missing fields. Cost/turns also default to zero.
+    result.usage.cost_usd = 0.0;
+    result.usage.turns = 1;
+    if (invocation.session_id.has_value()) {
+        result.session_id = invocation.session_id;
+    }
+
+    emit(AgentEvent{
+        .kind = AgentEvent::Kind::Usage,
+        .fields = {
+            {"input_tokens", "0"},
+            {"output_tokens", "0"},
+            {"cost_usd", "0.0"},
+            {"turns", "1"},
+        },
+    });
+    emit(AgentEvent{
+        .kind = AgentEvent::Kind::Final,
+        .fields = {{"success", result.success ? "true" : "false"}},
+        .payload_text = result.summary,
+    });
+    return result;
+}
+
+AgentTask GeminiAgent::TaskFromInvocation(const AgentInvocation& invocation) {
+    nlohmann::json context_json = nlohmann::json::object();
+    for (const auto& [k, v] : invocation.context) {
+        context_json[k] = v;
+    }
+    nlohmann::json constraints_json = nlohmann::json::object();
+    for (const auto& [k, v] : invocation.constraints) {
+        constraints_json[k] = v;
+    }
+    AgentTask task;
+    task.task_id = invocation.task_id;
+    // task_type defaults to a stable string; legacy run_task path uses it for
+    // prompt scaffolding only.
+    const auto task_type_it = invocation.context.find("task_type");
+    task.task_type = task_type_it == invocation.context.end()
+        ? std::string{"agent_invoke"}
+        : task_type_it->second;
+    task.objective = invocation.objective;
+    task.workspace_path = invocation.workspace_path.string();
+    task.context_json = context_json.empty() ? std::string{} : context_json.dump();
+    task.constraints_json = constraints_json.empty() ? std::string{} : constraints_json.dump();
+    task.timeout_ms = invocation.timeout_ms;
+    task.budget_limit = invocation.budget_limit_usd;
+    return task;
+}
+
+std::string GeminiAgent::ModelNameFromConstraints(const StringMap& constraints) {
+    const auto it = constraints.find("model");
+    if (it == constraints.end() || it->second.empty()) {
+        return kDefaultGeminiModel;
+    }
+    return NormalizeGeminiModelName(it->second);
 }
 
 std::string GeminiAgent::profile_name() const {
@@ -503,21 +589,45 @@ std::string GeminiAgent::BuildPrompt(const AgentTask& task) {
 }
 
 std::string GeminiAgent::BuildRequestBody(const AgentTask& task) {
-    return MakeJsonObject({
-        {"contents", "[{\"role\":\"user\",\"parts\":[{\"text\":" + QuoteJson(BuildPrompt(task)) + "}]}]"},
-    });
+    nlohmann::ordered_json part;
+    part["text"] = BuildPrompt(task);
+
+    nlohmann::ordered_json content;
+    content["role"] = "user";
+    content["parts"] = nlohmann::ordered_json::array({part});
+
+    nlohmann::ordered_json body;
+    body["contents"] = nlohmann::ordered_json::array({content});
+    return body.dump();
 }
 
 std::string GeminiAgent::ExtractFirstTextPart(const std::string& response_json) {
-    const auto text_key = response_json.find("\"text\"");
-    if (text_key == std::string::npos) {
+    try {
+        const auto parsed = nlohmann::json::parse(response_json);
+        const auto candidates = parsed.find("candidates");
+        if (candidates == parsed.end() || !candidates->is_array()) {
+            return "";
+        }
+        for (const auto& candidate : *candidates) {
+            const auto content = candidate.find("content");
+            if (content == candidate.end() || !content->is_object()) {
+                continue;
+            }
+            const auto parts = content->find("parts");
+            if (parts == content->end() || !parts->is_array()) {
+                continue;
+            }
+            for (const auto& part : *parts) {
+                const auto text = part.find("text");
+                if (text != part.end() && text->is_string()) {
+                    return text->get<std::string>();
+                }
+            }
+        }
+    } catch (const nlohmann::json::exception&) {
         return "";
     }
-    const auto colon = response_json.find(':', text_key);
-    if (colon == std::string::npos) {
-        return "";
-    }
-    return JsonStringValueAt(response_json, colon + 1).value_or("");
+    return "";
 }
 
 }  // namespace agentos

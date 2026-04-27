@@ -9,7 +9,6 @@
 #include "memory/memory_manager.hpp"
 #include "memory/workflow_store.hpp"
 #include "memory/workflow_validation.hpp"
-#include "utils/json_utils.hpp"
 #include "skills/builtin/file_patch_skill.hpp"
 #include "skills/builtin/file_read_skill.hpp"
 #include "skills/builtin/file_write_skill.hpp"
@@ -21,6 +20,8 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace {
 
@@ -95,13 +96,13 @@ public:
     }
 
     agentos::AgentResult run_task(const agentos::AgentTask& task) override {
+        nlohmann::ordered_json structured_output;
+        structured_output["context_json"] = task.context_json;
+        structured_output["constraints_json"] = task.constraints_json;
         return {
             .success = true,
             .summary = name_ + " handled " + task.objective,
-            .structured_output_json = agentos::MakeJsonObject({
-                {"context_json", agentos::QuoteJson(task.context_json)},
-                {"constraints_json", agentos::QuoteJson(task.constraints_json)},
-            }),
+            .structured_output_json = structured_output.dump(),
             .duration_ms = 1,
             .estimated_cost = estimated_cost_,
         };
@@ -920,7 +921,10 @@ void TestWorkflowCandidatesAcrossRestart(const std::filesystem::path& workspace)
         TestRuntime runtime(isolated_workspace);
         RegisterCore(runtime);
 
-        for (int index = 0; index < 2; ++index) {
+        // Phase 2.2 promotion gate requires >=3 occurrences of the same step
+        // signature AND >=60% ratio. Run the write_file task 3 times so the
+        // canonical step sequence accumulates enough recurrences for promotion.
+        for (int index = 0; index < 3; ++index) {
             const auto result = runtime.loop.run(agentos::TaskRequest{
                 .task_id = "workflow-candidate-" + std::to_string(index),
                 .task_type = "write_file",
@@ -957,13 +961,191 @@ void TestWorkflowCandidatesAcrossRestart(const std::filesystem::path& workspace)
     });
     Expect(workflow != workflows.end(), "write_file workflow candidate should be generated");
     if (workflow != workflows.end()) {
-        Expect(workflow->use_count == 3, "workflow scoring should count successful and failed attempts");
-        Expect(workflow->success_count == 2, "workflow scoring should count successful attempts");
+        Expect(workflow->use_count == 4, "workflow scoring should count successful and failed attempts");
+        Expect(workflow->success_count == 3, "workflow scoring should count successful attempts");
         Expect(workflow->failure_count == 1, "workflow scoring should count failed attempts");
-        Expect(workflow->success_rate > 0.66 && workflow->success_rate < 0.67, "workflow scoring should compute success rate");
+        Expect(workflow->success_rate > 0.74 && workflow->success_rate < 0.76,
+            "workflow scoring should compute success rate (3/4 successful)");
         Expect(workflow->score > 0.0, "workflow scoring should produce a positive candidate score for mostly successful workflows");
+        int total_signature_count = 0;
+        for (const auto& [signature, count] : workflow->step_signature_counts) {
+            total_signature_count += count;
+        }
+        Expect(total_signature_count == 3,
+            "Phase 2.2: step_signature_counts must sum to the number of successful runs");
     }
     Expect(std::filesystem::exists(isolated_workspace / "memory" / "workflow_candidates.tsv"), "workflow_candidates.tsv should be written");
+    Expect(std::filesystem::exists(isolated_workspace / "memory" / ".workflow_candidates_schema_version"),
+        "Phase 2.2: workflow candidates schema version stamp must exist after refresh");
+}
+
+void TestWorkflowPromotionRequiresThreeRecurrences(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "promotion_two_runs_no_promote";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    for (int index = 0; index < 2; ++index) {
+        const auto result = runtime.loop.run(agentos::TaskRequest{
+            .task_id = "promo-2runs-" + std::to_string(index),
+            .task_type = "write_file",
+            .objective = "two-run pattern should not promote",
+            .workspace_path = isolated_workspace,
+            .idempotency_key = "promo-2runs-" + std::to_string(index),
+            .inputs = {
+                {"path", "promo_two_runs/" + std::to_string(index) + ".txt"},
+                {"content", "x"},
+            },
+        });
+        Expect(result.success, "two-run promotion fixture should succeed");
+    }
+
+    const auto candidates = runtime.memory_manager.workflow_candidates();
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [](const agentos::WorkflowCandidate& c) {
+        return c.trigger_task_type == "write_file";
+    });
+    Expect(found == candidates.end(),
+        "Phase 2.2: only 2 successful runs of the same task_type must NOT promote a workflow");
+}
+
+void TestWorkflowPromotionUnanimousThreeRuns(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "promotion_three_unanimous";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+
+    for (int index = 0; index < 3; ++index) {
+        const auto result = runtime.loop.run(agentos::TaskRequest{
+            .task_id = "promo-unanimous-" + std::to_string(index),
+            .task_type = "write_file",
+            .objective = "unanimous-three pattern should promote",
+            .workspace_path = isolated_workspace,
+            .idempotency_key = "promo-unanimous-" + std::to_string(index),
+            .inputs = {
+                {"path", "promo_unanimous/" + std::to_string(index) + ".txt"},
+                {"content", "x"},
+            },
+        });
+        Expect(result.success, "unanimous-three promotion fixture should succeed");
+    }
+
+    const auto candidates = runtime.memory_manager.workflow_candidates();
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [](const agentos::WorkflowCandidate& c) {
+        return c.trigger_task_type == "write_file";
+    });
+    Expect(found != candidates.end(),
+        "Phase 2.2: 3 successful runs with identical step sequences MUST promote a workflow");
+    if (found != candidates.end()) {
+        Expect(found->success_count == 3, "promoted candidate should record all three successes");
+        Expect(found->step_signature_counts.size() == 1,
+            "unanimous fixture should produce exactly one step signature");
+        const auto signature_count = found->step_signature_counts.begin()->second;
+        Expect(signature_count == 3,
+            "Phase 2.2: the unanimous signature must record 3 occurrences");
+    }
+}
+
+void RecordSyntheticWorkflowRun(
+    agentos::MemoryManager& memory_manager,
+    const std::string& task_id,
+    const std::string& task_type,
+    const std::vector<std::string>& target_names) {
+    agentos::TaskRunResult result{
+        .success = true,
+        .summary = "synthetic success",
+        .route_target = target_names.empty() ? "" : target_names.front(),
+        .route_kind = target_names.empty() ? agentos::RouteTargetKind::none : agentos::RouteTargetKind::skill,
+        .duration_ms = 10,
+    };
+    for (const auto& target_name : target_names) {
+        result.steps.push_back(agentos::TaskStepRecord{
+            .target_kind = agentos::RouteTargetKind::skill,
+            .target_name = target_name,
+            .success = true,
+            .duration_ms = 1,
+            .summary = "synthetic step",
+        });
+    }
+    memory_manager.record_task(
+        agentos::TaskRequest{
+            .task_id = task_id,
+            .task_type = task_type,
+            .objective = "synthetic workflow promotion fixture",
+            .idempotency_key = task_id,
+        },
+        result);
+}
+
+void TestWorkflowPromotionMajoritySignatureWins(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "promotion_majority_signature";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::MemoryManager memory_manager(isolated_workspace / "memory");
+    const std::string task_type = "synthetic_majority";
+    for (int index = 0; index < 3; ++index) {
+        RecordSyntheticWorkflowRun(
+            memory_manager,
+            "majority-a-" + std::to_string(index),
+            task_type,
+            {"file_write", "file_read"});
+    }
+    for (int index = 0; index < 2; ++index) {
+        RecordSyntheticWorkflowRun(
+            memory_manager,
+            "majority-b-" + std::to_string(index),
+            task_type,
+            {"file_write", "file_patch", "file_read"});
+    }
+
+    const auto candidates = memory_manager.workflow_candidates();
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const agentos::WorkflowCandidate& c) {
+        return c.trigger_task_type == task_type;
+    });
+    Expect(found != candidates.end(),
+        "Phase 2.2: a 3-of-5 majority signature at 60 percent must promote a workflow");
+    if (found != candidates.end()) {
+        Expect(found->success_count == 5, "majority candidate should record all successful runs");
+        Expect(found->ordered_steps == std::vector<std::string>({"file_write", "file_read"}),
+            "majority candidate should use the highest-count step signature");
+        Expect(found->step_signature_counts.size() == 2,
+            "majority candidate should retain both observed step signatures");
+        const auto majority_count = found->step_signature_counts.find("file_write|file_read");
+        Expect(majority_count != found->step_signature_counts.end() && majority_count->second == 3,
+            "majority signature should record 3 occurrences");
+    }
+}
+
+void TestWorkflowPromotionNoMajorityDoesNotPromote(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "promotion_no_majority";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::MemoryManager memory_manager(isolated_workspace / "memory");
+    const std::string task_type = "synthetic_no_majority";
+    for (int index = 0; index < 3; ++index) {
+        RecordSyntheticWorkflowRun(
+            memory_manager,
+            "no-majority-a-" + std::to_string(index),
+            task_type,
+            {"file_write", "file_read"});
+        RecordSyntheticWorkflowRun(
+            memory_manager,
+            "no-majority-b-" + std::to_string(index),
+            task_type,
+            {"file_write", "file_patch", "file_read"});
+    }
+
+    const auto candidates = memory_manager.workflow_candidates();
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const agentos::WorkflowCandidate& c) {
+        return c.trigger_task_type == task_type;
+    });
+    Expect(found == candidates.end(),
+        "Phase 2.2: two 3-of-6 signatures at 50 percent must NOT promote a workflow");
 }
 
 void TestWorkflowStorePersistsDefinitions(const std::filesystem::path& workspace) {
@@ -1088,6 +1270,10 @@ int main() {
     TestPersistentTaskAndStepLogs(workspace);
     TestLessonStoreRecordsFailuresAcrossRestart(workspace);
     TestWorkflowCandidatesAcrossRestart(workspace);
+    TestWorkflowPromotionRequiresThreeRecurrences(workspace);
+    TestWorkflowPromotionUnanimousThreeRuns(workspace);
+    TestWorkflowPromotionMajoritySignatureWins(workspace);
+    TestWorkflowPromotionNoMajorityDoesNotPromote(workspace);
     TestWorkflowStorePersistsDefinitions(workspace);
 
     if (failures != 0) {

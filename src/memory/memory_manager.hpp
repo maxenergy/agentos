@@ -46,6 +46,7 @@ private:
     void append_task_log(const TaskRequest& task, const TaskRunResult& result) const;
     void append_step_log(const TaskRequest& task, const TaskStepRecord& step) const;
     void flush_stats() const;
+    void EnsureWorkflowCandidatesSchema() const;
 
     std::filesystem::path storage_dir_;
     LessonStore lesson_store_;

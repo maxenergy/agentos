@@ -1,5 +1,6 @@
 #include "hosts/cli/cli_spec_loader.hpp"
 
+#include "core/schema/schema_validator.hpp"
 #include "core/policy/permission_model.hpp"
 #include "utils/spec_parsing.hpp"
 
@@ -159,16 +160,16 @@ CliSpecParseResult ParseCliSpecLine(const std::string& line) {
             .error_message = required_arg_error,
         };
     }
-    if (!IsLikelyJsonObjectString(spec.input_schema_json)) {
+    if (!IsParseableJsonObjectSchema(spec.input_schema_json)) {
         return {
             .spec = std::nullopt,
-            .error_message = "input_schema_json must be a JSON object",
+            .error_message = "input_schema_json must be a parseable JSON object",
         };
     }
-    if (!IsLikelyJsonObjectString(spec.output_schema_json)) {
+    if (!IsParseableJsonObjectSchema(spec.output_schema_json)) {
         return {
             .spec = std::nullopt,
-            .error_message = "output_schema_json must be a JSON object",
+            .error_message = "output_schema_json must be a parseable JSON object",
         };
     }
     return {

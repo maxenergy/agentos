@@ -1,6 +1,6 @@
 #include "hosts/plugin/plugin_host.hpp"
 
-#include "hosts/plugin/plugin_json_utils.hpp"
+#include "core/schema/schema_validator.hpp"
 #include "hosts/plugin/plugin_spec_utils.hpp"
 #include "utils/spec_parsing.hpp"
 
@@ -9,12 +9,73 @@
 #include <iterator>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
+#include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace agentos {
 namespace {
 
 constexpr char kListDelimiter = ',';
+using Json = nlohmann::ordered_json;
+
+std::optional<Json> ParseJsonObject(const std::string& text) {
+    try {
+        auto parsed = Json::parse(text);
+        if (parsed.is_object()) {
+            return parsed;
+        }
+    } catch (const nlohmann::json::exception&) {
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> JsonStringField(const Json& object, const std::string& name) {
+    const auto found = object.find(name);
+    if (found != object.end() && found->is_string()) {
+        return found->get<std::string>();
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> JsonStringArrayField(const Json& object, const std::string& name) {
+    const auto found = object.find(name);
+    if (found == object.end() || !found->is_array()) {
+        return {};
+    }
+
+    std::vector<std::string> values;
+    for (const auto& value : *found) {
+        if (value.is_string()) {
+            values.push_back(value.get<std::string>());
+        }
+    }
+    return values;
+}
+
+std::optional<bool> JsonBoolField(const Json& object, const std::string& name) {
+    const auto found = object.find(name);
+    if (found != object.end() && found->is_boolean()) {
+        return found->get<bool>();
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> JsonSchemaField(const Json& object, const std::string& name) {
+    const auto found = object.find(name);
+    if (found == object.end()) {
+        return std::nullopt;
+    }
+    if (found->is_string()) {
+        return found->get<std::string>();
+    }
+    if (found->is_object()) {
+        return found->dump();
+    }
+    return std::nullopt;
+}
 
 struct PluginSpecParseResult {
     std::optional<PluginSpec> spec;
@@ -170,16 +231,16 @@ PluginSpecParseResult ValidatePluginSpec(PluginSpec spec) {
             .error_message = health_arg_error,
         };
     }
-    if (!IsLikelyJsonObjectString(spec.input_schema_json)) {
+    if (!IsParseableJsonObjectSchema(spec.input_schema_json)) {
         return {
             .spec = std::nullopt,
-            .error_message = "input_schema_json must be a JSON object",
+            .error_message = "input_schema_json must be a parseable JSON object",
         };
     }
-    if (!IsLikelyJsonObjectString(spec.output_schema_json)) {
+    if (!IsParseableJsonObjectSchema(spec.output_schema_json)) {
         return {
             .spec = std::nullopt,
-            .error_message = "output_schema_json must be a JSON object",
+            .error_message = "output_schema_json must be a parseable JSON object",
         };
     }
     return {
@@ -251,21 +312,22 @@ PluginSpecParseResult ParsePluginSpecLine(const std::string& line) {
 }
 
 bool AssignJsonIntField(
-    const std::string& manifest,
+    const Json& manifest,
     const std::string& name,
     const int fallback,
     const int minimum,
     int& output,
     std::string& error_message) {
-    const auto token = JsonNumberTokenField(manifest, name);
-    if (!token.has_value()) {
+    const auto found = manifest.find(name);
+    if (found == manifest.end()) {
         output = fallback;
         return true;
     }
-    if (!ParseStrictInt(*token, output)) {
-        error_message = "invalid integer field " + name + ": " + *token;
+    if (!found->is_number_integer()) {
+        error_message = "invalid integer field " + name + ": " + found->dump();
         return false;
     }
+    output = found->get<int>();
     if (output < minimum) {
         error_message = "integer field " + name + " must be >= " + std::to_string(minimum);
         return false;
@@ -274,26 +336,33 @@ bool AssignJsonIntField(
 }
 
 bool AssignJsonSizeField(
-    const std::string& manifest,
+    const Json& manifest,
     const std::string& name,
     const std::size_t fallback,
     std::size_t& output,
     std::string& error_message) {
-    const auto token = JsonNumberTokenField(manifest, name);
-    if (!token.has_value()) {
+    const auto found = manifest.find(name);
+    if (found == manifest.end()) {
         output = fallback;
         return true;
     }
-    if (!ParseStrictSize(*token, output)) {
-        error_message = "invalid size field " + name + ": " + *token;
+    if (!found->is_number_integer()) {
+        error_message = "invalid size field " + name + ": " + found->dump();
         return false;
     }
+    const auto value = found->get<long long>();
+    if (value < 0) {
+        error_message = "invalid size field " + name + ": " + found->dump();
+        return false;
+    }
+    output = static_cast<std::size_t>(value);
     return true;
 }
 
 PluginSpecParseResult ParsePluginSpecJsonManifest(const std::string& manifest) {
     const auto trimmed = TrimWhitespace(manifest);
-    if (!IsLikelyJsonObjectString(trimmed)) {
+    const auto parsed = ParseJsonObject(trimmed);
+    if (!parsed.has_value()) {
         return {
             .spec = std::nullopt,
             .error_message = "plugin JSON manifest must be a JSON object",
@@ -301,37 +370,36 @@ PluginSpecParseResult ParsePluginSpecJsonManifest(const std::string& manifest) {
     }
 
     PluginSpec spec;
-    if (auto value = JsonStringField(trimmed, "manifest_version"); value.has_value()) {
+    if (auto value = JsonStringField(*parsed, "manifest_version"); value.has_value()) {
         spec.manifest_version = *value;
     }
-    spec.name = JsonStringField(trimmed, "name").value_or("");
-    spec.description = JsonStringField(trimmed, "description").value_or("");
-    spec.binary = JsonStringField(trimmed, "binary").value_or("");
-    spec.args_template = JsonStringArrayField(trimmed, "args_template").value_or(std::vector<std::string>{});
-    spec.required_args = JsonStringArrayField(trimmed, "required_args").value_or(std::vector<std::string>{});
-    spec.protocol = JsonStringField(trimmed, "protocol").value_or("stdio-json-v0");
-    spec.input_schema_json = JsonSchemaField(trimmed, "input_schema_json").value_or(R"({"type":"object"})");
-    spec.output_schema_json = JsonSchemaField(trimmed, "output_schema_json").value_or(R"({"type":"object"})");
-    spec.risk_level = JsonStringField(trimmed, "risk_level").value_or("low");
-    spec.permissions = JsonStringArrayField(trimmed, "permissions").value_or(std::vector<std::string>{});
-    spec.env_allowlist = JsonStringArrayField(trimmed, "env_allowlist").value_or(std::vector<std::string>{});
-    spec.idempotent = JsonBoolField(trimmed, "idempotent").value_or(true);
-    spec.health_args_template =
-        JsonStringArrayField(trimmed, "health_args_template").value_or(std::vector<std::string>{});
-    spec.sandbox_mode = JsonStringField(trimmed, "sandbox_mode").value_or("workspace");
-    spec.lifecycle_mode = JsonStringField(trimmed, "lifecycle_mode").value_or("oneshot");
+    spec.name = JsonStringField(*parsed, "name").value_or("");
+    spec.description = JsonStringField(*parsed, "description").value_or("");
+    spec.binary = JsonStringField(*parsed, "binary").value_or("");
+    spec.args_template = JsonStringArrayField(*parsed, "args_template");
+    spec.required_args = JsonStringArrayField(*parsed, "required_args");
+    spec.protocol = JsonStringField(*parsed, "protocol").value_or("stdio-json-v0");
+    spec.input_schema_json = JsonSchemaField(*parsed, "input_schema_json").value_or(R"({"type":"object"})");
+    spec.output_schema_json = JsonSchemaField(*parsed, "output_schema_json").value_or(R"({"type":"object"})");
+    spec.risk_level = JsonStringField(*parsed, "risk_level").value_or("low");
+    spec.permissions = JsonStringArrayField(*parsed, "permissions");
+    spec.env_allowlist = JsonStringArrayField(*parsed, "env_allowlist");
+    spec.idempotent = JsonBoolField(*parsed, "idempotent").value_or(true);
+    spec.health_args_template = JsonStringArrayField(*parsed, "health_args_template");
+    spec.sandbox_mode = JsonStringField(*parsed, "sandbox_mode").value_or("workspace");
+    spec.lifecycle_mode = JsonStringField(*parsed, "lifecycle_mode").value_or("oneshot");
 
     std::string field_error;
-    if (!AssignJsonIntField(trimmed, "timeout_ms", 3000, 1, spec.timeout_ms, field_error) ||
-        !AssignJsonSizeField(trimmed, "output_limit_bytes", 1024 * 1024, spec.output_limit_bytes, field_error) ||
-        !AssignJsonSizeField(trimmed, "memory_limit_bytes", 0, spec.memory_limit_bytes, field_error) ||
-        !AssignJsonIntField(trimmed, "max_processes", 0, 0, spec.max_processes, field_error) ||
-        !AssignJsonIntField(trimmed, "cpu_time_limit_seconds", 0, 0, spec.cpu_time_limit_seconds, field_error) ||
-        !AssignJsonIntField(trimmed, "file_descriptor_limit", 0, 0, spec.file_descriptor_limit, field_error) ||
-        !AssignJsonIntField(trimmed, "health_timeout_ms", spec.timeout_ms, 1, spec.health_timeout_ms, field_error) ||
-        !AssignJsonIntField(trimmed, "startup_timeout_ms", spec.timeout_ms, 1, spec.startup_timeout_ms, field_error) ||
-        !AssignJsonIntField(trimmed, "idle_timeout_ms", 30000, 1, spec.idle_timeout_ms, field_error) ||
-        !AssignJsonIntField(trimmed, "pool_size", 1, 1, spec.pool_size, field_error)) {
+    if (!AssignJsonIntField(*parsed, "timeout_ms", 3000, 1, spec.timeout_ms, field_error) ||
+        !AssignJsonSizeField(*parsed, "output_limit_bytes", 1024 * 1024, spec.output_limit_bytes, field_error) ||
+        !AssignJsonSizeField(*parsed, "memory_limit_bytes", 0, spec.memory_limit_bytes, field_error) ||
+        !AssignJsonIntField(*parsed, "max_processes", 0, 0, spec.max_processes, field_error) ||
+        !AssignJsonIntField(*parsed, "cpu_time_limit_seconds", 0, 0, spec.cpu_time_limit_seconds, field_error) ||
+        !AssignJsonIntField(*parsed, "file_descriptor_limit", 0, 0, spec.file_descriptor_limit, field_error) ||
+        !AssignJsonIntField(*parsed, "health_timeout_ms", spec.timeout_ms, 1, spec.health_timeout_ms, field_error) ||
+        !AssignJsonIntField(*parsed, "startup_timeout_ms", spec.timeout_ms, 1, spec.startup_timeout_ms, field_error) ||
+        !AssignJsonIntField(*parsed, "idle_timeout_ms", 30000, 1, spec.idle_timeout_ms, field_error) ||
+        !AssignJsonIntField(*parsed, "pool_size", 1, 1, spec.pool_size, field_error)) {
         return {
             .spec = std::nullopt,
             .error_message = field_error,

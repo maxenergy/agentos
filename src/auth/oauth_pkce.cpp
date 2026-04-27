@@ -1,9 +1,11 @@
 #include "auth/oauth_pkce.hpp"
 
+#include "utils/curl_secret.hpp"
+#include "utils/secure_random.hpp"
 #include "utils/spec_parsing.hpp"
 
+#include <algorithm>
 #include <array>
-#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -14,6 +16,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -145,12 +149,7 @@ std::string Base64UrlEncode(const std::vector<std::uint8_t>& bytes) {
 }
 
 std::string RandomBase64Url(const std::size_t byte_count) {
-    std::random_device random_device;
-    std::vector<std::uint8_t> bytes(byte_count);
-    for (auto& byte : bytes) {
-        byte = static_cast<std::uint8_t>(random_device() & 0xffU);
-    }
-    return Base64UrlEncode(bytes);
+    return Base64UrlEncode(SecureRandomBytes(byte_count));
 }
 
 std::string UrlEncode(const std::string& value) {
@@ -252,6 +251,82 @@ std::optional<std::string> ExtractHttpRequestTarget(const std::string& request_t
     return request_line.substr(first_space + 1, second_space - first_space - 1);
 }
 
+std::string ExtractRedirectUriPath(const std::string& redirect_uri) {
+    const auto scheme_end = redirect_uri.find("://");
+    if (scheme_end == std::string::npos) {
+        return "/";
+    }
+    const auto authority_start = scheme_end + 3;
+    const auto path_start = redirect_uri.find('/', authority_start);
+    if (path_start == std::string::npos) {
+        return "/";
+    }
+    const auto query_start = redirect_uri.find_first_of("?#", path_start);
+    auto path = query_start == std::string::npos
+        ? redirect_uri.substr(path_start)
+        : redirect_uri.substr(path_start, query_start - path_start);
+    if (path.empty()) {
+        return "/";
+    }
+    return path;
+}
+
+std::string TargetPathOnly(const std::string& target) {
+    const auto query = target.find_first_of("?#");
+    return query == std::string::npos ? target : target.substr(0, query);
+}
+
+std::optional<std::string> ExtractHttpHostHeader(const std::string& request_text) {
+    std::size_t cursor = request_text.find("\r\n");
+    if (cursor == std::string::npos) {
+        return std::nullopt;
+    }
+    cursor += 2;
+    while (cursor < request_text.size()) {
+        const auto line_end = request_text.find("\r\n", cursor);
+        const auto line = request_text.substr(
+            cursor,
+            line_end == std::string::npos ? std::string::npos : line_end - cursor);
+        if (line.empty()) {
+            return std::nullopt;
+        }
+        const auto colon = line.find(':');
+        if (colon != std::string::npos) {
+            std::string name = line.substr(0, colon);
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
+            if (name == "host") {
+                std::size_t value_begin = colon + 1;
+                while (value_begin < line.size() &&
+                       (line[value_begin] == ' ' || line[value_begin] == '\t')) {
+                    ++value_begin;
+                }
+                std::size_t value_end = line.size();
+                while (value_end > value_begin &&
+                       (line[value_end - 1] == ' ' || line[value_end - 1] == '\t')) {
+                    --value_end;
+                }
+                return line.substr(value_begin, value_end - value_begin);
+            }
+        }
+        if (line_end == std::string::npos) {
+            return std::nullopt;
+        }
+        cursor = line_end + 2;
+    }
+    return std::nullopt;
+}
+
+bool HostHeaderMatchesLoopback(const std::string& host_header, int port) {
+    if (host_header.empty()) {
+        return false;
+    }
+    const auto port_str = ":" + std::to_string(port);
+    return host_header == "127.0.0.1" + port_str ||
+           host_header == "localhost" + port_str;
+}
+
 #ifdef _WIN32
 using SocketHandle = SOCKET;
 constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
@@ -335,134 +410,64 @@ void AppendFormParam(std::string& body, const std::string& key, const std::strin
     body += UrlEncode(value);
 }
 
-void SkipWhitespace(const std::string& text, std::size_t& pos) {
-    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
-        ++pos;
+// ADR-JSON-001 phase 2: parse the OAuth token response with nlohmann/json so
+// whitespace, key order, unicode-escaped values, and nested objects all
+// round-trip correctly.  Returns nullopt on parse failure or when the field is
+// absent / wrong-typed, matching the previous hand-rolled contract.
+const nlohmann::json* TopLevelJsonField(const nlohmann::json& root, const std::string& key) {
+    if (!root.is_object()) {
+        return nullptr;
     }
+    const auto it = root.find(key);
+    if (it == root.end()) {
+        return nullptr;
+    }
+    return &(*it);
 }
 
-bool ParseJsonStringAt(const std::string& text, std::size_t& pos, std::string& output) {
-    if (pos >= text.size() || text[pos] != '"') {
-        return false;
-    }
-    ++pos;
-    output.clear();
-    while (pos < text.size()) {
-        const char ch = text[pos++];
-        if (ch == '"') {
-            return true;
-        }
-        if (ch != '\\') {
-            output.push_back(ch);
-            continue;
-        }
-        if (pos >= text.size()) {
-            return false;
-        }
-        const char escaped = text[pos++];
-        switch (escaped) {
-        case '"':
-        case '\\':
-        case '/':
-            output.push_back(escaped);
-            break;
-        case 'b':
-            output.push_back('\b');
-            break;
-        case 'f':
-            output.push_back('\f');
-            break;
-        case 'n':
-            output.push_back('\n');
-            break;
-        case 'r':
-            output.push_back('\r');
-            break;
-        case 't':
-            output.push_back('\t');
-            break;
-        default:
-            return false;
-        }
-    }
-    return false;
-}
-
-std::optional<std::size_t> FindTopLevelJsonValue(const std::string& text, const std::string& key) {
-    std::size_t pos = 0;
-    SkipWhitespace(text, pos);
-    if (pos >= text.size() || text[pos] != '{') {
+std::optional<nlohmann::json> ParseTokenResponseJson(const std::string& text) {
+    try {
+        return nlohmann::json::parse(text);
+    } catch (const nlohmann::json::exception&) {
         return std::nullopt;
     }
-    ++pos;
-    while (pos < text.size()) {
-        SkipWhitespace(text, pos);
-        if (pos < text.size() && text[pos] == '}') {
-            return std::nullopt;
-        }
-        std::string parsed_key;
-        if (!ParseJsonStringAt(text, pos, parsed_key)) {
-            return std::nullopt;
-        }
-        SkipWhitespace(text, pos);
-        if (pos >= text.size() || text[pos] != ':') {
-            return std::nullopt;
-        }
-        ++pos;
-        SkipWhitespace(text, pos);
-        if (parsed_key == key) {
-            return pos;
-        }
-        if (pos < text.size() && text[pos] == '"') {
-            std::string ignored;
-            if (!ParseJsonStringAt(text, pos, ignored)) {
-                return std::nullopt;
-            }
-        } else {
-            while (pos < text.size() && text[pos] != ',' && text[pos] != '}') {
-                ++pos;
-            }
-        }
-        SkipWhitespace(text, pos);
-        if (pos < text.size() && text[pos] == ',') {
-            ++pos;
-        }
-    }
-    return std::nullopt;
 }
 
 std::optional<std::string> JsonStringField(const std::string& text, const std::string& key) {
-    auto pos = FindTopLevelJsonValue(text, key);
-    if (!pos.has_value()) {
+    const auto root = ParseTokenResponseJson(text);
+    if (!root.has_value()) {
         return std::nullopt;
     }
-    std::string output;
-    if (!ParseJsonStringAt(text, *pos, output)) {
+    const auto* value = TopLevelJsonField(*root, key);
+    if (value == nullptr || !value->is_string()) {
         return std::nullopt;
     }
-    return output;
+    return value->get<std::string>();
 }
 
 std::optional<int> JsonIntField(const std::string& text, const std::string& key) {
-    auto pos = FindTopLevelJsonValue(text, key);
-    if (!pos.has_value()) {
+    const auto root = ParseTokenResponseJson(text);
+    if (!root.has_value()) {
         return std::nullopt;
     }
-    std::size_t end = *pos;
-    if (end < text.size() && text[end] == '-') {
-        ++end;
-    }
-    while (end < text.size() && std::isdigit(static_cast<unsigned char>(text[end])) != 0) {
-        ++end;
-    }
-    if (end == *pos) {
+    const auto* value = TopLevelJsonField(*root, key);
+    if (value == nullptr) {
         return std::nullopt;
     }
-    try {
-        return std::stoi(text.substr(*pos, end - *pos));
-    } catch (const std::exception&) {
-        return std::nullopt;
+    if (value->is_number_integer()) {
+        return value->get<int>();
     }
+    if (value->is_number_float()) {
+        return static_cast<int>(value->get<double>());
+    }
+    if (value->is_string()) {
+        try {
+            return std::stoi(value->get<std::string>());
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
 }
 
 std::chrono::system_clock::time_point ExpiryFromTokenResponse(const OAuthTokenResponse& response) {
@@ -486,6 +491,22 @@ void RequireSuccessfulTokenResponse(const OAuthTokenResponse& response) {
 std::string CreatePkceCodeChallengeForTest(const std::string& verifier) {
     const auto digest = Sha256(verifier);
     return Base64UrlEncode(std::vector<std::uint8_t>(digest.begin(), digest.end()));
+}
+
+std::string ExtractRedirectUriPathForTest(const std::string& redirect_uri) {
+    return ExtractRedirectUriPath(redirect_uri);
+}
+
+std::string TargetPathOnlyForTest(const std::string& target) {
+    return TargetPathOnly(target);
+}
+
+std::optional<std::string> ExtractHttpHostHeaderForTest(const std::string& request_text) {
+    return ExtractHttpHostHeader(request_text);
+}
+
+bool HostHeaderMatchesLoopbackForTest(const std::string& host_header, int port) {
+    return HostHeaderMatchesLoopback(host_header, port);
 }
 
 OAuthProviderDefaults OAuthDefaultsForProvider(const AuthProviderId provider) {
@@ -778,6 +799,26 @@ OAuthCallbackResult ListenForOAuthCallbackOnce(const OAuthCallbackListenRequest&
         return result;
     }
 
+    const auto expected_path = ExtractRedirectUriPath(request.start.redirect_uri);
+    if (TargetPathOnly(*target) != expected_path) {
+        const auto result = CallbackListenError(
+            "InvalidCallbackRequest",
+            "OAuth callback request path did not match the registered redirect_uri path");
+        SendHttpResponse(client_socket, result);
+        CloseSocket(client_socket);
+        return result;
+    }
+
+    const auto host_header = ExtractHttpHostHeader(request_text);
+    if (!host_header.has_value() || !HostHeaderMatchesLoopback(*host_header, request.port)) {
+        const auto result = CallbackListenError(
+            "InvalidCallbackRequest",
+            "OAuth callback Host header must reference the loopback listener");
+        SendHttpResponse(client_socket, result);
+        CloseSocket(client_socket);
+        return result;
+    }
+
     const auto callback_url = "http://127.0.0.1:" + std::to_string(request.port) + *target;
     const auto result = ValidateOAuthCallbackUrl(request.start, callback_url);
     SendHttpResponse(client_socket, result);
@@ -867,6 +908,23 @@ OAuthTokenResponse ExecuteOAuthTokenExchange(
     const std::filesystem::path& workspace_path,
     const int timeout_ms) {
     const auto token_request = BuildOAuthTokenRequest(input);
+
+    // The form-encoded body contains `code_verifier`, `code`, and (for some
+    // providers) `client_secret`. Passing it as `--data <body>` would expose
+    // those values in the curl process's argv. Spool the body to a short-lived
+    // file under runtime/.tmp/ and reference it via `--data @<file>`.
+    CurlSecretFiles secret_files;
+    try {
+        secret_files = WriteCurlSecretFiles(workspace_path, token_request.body, /*header_lines=*/{});
+    } catch (const std::exception& error) {
+        return {
+            .success = false,
+            .error = "OAuthTokenExchangeFailed",
+            .error_description = std::string("could not stage OAuth token request body: ") + error.what(),
+        };
+    }
+    const auto body_arg = std::string("@") + secret_files.body_file.string();
+
     const CliSpec spec{
         .name = "oauth_token_exchange",
         .description = "Exchange an OAuth authorization code for tokens through curl.",
@@ -878,10 +936,10 @@ OAuthTokenResponse ExecuteOAuthTokenExchange(
             "-H",
             "Content-Type: {{content_type}}",
             "--data",
-            "{{token_request_body}}",
+            "{{token_request_body_file}}",
             "{{oauth_token_endpoint}}",
         },
-        .required_args = {"oauth_token_endpoint", "content_type", "token_request_body"},
+        .required_args = {"oauth_token_endpoint", "content_type", "token_request_body_file"},
         .input_schema_json = R"({"type":"object"})",
         .output_schema_json = R"({"type":"object"})",
         .parse_mode = "text",
@@ -897,7 +955,7 @@ OAuthTokenResponse ExecuteOAuthTokenExchange(
         .arguments = {
             {"oauth_token_endpoint", token_request.token_endpoint},
             {"content_type", token_request.content_type},
-            {"token_request_body", token_request.body},
+            {"token_request_body_file", body_arg},
         },
         .workspace_path = workspace_path,
     });
@@ -917,6 +975,22 @@ OAuthTokenResponse ExecuteOAuthRefreshTokenExchange(
     const std::filesystem::path& workspace_path,
     const int timeout_ms) {
     const auto token_request = BuildOAuthRefreshTokenRequest(input);
+
+    // The refresh form body contains the long-lived `refresh_token` (and
+    // sometimes `client_secret`). Spool to a temp file so curl never sees it
+    // on argv.
+    CurlSecretFiles secret_files;
+    try {
+        secret_files = WriteCurlSecretFiles(workspace_path, token_request.body, /*header_lines=*/{});
+    } catch (const std::exception& error) {
+        return {
+            .success = false,
+            .error = "OAuthRefreshTokenExchangeFailed",
+            .error_description = std::string("could not stage OAuth refresh request body: ") + error.what(),
+        };
+    }
+    const auto body_arg = std::string("@") + secret_files.body_file.string();
+
     const CliSpec spec{
         .name = "oauth_refresh_token_exchange",
         .description = "Refresh OAuth tokens through curl.",
@@ -928,10 +1002,10 @@ OAuthTokenResponse ExecuteOAuthRefreshTokenExchange(
             "-H",
             "Content-Type: {{content_type}}",
             "--data",
-            "{{token_request_body}}",
+            "{{token_request_body_file}}",
             "{{oauth_token_endpoint}}",
         },
-        .required_args = {"oauth_token_endpoint", "content_type", "token_request_body"},
+        .required_args = {"oauth_token_endpoint", "content_type", "token_request_body_file"},
         .input_schema_json = R"({"type":"object"})",
         .output_schema_json = R"({"type":"object"})",
         .parse_mode = "text",
@@ -947,7 +1021,7 @@ OAuthTokenResponse ExecuteOAuthRefreshTokenExchange(
         .arguments = {
             {"oauth_token_endpoint", token_request.token_endpoint},
             {"content_type", token_request.content_type},
-            {"token_request_body", token_request.body},
+            {"token_request_body_file", body_arg},
         },
         .workspace_path = workspace_path,
     });

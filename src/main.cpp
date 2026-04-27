@@ -7,6 +7,9 @@
 #include "cli/agents_commands.hpp"
 #include "cli/auth_commands.hpp"
 #include "cli/cli_specs_commands.hpp"
+#include "cli/diagnostics_commands.hpp"
+#include "cli/interactive_commands.hpp"
+#include "cli/serve_commands.hpp"
 #include "cli/memory_commands.hpp"
 #include "cli/plugins_commands.hpp"
 #include "cli/schedule_commands.hpp"
@@ -48,6 +51,7 @@
 #include "trust/pairing_invite_store.hpp"
 #include "trust/pairing_manager.hpp"
 #include "trust/trust_policy.hpp"
+#include "utils/signal_cancellation.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -613,14 +617,17 @@ void PrintUsage() {
         << "Usage:\n"
         << "  agentos demo\n"
         << "  agentos cli-demo\n"
+        << "  agentos interactive\n"
+        << "  agentos serve [port=18080] [host=127.0.0.1]\n"
         << "  agentos agents\n"
         << "  agentos cli-specs validate\n"
+        << "  agentos diagnostics [format=text|json]\n"
         << "  agentos plugins\n"
         << "  agentos plugins validate\n"
         << "  agentos plugins health\n"
         << "  agentos plugins lifecycle\n"
         << "  agentos plugins inspect name=<plugin_name> [health=true]\n"
-        << "  agentos plugins sessions\n"
+        << "  agentos plugins sessions [name=<plugin_name>]\n"
         << "  agentos plugins session-restart name=<plugin_name>\n"
         << "  agentos plugins session-close name=<plugin_name>\n"
         << "  agentos memory summary\n"
@@ -768,7 +775,7 @@ int main(int argc, char* argv[]) {
     runtime.auth_manager.register_provider(std::make_shared<QwenAuthProviderAdapter>(
         runtime.session_store, runtime.token_store));
 
-    if (argc == 1 || (argc >= 2 && std::string(argv[1]) == "demo")) {
+    if (argc >= 2 && std::string(argv[1]) == "demo") {
         const auto write_result = runtime.loop.run(BuildDemoWriteTask(workspace));
         const auto patch_result = runtime.loop.run(BuildDemoPatchTask(workspace));
         const auto read_result = runtime.loop.run(BuildDemoReadTask(workspace));
@@ -804,6 +811,53 @@ int main(int argc, char* argv[]) {
 
     if (argc >= 2 && std::string(argv[1]) == "cli-specs") {
         return RunCliSpecsCommand(workspace, BuiltinSkillNames(), argc, argv);
+    }
+
+    if (argc == 1 || (argc >= 2 && std::string(argv[1]) == "interactive")) {
+        return RunInteractiveCommand(
+            runtime.skill_registry,
+            runtime.agent_registry,
+            runtime.loop,
+            runtime.memory_manager,
+            runtime.scheduler,
+            runtime.audit_logger,
+            workspace,
+            argc,
+            argv);
+    }
+
+    if (argc >= 2 && std::string(argv[1]) == "serve") {
+        return RunServeCommand(
+            runtime.skill_registry,
+            runtime.agent_registry,
+            runtime.loop,
+            runtime.memory_manager,
+            runtime.scheduler,
+            runtime.audit_logger,
+            workspace,
+            argc,
+            argv);
+    }
+
+    if (argc >= 2 && std::string(argv[1]) == "diagnostics") {
+        return RunDiagnosticsCommand(
+            workspace,
+            runtime.skill_registry,
+            runtime.agent_registry,
+            runtime.auth_manager,
+            runtime.session_store,
+            runtime.auth_profile_store,
+            runtime.token_store,
+            runtime.plugin_host,
+            runtime.scheduler,
+            runtime.storage_version_store,
+            runtime.identity_manager,
+            runtime.allowlist_store,
+            runtime.pairing_invite_store,
+            runtime.role_catalog,
+            runtime.approval_store,
+            argc,
+            argv);
     }
 
     if (argc >= 2 && std::string(argv[1]) == "plugins") {
@@ -853,7 +907,10 @@ int main(int argc, char* argv[]) {
 
     if (argc >= 3 && std::string(argv[1]) == "run") {
         const auto task = BuildTaskFromArgs(argc, argv, workspace);
-        const auto result = runtime.loop.run(task);
+        // Install Ctrl-C / SIGINT handler so a long agent dispatch can be
+        // interrupted cooperatively. Skill-routed runs ignore the token.
+        auto cancel = agentos::InstallSignalCancellation();
+        const auto result = runtime.loop.run(task, std::move(cancel));
         PrintResult(result);
         std::cout << "audit_log: " << runtime.audit_logger.log_path().string() << '\n';
         return result.success ? 0 : 1;

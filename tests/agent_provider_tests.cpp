@@ -3,19 +3,25 @@
 #include "auth/credential_broker.hpp"
 #include "auth/secure_token_store.hpp"
 #include "auth/session_store.hpp"
+#include "hosts/agents/codex_cli_agent.hpp"
 #include "hosts/agents/gemini_agent.hpp"
 #include "hosts/agents/anthropic_agent.hpp"
 #include "hosts/agents/qwen_agent.hpp"
 #include "hosts/cli/cli_host.hpp"
+#include "utils/cancellation.hpp"
 #include "test_command_fixtures.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -55,13 +61,26 @@ std::string SlashPath(const std::filesystem::path& path) {
     return value;
 }
 
+// Records argv to `args_file` and, for any argument starting with `@`,
+// appends the dereferenced file contents to `<args_file>.deref`. This
+// matches how real curl reads `--data @file` / `-H @file` and lets tests
+// inspect both the argv (for leak checks) and the request payload.
 void WriteCurlFixture(const std::filesystem::path& bin_dir, const std::filesystem::path& args_file) {
+    const auto deref_file = SlashPath(std::filesystem::path(args_file.string() + ".deref"));
 #ifdef _WIN32
     WriteCliFixture(
         bin_dir,
         "curl",
         "@echo off\n"
         "echo %* > \"" + SlashPath(args_file) + "\"\n"
+        "type nul > \"" + deref_file + "\"\n"
+        ":next\n"
+        "set \"arg=%~1\"\n"
+        "if \"%arg%\"==\"\" goto done\n"
+        "if \"%arg:~0,1%\"==\"@\" type \"%arg:~1%\" >> \"" + deref_file + "\"\n"
+        "shift\n"
+        "goto next\n"
+        ":done\n"
         "echo {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini response\"}]}}]}\n"
         "exit /b 0\n");
 #else
@@ -70,6 +89,12 @@ void WriteCurlFixture(const std::filesystem::path& bin_dir, const std::filesyste
         "curl",
         "#!/usr/bin/env sh\n"
         "printf '%s\\n' \"$*\" > '" + args_file.string() + "'\n"
+        ": > '" + deref_file + "'\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    @*) cat \"${arg#@}\" >> '" + deref_file + "' ;;\n"
+        "  esac\n"
+        "done\n"
         "printf '%s\\n' '{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini response\"}]}}]}'\n");
 #endif
 }
@@ -131,12 +156,18 @@ void TestGeminiAgentUsesAuthenticatedProviderSession(const std::filesystem::path
         "gemini agent structured output should redact the API key");
 
     const auto args = ReadText(args_file);
+    const auto deref = ReadText(std::filesystem::path(args_file.string() + ".deref"));
     Expect(args.find("generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent") != std::string::npos,
         "gemini agent should call the generateContent endpoint");
-    Expect(args.find("x-goog-api-key: test-gemini-secret") != std::string::npos,
-        "gemini agent should authenticate API-key sessions with x-goog-api-key");
-    Expect(args.find("Explain provider integration") != std::string::npos,
-        "gemini agent should send the task objective in the request body");
+    Expect(deref.find("x-goog-api-key: test-gemini-secret") != std::string::npos,
+        "gemini agent should authenticate API-key sessions with x-goog-api-key (in deref'd headers file)");
+    Expect(deref.find("Explain provider integration") != std::string::npos,
+        "gemini agent should send the task objective in the request body (deref'd)");
+    // Phase 1.1 leak guard: API key must NOT appear on argv.
+    Expect(args.find("test-gemini-secret") == std::string::npos,
+        "gemini agent must NOT pass API key as argv");
+    Expect(args.find("@") != std::string::npos,
+        "gemini agent must reference body/header via curl @file syntax");
 }
 
 void TestGeminiAgentUsesGoogleApplicationDefaultCredentials(const std::filesystem::path& workspace) {
@@ -187,8 +218,11 @@ void TestGeminiAgentUsesGoogleApplicationDefaultCredentials(const std::filesyste
     Expect(result.summary == "gemini response", "gemini ADC path should still extract response text");
 
     const auto args = ReadText(args_file);
-    Expect(args.find("Authorization: Bearer adc-access-token") != std::string::npos,
-        "gemini ADC path should authenticate REST calls with the minted bearer token");
+    const auto deref = ReadText(std::filesystem::path(args_file.string() + ".deref"));
+    Expect(deref.find("Authorization: Bearer adc-access-token") != std::string::npos,
+        "gemini ADC path should authenticate REST calls with the minted bearer token (in deref'd headers file)");
+    Expect(args.find("adc-access-token") == std::string::npos,
+        "gemini ADC path must NOT leak the minted bearer token onto argv");
     Expect(result.structured_output_json.find("adc-access-token") == std::string::npos,
         "gemini ADC structured output should redact the minted bearer token");
 }
@@ -263,12 +297,21 @@ void TestGeminiAgentUsesExternalGeminiCliOAuthSession(const std::filesystem::pat
 }
 
 void WriteClaudeCurlFixture(const std::filesystem::path& bin_dir, const std::filesystem::path& args_file) {
+    const auto deref_file = SlashPath(std::filesystem::path(args_file.string() + ".deref"));
 #ifdef _WIN32
     WriteCliFixture(
         bin_dir,
         "curl",
         "@echo off\n"
         "echo %* > \"" + SlashPath(args_file) + "\"\n"
+        "type nul > \"" + deref_file + "\"\n"
+        ":next\n"
+        "set \"arg=%~1\"\n"
+        "if \"%arg%\"==\"\" goto done\n"
+        "if \"%arg:~0,1%\"==\"@\" type \"%arg:~1%\" >> \"" + deref_file + "\"\n"
+        "shift\n"
+        "goto next\n"
+        ":done\n"
         "echo {\"content\":[{\"text\":\"claude response\"}]}\n"
         "exit /b 0\n");
 #else
@@ -277,6 +320,12 @@ void WriteClaudeCurlFixture(const std::filesystem::path& bin_dir, const std::fil
         "curl",
         "#!/usr/bin/env sh\n"
         "printf '%s\\n' \"$*\" > '" + args_file.string() + "'\n"
+        ": > '" + deref_file + "'\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    @*) cat \"${arg#@}\" >> '" + deref_file + "' ;;\n"
+        "  esac\n"
+        "done\n"
         "printf '%s\\n' '{\"content\":[{\"text\":\"claude response\"}]}'\n");
 #endif
 }
@@ -350,12 +399,18 @@ void TestAnthropicAgentUsesAuthenticatedProviderSession(const std::filesystem::p
         "anthropic agent should expose the normalized agent result schema");
 
     const auto args = ReadText(args_file);
+    const auto deref = ReadText(std::filesystem::path(args_file.string() + ".deref"));
     Expect(args.find("api.anthropic.com/v1/messages") != std::string::npos,
         "anthropic agent should call the messages endpoint");
-    Expect(args.find("x-api-key: test-anthropic-secret") != std::string::npos,
-        "anthropic agent should authenticate with x-api-key");
-    Expect(args.find("anthropic-version: 2023-06-01") != std::string::npos,
-        "anthropic agent should include the version header");
+    Expect(deref.find("x-api-key: test-anthropic-secret") != std::string::npos,
+        "anthropic agent should authenticate with x-api-key (in deref'd headers file)");
+    Expect(deref.find("anthropic-version: 2023-06-01") != std::string::npos,
+        "anthropic agent should include the version header (in deref'd headers file)");
+    // Phase 1.1 leak guard: API key must not appear on argv.
+    Expect(args.find("test-anthropic-secret") == std::string::npos,
+        "anthropic agent must NOT pass API key as argv");
+    Expect(args.find("@") != std::string::npos,
+        "anthropic agent must reference body/header via curl @file syntax");
 }
 
 void TestAnthropicAgentUsesExternalClaudeCliSession(const std::filesystem::path& workspace) {
@@ -405,12 +460,21 @@ void TestAnthropicAgentUsesExternalClaudeCliSession(const std::filesystem::path&
 }
 
 void WriteQwenCurlFixture(const std::filesystem::path& bin_dir, const std::filesystem::path& args_file) {
+    const auto deref_file = SlashPath(std::filesystem::path(args_file.string() + ".deref"));
 #ifdef _WIN32
     WriteCliFixture(
         bin_dir,
         "curl",
         "@echo off\n"
         "echo %* > \"" + SlashPath(args_file) + "\"\n"
+        "type nul > \"" + deref_file + "\"\n"
+        ":next\n"
+        "set \"arg=%~1\"\n"
+        "if \"%arg%\"==\"\" goto done\n"
+        "if \"%arg:~0,1%\"==\"@\" type \"%arg:~1%\" >> \"" + deref_file + "\"\n"
+        "shift\n"
+        "goto next\n"
+        ":done\n"
         "echo {\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"qwen response\"}}]}\n"
         "exit /b 0\n");
 #else
@@ -419,6 +483,12 @@ void WriteQwenCurlFixture(const std::filesystem::path& bin_dir, const std::files
         "curl",
         "#!/usr/bin/env sh\n"
         "printf '%s\\n' \"$*\" > '" + args_file.string() + "'\n"
+        ": > '" + deref_file + "'\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    @*) cat \"${arg#@}\" >> '" + deref_file + "' ;;\n"
+        "  esac\n"
+        "done\n"
         "printf '%s\\n' '{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"qwen response\"}}]}'\n");
 #endif
 }
@@ -482,14 +552,406 @@ void TestQwenAgentUsesAuthenticatedProviderSession(const std::filesystem::path& 
         "qwen agent structured output should redact the API key");
 
     const auto args = ReadText(args_file);
+    const auto deref = ReadText(std::filesystem::path(args_file.string() + ".deref"));
     Expect(args.find("dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions") != std::string::npos,
         "qwen agent should call the Model Studio OpenAI-compatible chat completions endpoint");
-    Expect(args.find("Authorization: Bearer test-qwen-secret") != std::string::npos,
-        "qwen agent should authenticate Qwen API-key sessions with bearer auth");
-    Expect(args.find("Explain Qwen integration") != std::string::npos,
-        "qwen agent should send the task objective in the request body");
+    Expect(deref.find("Authorization: Bearer test-qwen-secret") != std::string::npos,
+        "qwen agent should authenticate Qwen API-key sessions with bearer auth (in deref'd headers file)");
+    Expect(deref.find("Explain Qwen integration") != std::string::npos,
+        "qwen agent should send the task objective in the request body (deref'd)");
+    // Phase 1.1 leak guard: bearer token must not appear on argv.
+    Expect(args.find("test-qwen-secret") == std::string::npos,
+        "qwen agent must NOT pass API key as argv");
+    Expect(args.find("Bearer test-qwen-secret") == std::string::npos,
+        "qwen agent must NOT pass Bearer token as argv");
+    Expect(args.find("@") != std::string::npos,
+        "qwen agent must reference body/header via curl @file syntax");
 }
 
+// Phase 1.1 dedicated leak guard: prove that the Gemini agent's REST path
+// never spills the bearer token onto curl's argv (which would be visible
+// via /proc/<pid>/cmdline on POSIX or the process listing on Windows).
+// Mirrors `TestGeminiAgentUsesAuthenticatedProviderSession` but uses an
+// OAuth/bearer session and asserts strictly on the captured argv.
+void TestGeminiAgentDoesNotLeakBearerTokenOnArgv(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "gemini_argv_leak_guard";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    std::filesystem::create_directories(bin_dir);
+    const auto args_file = isolated_workspace / "leak_guard_curl_args.txt";
+    WriteCurlFixture(bin_dir, args_file);
+
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+    constexpr const char* kSecretToken = "phase11-bearer-token-must-not-leak-to-argv";
+    SetEnvForTest("AGENTOS_TEST_GEMINI_OAUTH_TOKEN", kSecretToken);
+
+    agentos::CliHost cli_host;
+    agentos::SessionStore session_store(isolated_workspace / "auth" / "sessions.tsv");
+    agentos::AuthProfileStore profile_store(isolated_workspace / "auth" / "profiles.tsv");
+    agentos::SecureTokenStore token_store;
+    agentos::CredentialBroker credential_broker(session_store, token_store);
+    agentos::GeminiAgent agent(cli_host, credential_broker, profile_store, isolated_workspace);
+
+    // Use an OAuth-style bearer session so the agent emits
+    // `Authorization: Bearer <token>` rather than `x-goog-api-key`.
+    profile_store.set_default(agentos::AuthProviderId::gemini, "oauth-bearer");
+    session_store.save(agentos::AuthSession{
+        .session_id = agentos::MakeAuthSessionId(
+            agentos::AuthProviderId::gemini,
+            agentos::AuthMode::api_key,
+            "oauth-bearer"),
+        .provider = agentos::AuthProviderId::gemini,
+        .mode = agentos::AuthMode::api_key,  // api_key mode triggers x-goog-api-key path; we still test argv-leak there
+        .profile_name = "oauth-bearer",
+        .account_label = "leak-guard",
+        .managed_by_agentos = true,
+        .headless_compatible = true,
+        .access_token_ref = token_store.make_env_ref("AGENTOS_TEST_GEMINI_OAUTH_TOKEN"),
+        .expires_at = std::chrono::system_clock::time_point::max(),
+    });
+
+    const auto result = agent.run_task(agentos::AgentTask{
+        .task_id = "gemini-leak-guard",
+        .task_type = "analysis",
+        .objective = "Trigger gemini REST path",
+        .workspace_path = isolated_workspace.string(),
+        .timeout_ms = 5000,
+    });
+
+    Expect(result.success, "gemini agent leak-guard task should succeed against the fixture");
+
+    const auto args = ReadText(args_file);
+    const auto deref = ReadText(std::filesystem::path(args_file.string() + ".deref"));
+
+    // The whole point: the secret token must NOT appear on the curl process argv.
+    Expect(args.find(kSecretToken) == std::string::npos,
+        "Phase 1.1: gemini agent must NOT spill bearer/api-key token onto curl argv");
+    Expect(args.find("Bearer phase11-bearer-token-must-not-leak-to-argv") == std::string::npos,
+        "Phase 1.1: gemini agent must NOT pass `Bearer <token>` as a -H argv");
+    Expect(args.find("x-goog-api-key: phase11-bearer-token-must-not-leak-to-argv") == std::string::npos,
+        "Phase 1.1: gemini agent must NOT pass `x-goog-api-key: <token>` as a -H argv");
+
+    // It MUST use curl's @file deref syntax instead.
+    Expect(args.find("@") != std::string::npos,
+        "Phase 1.1: gemini agent must reference body/header file via curl @file syntax");
+
+    // And the secret SHOULD still reach the request — just via the file.
+    Expect(deref.find(kSecretToken) != std::string::npos,
+        "Phase 1.1: gemini agent should still send the token, but only via the deref'd headers file");
+}
+
+// ----- Phase 4.2: Codex CLI V2 streaming/cancellation fixtures + tests -------
+//
+// We can't run the real `codex` binary in CI. We install a fixture that emits
+// synthetic NDJSON on stdout matching the shapes the V2 adapter parses
+// (system, assistant.message.delta, usage, task_complete, error).
+
+void WriteCodexStreamingNdjsonFixture(const std::filesystem::path& bin_dir) {
+#ifdef _WIN32
+    WriteCliFixture(
+        bin_dir,
+        "codex",
+        "@echo off\n"
+        "echo {\"type\":\"system\",\"msg\":{\"session_id\":\"sess-fixture-1\",\"model\":\"gpt-test\"}}\n"
+        "echo {\"type\":\"assistant.message.delta\",\"msg\":{\"delta\":\"hello world\"}}\n"
+        "echo {\"type\":\"usage\",\"msg\":{\"input_tokens\":42,\"output_tokens\":7,\"cost_usd\":0.0001}}\n"
+        "echo {\"type\":\"task_complete\",\"msg\":{\"last_agent_message\":\"hello world\"}}\n"
+        "exit /b 0\n");
+#else
+    WriteCliFixture(
+        bin_dir,
+        "codex",
+        "#!/usr/bin/env sh\n"
+        "printf '%s\\n' '{\"type\":\"system\",\"msg\":{\"session_id\":\"sess-fixture-1\",\"model\":\"gpt-test\"}}'\n"
+        "printf '%s\\n' '{\"type\":\"assistant.message.delta\",\"msg\":{\"delta\":\"hello world\"}}'\n"
+        "printf '%s\\n' '{\"type\":\"usage\",\"msg\":{\"input_tokens\":42,\"output_tokens\":7,\"cost_usd\":0.0001}}'\n"
+        "printf '%s\\n' '{\"type\":\"task_complete\",\"msg\":{\"last_agent_message\":\"hello world\"}}'\n");
+#endif
+}
+
+void WriteCodexSlowFixture(const std::filesystem::path& bin_dir) {
+#ifdef _WIN32
+    WriteCliFixture(
+        bin_dir,
+        "codex",
+        "@echo off\n"
+        "echo {\"type\":\"system\",\"msg\":{\"session_id\":\"sess-slow\",\"model\":\"gpt-slow\"}}\n"
+        "powershell -NoProfile -Command \"Start-Sleep -Milliseconds 1000\" >nul\n"
+        "echo {\"type\":\"task_complete\",\"msg\":{\"last_agent_message\":\"too late\"}}\n"
+        "exit /b 0\n");
+#else
+    WriteCliFixture(
+        bin_dir,
+        "codex",
+        "#!/usr/bin/env sh\n"
+        "printf '%s\\n' '{\"type\":\"system\",\"msg\":{\"session_id\":\"sess-slow\",\"model\":\"gpt-slow\"}}'\n"
+        "sleep 1\n"
+        "printf '%s\\n' '{\"type\":\"task_complete\",\"msg\":{\"last_agent_message\":\"too late\"}}'\n");
+#endif
+}
+
+void TestCodexCliAgentLegacyRunTaskStillWorks(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "codex_legacy";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    std::filesystem::create_directories(bin_dir);
+    // Use the streaming fixture; legacy path captures stdout verbatim.
+    WriteCodexStreamingNdjsonFixture(bin_dir);
+
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+
+    agentos::CliHost cli_host;
+    agentos::CodexCliAgent agent(cli_host, isolated_workspace);
+
+    Expect(agent.healthy(), "codex agent should be healthy when fixture binary is on PATH");
+
+    const auto result = agent.run_task(agentos::AgentTask{
+        .task_id = "codex-legacy",
+        .task_type = "analysis",
+        .objective = "smoke test legacy path",
+        .workspace_path = isolated_workspace.string(),
+        .timeout_ms = 5000,
+    });
+
+    Expect(result.success, "codex legacy run_task should succeed against the fixture");
+}
+
+void TestCodexCliAgentV2StreamingPath(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "codex_v2_stream";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    std::filesystem::create_directories(bin_dir);
+    WriteCodexStreamingNdjsonFixture(bin_dir);
+
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+
+    agentos::CliHost cli_host;
+    agentos::CodexCliAgent agent(cli_host, isolated_workspace);
+    Expect(agent.healthy(), "codex agent should be healthy when fixture binary is on PATH");
+
+    std::vector<agentos::AgentEvent::Kind> seen;
+    auto on_event = [&](const agentos::AgentEvent& ev) -> bool {
+        seen.push_back(ev.kind);
+        return true;
+    };
+
+    agentos::AgentInvocation inv;
+    inv.task_id = "codex-v2-stream";
+    inv.objective = "stream";
+    inv.workspace_path = isolated_workspace;
+    inv.timeout_ms = 5000;
+    inv.cancel = std::make_shared<agentos::CancellationToken>();
+
+    const auto result = agent.invoke(inv, on_event);
+
+    Expect(result.success, "codex V2 invoke should succeed against the fixture");
+    Expect(result.usage.input_tokens > 0,
+        "codex V2 should populate AgentUsage.input_tokens from the usage event");
+    Expect(result.usage.output_tokens == 7,
+        "codex V2 should populate AgentUsage.output_tokens from the usage event");
+    Expect(result.session_id.has_value() && *result.session_id == "sess-fixture-1",
+        "codex V2 should report the upstream session_id from the system event");
+    Expect(seen.size() == 4,
+        "codex V2 streaming fixture should emit exactly 4 AgentEvents");
+    if (seen.size() == 4) {
+        Expect(seen[0] == agentos::AgentEvent::Kind::SessionInit,
+            "codex V2 first event should be SessionInit");
+        Expect(seen[1] == agentos::AgentEvent::Kind::TextDelta,
+            "codex V2 second event should be TextDelta");
+        Expect(seen[2] == agentos::AgentEvent::Kind::Usage,
+            "codex V2 third event should be Usage");
+        Expect(seen[3] == agentos::AgentEvent::Kind::Final,
+            "codex V2 fourth event should be Final");
+    }
+    Expect(result.summary.find("hello world") != std::string::npos,
+        "codex V2 summary should reflect final message text");
+}
+
+void TestCodexCliAgentV2SyncFallbackPath(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "codex_v2_sync";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    std::filesystem::create_directories(bin_dir);
+    WriteCodexStreamingNdjsonFixture(bin_dir);
+
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+
+    agentos::CliHost cli_host;
+    agentos::CodexCliAgent agent(cli_host, isolated_workspace);
+
+    agentos::AgentInvocation inv;
+    inv.task_id = "codex-v2-sync";
+    inv.objective = "sync";
+    inv.workspace_path = isolated_workspace;
+    inv.timeout_ms = 5000;
+    inv.cancel = std::make_shared<agentos::CancellationToken>();
+
+    // No on_event callback — adapter should still parse the stream and return
+    // a populated AgentResult.
+    const auto result = agent.invoke(inv);
+
+    Expect(result.success, "codex V2 sync (no callback) should still succeed");
+    Expect(result.usage.input_tokens == 42,
+        "codex V2 sync path should still populate AgentUsage.input_tokens");
+    Expect(result.usage.output_tokens == 7,
+        "codex V2 sync path should still populate AgentUsage.output_tokens");
+    Expect(result.session_id.has_value() && *result.session_id == "sess-fixture-1",
+        "codex V2 sync path should still report the upstream session_id");
+    Expect(result.summary.find("hello world") != std::string::npos,
+        "codex V2 sync path summary should reflect the final message text");
+}
+
+void TestCodexCliAgentV2Cancellation(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "codex_v2_cancel";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    std::filesystem::create_directories(bin_dir);
+    WriteCodexSlowFixture(bin_dir);
+
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+
+    agentos::CliHost cli_host;
+    agentos::CodexCliAgent agent(cli_host, isolated_workspace);
+
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+
+    agentos::AgentInvocation inv;
+    inv.task_id = "codex-v2-cancel";
+    inv.objective = "cancel-me";
+    inv.workspace_path = isolated_workspace;
+    inv.timeout_ms = 5000;
+    inv.cancel = cancel;
+
+    std::thread killer([cancel]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        cancel->cancel();
+    });
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = agent.invoke(inv);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+    if (killer.joinable()) killer.join();
+
+    Expect(elapsed_ms < 2000,
+        "codex V2 cancellation should bring invoke() back well under the slow fixture's 1s sleep");
+    Expect(!result.success, "codex V2 cancellation should produce an unsuccessful result");
+    Expect(result.error_code == "Cancelled",
+        "codex V2 cancellation should set error_code=Cancelled");
+}
+
+
+void TestGeminiAgentV2InvokeEmitsLifecycleEvents(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "gemini_v2_invoke";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+    const auto bin_dir = isolated_workspace / "bin";
+    std::filesystem::create_directories(bin_dir);
+    const auto args_file = isolated_workspace / "v2_curl_args.txt";
+    WriteCurlFixture(bin_dir, args_file);
+
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+    SetEnvForTest("AGENTOS_TEST_GEMINI_KEY", "test-gemini-secret");
+
+    agentos::CliHost cli_host;
+    agentos::SessionStore session_store(isolated_workspace / "auth" / "sessions.tsv");
+    agentos::AuthProfileStore profile_store(isolated_workspace / "auth" / "profiles.tsv");
+    agentos::SecureTokenStore token_store;
+    agentos::CredentialBroker credential_broker(session_store, token_store);
+    agentos::GeminiAgent agent(cli_host, credential_broker, profile_store, isolated_workspace);
+
+    profile_store.set_default(agentos::AuthProviderId::gemini, "team");
+    session_store.save(agentos::AuthSession{
+        .session_id = agentos::MakeAuthSessionId(agentos::AuthProviderId::gemini, agentos::AuthMode::api_key, "team"),
+        .provider = agentos::AuthProviderId::gemini,
+        .mode = agentos::AuthMode::api_key,
+        .profile_name = "team",
+        .account_label = "gemini-test",
+        .managed_by_agentos = true,
+        .headless_compatible = true,
+        .access_token_ref = token_store.make_env_ref("AGENTOS_TEST_GEMINI_KEY"),
+        .expires_at = std::chrono::system_clock::time_point::max(),
+    });
+
+    std::vector<agentos::AgentEvent::Kind> seen;
+    std::string seen_model;
+    auto on_event = [&](const agentos::AgentEvent& ev) -> bool {
+        seen.push_back(ev.kind);
+        if (ev.kind == agentos::AgentEvent::Kind::SessionInit) {
+            const auto it = ev.fields.find("model");
+            if (it != ev.fields.end()) {
+                seen_model = it->second;
+            }
+        }
+        return true;
+    };
+
+    agentos::AgentInvocation inv;
+    inv.task_id = "gemini-v2-invoke";
+    inv.objective = "Explain provider integration";
+    inv.workspace_path = isolated_workspace;
+    inv.timeout_ms = 5000;
+    inv.constraints = {{"model", "gemini-3.1-pro"}};
+    inv.cancel = std::make_shared<agentos::CancellationToken>();
+
+    const auto result = agent.invoke(inv, on_event);
+
+    Expect(result.success, "gemini V2 invoke should succeed against the curl fixture");
+    Expect(result.summary == "gemini response",
+        "gemini V2 invoke should extract the first text response");
+    Expect(result.usage.turns == 1,
+        "gemini V2 invoke should record one turn of explicit zero-cost usage");
+    Expect(result.usage.cost_usd == 0.0,
+        "gemini V2 invoke should set cost_usd=0 since gemini does not surface cost data");
+    Expect(seen.size() == 4,
+        "gemini V2 invoke should emit SessionInit, Status, Usage, and Final");
+    if (seen.size() == 4) {
+        Expect(seen[0] == agentos::AgentEvent::Kind::SessionInit,
+            "gemini V2 first event should be SessionInit");
+        Expect(seen[1] == agentos::AgentEvent::Kind::Status,
+            "gemini V2 second event should be Status");
+        Expect(seen[2] == agentos::AgentEvent::Kind::Usage,
+            "gemini V2 third event should be Usage");
+        Expect(seen[3] == agentos::AgentEvent::Kind::Final,
+            "gemini V2 fourth event should be Final");
+    }
+    Expect(seen_model == "gemini-3.1-pro-preview",
+        "gemini V2 SessionInit should carry the normalized model name from invocation.constraints");
+}
+
+void TestGeminiAgentV2InvokeCancelsBeforeDispatch(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "gemini_v2_cancel";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::CliHost cli_host;
+    agentos::SessionStore session_store(isolated_workspace / "auth" / "sessions.tsv");
+    agentos::AuthProfileStore profile_store(isolated_workspace / "auth" / "profiles.tsv");
+    agentos::SecureTokenStore token_store;
+    agentos::CredentialBroker credential_broker(session_store, token_store);
+    agentos::GeminiAgent agent(cli_host, credential_broker, profile_store, isolated_workspace);
+
+    auto cancel = std::make_shared<agentos::CancellationToken>();
+    cancel->cancel();
+
+    agentos::AgentInvocation inv;
+    inv.task_id = "gemini-v2-cancel";
+    inv.objective = "should never run";
+    inv.workspace_path = isolated_workspace;
+    inv.cancel = cancel;
+
+    const auto result = agent.invoke(inv);
+
+    Expect(!result.success, "gemini V2 invoke should fail when the cancellation token is pre-tripped");
+    Expect(result.error_code == "Cancelled",
+        "gemini V2 cancellation should set error_code=Cancelled");
+}
 
 }  // namespace
 
@@ -499,9 +961,12 @@ int main() {
     TestGeminiAgentUsesAuthenticatedProviderSession(workspace);
     TestGeminiAgentUsesGoogleApplicationDefaultCredentials(workspace);
     TestGeminiAgentUsesExternalGeminiCliOAuthSession(workspace);
+    TestGeminiAgentV2InvokeEmitsLifecycleEvents(workspace);
+    TestGeminiAgentV2InvokeCancelsBeforeDispatch(workspace);
     TestAnthropicAgentUsesAuthenticatedProviderSession(workspace);
     TestAnthropicAgentUsesExternalClaudeCliSession(workspace);
     TestQwenAgentUsesAuthenticatedProviderSession(workspace);
+    TestGeminiAgentDoesNotLeakBearerTokenOnArgv(workspace);
 
     if (failures != 0) {
         std::cerr << failures << " agent provider test assertion(s) failed\n";

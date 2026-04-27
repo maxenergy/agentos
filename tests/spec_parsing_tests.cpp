@@ -1,8 +1,12 @@
+#include "utils/cancellation.hpp"
 #include "utils/spec_parsing.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -67,6 +71,33 @@ void TestJoinStrings() {
         "JoinStrings should use caller-provided separators");
 }
 
+void TestCancellationToken() {
+    agentos::CancellationToken token;
+    Expect(!token.is_cancelled(), "CancellationToken should start uncancelled");
+
+    Expect(!token.wait_for_cancel(std::chrono::milliseconds(10)),
+        "wait_for_cancel should return false on timeout when not cancelled");
+
+    token.cancel();
+    Expect(token.is_cancelled(), "CancellationToken must report cancelled after cancel()");
+    Expect(token.wait_for_cancel(std::chrono::milliseconds(0)),
+        "wait_for_cancel should return true immediately when already cancelled");
+
+    token.cancel();
+    Expect(token.is_cancelled(), "CancellationToken cancel() must be idempotent");
+
+    agentos::CancellationToken async_token;
+    std::atomic<bool> wait_returned{false};
+    std::thread waiter([&] {
+        wait_returned.store(async_token.wait_for_cancel(std::chrono::seconds(5)));
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    async_token.cancel();
+    waiter.join();
+    Expect(wait_returned.load(),
+        "wait_for_cancel must wake up promptly when cancel() is called from another thread");
+}
+
 }  // namespace
 
 int main() {
@@ -74,6 +105,7 @@ int main() {
     TestStrictNumberParsing();
     TestJsonObjectShape();
     TestJoinStrings();
+    TestCancellationToken();
 
     if (failures != 0) {
         std::cerr << failures << " spec parsing test assertion(s) failed\n";

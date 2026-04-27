@@ -1,9 +1,10 @@
 #include "hosts/cli/cli_skill_invoker.hpp"
 
 #include "utils/command_utils.hpp"
-#include "utils/json_utils.hpp"
 
 #include <utility>
+
+#include <nlohmann/json.hpp>
 
 namespace agentos {
 
@@ -34,15 +35,15 @@ SkillResult CliSkillInvoker::execute(const SkillCall& call) {
         .workspace_path = call.workspace_id,
     });
 
+    nlohmann::json output_json;
+    output_json["command"] = result.command_display;
+    output_json["exit_code"] = result.exit_code;
+    output_json["timed_out"] = result.timed_out;
+    output_json["stdout"] = result.stdout_text;
+    output_json["stderr"] = result.stderr_text;
     return {
         .success = result.success,
-        .json_output = MakeJsonObject({
-            {"command", QuoteJson(result.command_display)},
-            {"exit_code", NumberAsJson(result.exit_code)},
-            {"timed_out", BoolAsJson(result.timed_out)},
-            {"stdout", QuoteJson(result.stdout_text)},
-            {"stderr", QuoteJson(result.stderr_text)},
-        }),
+        .json_output = output_json.dump(),
         .error_code = result.error_code,
         .error_message = result.error_message,
         .duration_ms = result.duration_ms,

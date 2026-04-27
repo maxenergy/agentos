@@ -3,10 +3,11 @@
 #include "core/execution/task_lifecycle.hpp"
 #include "core/schema/schema_validator.hpp"
 #include "memory/lesson_hints.hpp"
-#include "utils/json_utils.hpp"
+#include "utils/cancellation.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <chrono>
-#include <sstream>
 
 namespace agentos {
 
@@ -18,18 +19,20 @@ int ElapsedMs(const std::chrono::steady_clock::time_point started_at) {
 }
 
 std::string InputsAsJson(const StringMap& inputs) {
-    std::ostringstream output;
-    output << "{";
-    bool first = true;
+    auto json = nlohmann::ordered_json::object();
     for (const auto& [key, value] : inputs) {
-        if (!first) {
-            output << ",";
-        }
-        first = false;
-        output << QuoteJson(key) << ":" << QuoteJson(value);
+        json[key] = value;
     }
-    output << "}";
-    return output.str();
+    return json.dump();
+}
+
+std::string AgentConstraintsAsJson(const TaskRequest& task) {
+    if (!task.inputs.contains("model")) {
+        return "";
+    }
+    nlohmann::ordered_json constraints;
+    constraints["model"] = task.inputs.at("model");
+    return constraints.dump();
 }
 
 }  // namespace
@@ -50,8 +53,21 @@ AgentLoop::AgentLoop(
       memory_manager_(memory_manager),
       execution_cache_(execution_cache) {}
 
-TaskRunResult AgentLoop::run(const TaskRequest& task) {
+TaskRunResult AgentLoop::run(const TaskRequest& task, std::shared_ptr<CancellationToken> cancel) {
     audit_logger_.record_task_start(task);
+
+    // Pre-routing check: if the orchestrator cancelled before we even
+    // selected a target, fail fast with Cancelled rather than spending time
+    // on routing / cache / policy.
+    if (cancel && cancel->is_cancelled()) {
+        TaskRunResult cancelled;
+        cancelled.success = false;
+        cancelled.summary = "Task cancelled before routing.";
+        cancelled.error_code = "Cancelled";
+        cancelled.error_message = "AgentLoop observed a tripped cancellation token before route selection.";
+        FinalizeTaskRun(audit_logger_, memory_manager_, task, cancelled);
+        return cancelled;
+    }
 
     const auto input_fingerprint = ExecutionCache::fingerprint_for_task(task);
     if (!task.idempotency_key.empty()) {
@@ -78,7 +94,7 @@ TaskRunResult AgentLoop::run(const TaskRequest& task) {
     if (route.target_kind == RouteTargetKind::skill) {
         result = run_skill_task(task, route);
     } else {
-        result = run_agent_task(task, route);
+        result = run_agent_task(task, route, cancel);
     }
 
     FinalizeTaskRun(audit_logger_, memory_manager_, task, result);
@@ -181,7 +197,9 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
     };
 }
 
-TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task, const RouteDecision& route) {
+TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task,
+                                        const RouteDecision& route,
+                                        const std::shared_ptr<CancellationToken>& cancel) {
     const auto started_at = std::chrono::steady_clock::now();
     auto agent = agent_registry_.find(route.target_name);
 
@@ -203,9 +221,7 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task, const RouteDeci
         .objective = task.objective,
         .workspace_path = task.workspace_path.string(),
         .context_json = InputsAsJson(task.inputs),
-        .constraints_json = task.inputs.contains("model")
-            ? MakeJsonObject({{"model", QuoteJson(task.inputs.at("model"))}})
-            : "",
+        .constraints_json = AgentConstraintsAsJson(task),
         .timeout_ms = task.timeout_ms,
         .budget_limit = task.budget_limit,
     };
@@ -225,13 +241,61 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task, const RouteDeci
         };
     }
 
-    const auto agent_result = agent->run_task(agent_task);
+    // Pre-dispatch cancellation check after policy so denial diagnostics
+    // still flow through audit even when the user is also cancelling.
+    if (cancel && cancel->is_cancelled()) {
+        TaskStepRecord cancelled_step{
+            .target_kind = RouteTargetKind::agent,
+            .target_name = route.target_name,
+            .success = false,
+            .duration_ms = ElapsedMs(started_at),
+            .error_code = "Cancelled",
+            .error_message = "agent dispatch was cancelled by the orchestrator",
+        };
+        RecordTaskStep(audit_logger_, task.task_id, cancelled_step);
+        return {
+            .success = false,
+            .summary = "Agent dispatch cancelled.",
+            .route_target = route.target_name,
+            .route_kind = RouteTargetKind::agent,
+            .error_code = "Cancelled",
+            .error_message = cancelled_step.error_message,
+            .duration_ms = cancelled_step.duration_ms,
+            .steps = {cancelled_step},
+        };
+    }
+
+    AgentResult agent_result;
+    if (auto* v2 = dynamic_cast<IAgentAdapterV2*>(agent.get())) {
+        AgentInvocation invocation;
+        invocation.task_id = agent_task.task_id;
+        invocation.objective = agent_task.objective;
+        invocation.workspace_path = task.workspace_path;
+        invocation.context = {
+            {"task_type", task.task_type},
+            {"parent_task_id", task.task_id},
+            {"agent", route.target_name},
+        };
+        if (task.inputs.contains("model")) {
+            invocation.constraints["model"] = task.inputs.at("model");
+        }
+        invocation.timeout_ms = task.timeout_ms;
+        invocation.budget_limit_usd = task.budget_limit;
+        invocation.cancel = cancel;
+        agent_result = v2->invoke(invocation);
+    } else {
+        agent_result = agent->run_task(agent_task);
+    }
+
+    const double effective_cost = agent_result.usage.cost_usd > 0.0
+        ? agent_result.usage.cost_usd
+        : agent_result.estimated_cost;
     TaskStepRecord step{
         .target_kind = RouteTargetKind::agent,
         .target_name = route.target_name,
         .success = agent_result.success,
         .duration_ms = agent_result.duration_ms,
-        .estimated_cost = agent_result.estimated_cost,
+        .estimated_cost = effective_cost,
         .summary = agent_result.summary,
         .error_code = agent_result.error_code,
         .error_message = agent_result.error_message,
