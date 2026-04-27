@@ -140,7 +140,7 @@ void EnableUtf8Console() {
 #endif
 }
 
-void PrintBanner() {
+void PrintBanner(const std::filesystem::path& workspace) {
     EnableUtf8Console();
     std::cout
         << "\n"
@@ -149,6 +149,8 @@ void PrintBanner() {
         << "  |  Type 'help' for available commands, 'exit' to  |\n"
         << "  |  quit. Ctrl-C interrupts a running task.        |\n"
         << "  +==================================================+\n"
+        << "  workspace: " << workspace.string() << "\n"
+        << "  (override with AGENTOS_WORKSPACE if auth/state lives elsewhere)\n"
         << "\n";
 }
 
@@ -277,7 +279,7 @@ int RunInteractiveCommand(
     const int /*argc*/,
     char* /*argv*/[]) {
 
-    PrintBanner();
+    PrintBanner(workspace);
 
     auto cancel = InstallSignalCancellation();
 

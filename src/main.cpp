@@ -746,10 +746,48 @@ void PrintUsage() {
 
 }  // namespace agentos
 
+// Resolve the agentos workspace.
+//
+// Default: current working directory. Override: AGENTOS_WORKSPACE env var.
+// When an override is set but doesn't point at a directory, fall back to
+// cwd with a warning rather than silently using a bad path.
+//
+// This matters because `runtime/` (auth sessions, audit logs, scheduler
+// state, etc.) is resolved relative to the workspace. Launching the binary
+// from a different cwd than where state was previously persisted will look
+// like every agent suddenly went unhealthy. Setting AGENTOS_WORKSPACE
+// once (e.g. to the repo root) avoids that footgun.
+std::filesystem::path ResolveWorkspace() {
+    namespace fs = std::filesystem;
+    std::string env_value;
+#ifdef _WIN32
+    char* env_buf = nullptr;
+    size_t env_len = 0;
+    if (_dupenv_s(&env_buf, &env_len, "AGENTOS_WORKSPACE") == 0 && env_buf) {
+        env_value.assign(env_buf);
+        free(env_buf);
+    }
+#else
+    if (const char* env = std::getenv("AGENTOS_WORKSPACE"); env != nullptr) {
+        env_value.assign(env);
+    }
+#endif
+    if (!env_value.empty()) {
+        std::error_code ec;
+        const fs::path candidate = fs::absolute(env_value, ec);
+        if (!ec && fs::is_directory(candidate, ec)) {
+            return candidate;
+        }
+        std::cerr << "AGENTOS_WORKSPACE=" << env_value
+                  << " is not a directory; falling back to current working directory.\n";
+    }
+    return fs::current_path();
+}
+
 int main(int argc, char* argv[]) {
     using namespace agentos;
 
-    const auto workspace = std::filesystem::current_path();
+    const auto workspace = ResolveWorkspace();
     Runtime runtime(workspace);
 
     runtime.skill_registry.register_skill(std::make_shared<FileReadSkill>());
