@@ -8,6 +8,7 @@
 #endif
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -153,8 +154,9 @@ void PrintBanner() {
 
 void PrintHelp() {
     std::cout
-        << "Available commands:\n"
+        << "Available commands (slash prefix optional, e.g. /help):\n"
         << "  run <task_type> [key=value ...]   Execute a task through the agent loop\n"
+        << "  chat <text>                       Send free-form text to a chat agent\n"
         << "  agents                            List registered agent adapters\n"
         << "  skills                            List registered skills\n"
         << "  status                            Show runtime status summary\n"
@@ -168,12 +170,96 @@ void PrintHelp() {
         << "  help                              Show this help message\n"
         << "  exit / quit                       Exit the interactive console\n"
         << "\n"
+        << "Free-form text that doesn't match a command is sent as a chat\n"
+        << "prompt to the first healthy chat agent. Override the target via\n"
+        << "the AGENTOS_CHAT_TARGET env var (e.g. gemini, anthropic, openai,\n"
+        << "qwen, codex_cli, local_planner). Use `agentos auth login <provider>`\n"
+        << "before chatting if no agent is healthy yet.\n"
+        << "\n"
         << "Examples:\n"
         << "  run read_file path=README.md\n"
         << "  run write_file path=runtime/note.txt content=hello idempotency_key=demo\n"
         << "  run analysis target=local_planner objective=Plan_next_steps\n"
         << "  run analysis target=qwen profile=work objective=Use_a_non_default_auth_profile\n"
+        << "  chat What does this project do?\n"
+        << "  你好                                (free-form, routed to default chat agent)\n"
         << "\n";
+}
+
+// Resolve a chat target. Honors AGENTOS_CHAT_TARGET first, then walks a
+// preference list and returns the first healthy adapter's name. Returns
+// empty if nothing is available — caller prints a helpful login hint.
+std::string ResolveChatTarget(const AgentRegistry& agent_registry) {
+    const auto try_target = [&](const std::string& name) -> std::string {
+        const auto adapter = agent_registry.find(name);
+        if (adapter && adapter->healthy()) {
+            return name;
+        }
+        return {};
+    };
+
+    std::string env_target;
+#ifdef _WIN32
+    char* env_buf = nullptr;
+    size_t env_len = 0;
+    if (_dupenv_s(&env_buf, &env_len, "AGENTOS_CHAT_TARGET") == 0 && env_buf) {
+        env_target.assign(env_buf);
+        free(env_buf);
+    }
+#else
+    if (const char* env = std::getenv("AGENTOS_CHAT_TARGET"); env != nullptr) {
+        env_target.assign(env);
+    }
+#endif
+    if (!env_target.empty()) {
+        const std::string& requested = env_target;
+        const auto adapter = agent_registry.find(requested);
+        if (!adapter) {
+            std::cerr << "AGENTOS_CHAT_TARGET=" << requested
+                      << " is not a registered agent; falling back to auto-detect.\n";
+        } else if (!adapter->healthy()) {
+            std::cerr << "AGENTOS_CHAT_TARGET=" << requested
+                      << " is registered but reports unhealthy; falling back to auto-detect.\n";
+        } else {
+            return requested;
+        }
+    }
+
+    for (const auto& candidate : {"gemini", "anthropic", "openai", "qwen", "codex_cli", "local_planner"}) {
+        if (const auto found = try_target(candidate); !found.empty()) {
+            return found;
+        }
+    }
+    return {};
+}
+
+void RunChatPrompt(const std::string& prompt,
+                   AgentRegistry& agent_registry,
+                   AgentLoop& loop,
+                   AuditLogger& audit_logger,
+                   const std::filesystem::path& workspace) {
+    const auto target = ResolveChatTarget(agent_registry);
+    if (target.empty()) {
+        std::cerr
+            << "No healthy chat agent found.\n"
+            << "  - Run `agentos auth login gemini mode=browser_oauth` (or another provider) first.\n"
+            << "  - Or set AGENTOS_CHAT_TARGET to a registered agent name (see `agents`).\n";
+        return;
+    }
+
+    TaskRequest task{
+        .task_id = MakeTaskId("interactive-chat"),
+        .task_type = "chat",
+        .objective = prompt,
+        .workspace_path = workspace,
+    };
+    task.preferred_target = target;
+
+    std::cout << "(routing to " << target << ")\n";
+    auto task_cancel = InstallSignalCancellation();
+    const auto result = loop.run(task, std::move(task_cancel));
+    PrintResult(result);
+    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
 }
 
 }  // namespace
@@ -227,7 +313,13 @@ int RunInteractiveCommand(
             continue;
         }
 
-        const auto& command = tokens[0];
+        // Allow slash-prefixed commands ("/help", "/exit", "/run ...") so
+        // users coming from chat-style UIs feel at home. The slash is purely
+        // cosmetic — strip it before dispatch.
+        std::string command = tokens[0];
+        if (!command.empty() && command.front() == '/') {
+            command.erase(0, 1);
+        }
 
         // ── exit / quit ─────────────────────────────────────────────────
         if (command == "exit" || command == "quit") {
@@ -428,8 +520,34 @@ int RunInteractiveCommand(
             continue;
         }
 
-        // ── unknown command ─────────────────────────────────────────────
-        std::cerr << "Unknown command: " << command << ". Type 'help' for available commands.\n";
+        // ── chat <text> ─────────────────────────────────────────────────
+        if (command == "chat") {
+            if (tokens.size() < 2) {
+                std::cerr << "Usage: chat <text...>\n";
+                continue;
+            }
+            // Reuse the original line minus the "chat" prefix to preserve
+            // multi-word prompts and any embedded `=` signs.
+            const auto prompt_start = line.find_first_not_of(" \t",
+                line[0] == '/' ? 5 : 4);  // "/chat" vs "chat"
+            const std::string prompt = (prompt_start == std::string::npos)
+                ? std::string{}
+                : line.substr(prompt_start);
+            RunChatPrompt(prompt, agent_registry, loop, audit_logger, workspace);
+            continue;
+        }
+
+        // ── free-form fallback: route the entire line to a chat agent ───
+        // This is what makes typing `你好` (or any non-command text) just
+        // work, instead of bouncing off "Unknown command:". Slash-prefixed
+        // tokens ("/something") that didn't match any known command are
+        // still treated as unknown — slashes are reserved for commands.
+        if (!tokens[0].empty() && tokens[0].front() == '/') {
+            std::cerr << "Unknown command: " << tokens[0]
+                      << ". Type 'help' for available commands.\n";
+            continue;
+        }
+        RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);
     }
 
     return 0;
