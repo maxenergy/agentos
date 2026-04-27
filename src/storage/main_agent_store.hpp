@@ -22,17 +22,28 @@ namespace agentos {
 //                             Model Studio's openai-compatible endpoint)
 //   - "anthropic-messages"    POST {base_url}/v1/messages, x-api-key header
 //   - "gemini-generatecontent" POST {base_url}/models/{model}:generateContent
+//                             (requires an API key from AI Studio — does NOT
+//                             accept Google OAuth tokens; use vertex-gemini
+//                             for OAuth)
+//   - "vertex-gemini"         POST {base_url}/projects/{project_id}/locations/
+//                             {location}/publishers/google/models/{model}:
+//                             generateContent. Accepts cloud-platform-scoped
+//                             OAuth tokens (the kind ~/.gemini/oauth_creds.json
+//                             contains). Needs project_id + location.
 struct MainAgentConfig {
-    std::string provider_kind;     // "openai-chat" | "anthropic-messages" | "gemini-generatecontent"
+    std::string provider_kind;     // "openai-chat" | "anthropic-messages" | "gemini-generatecontent" | "vertex-gemini"
     std::string base_url;          // e.g. "https://api.openai.com/v1"
     std::string api_key_env;       // env var name; mutually exclusive-ish with oauth_file
     std::string oauth_file;        // path to JSON file with `access_token` field
     std::string model;             // e.g. "gpt-4o" / "claude-sonnet-4-5" / "gemini-2.5-pro"
+    std::string project_id;        // GCP project (vertex-gemini only)
+    std::string location;          // GCP region, e.g. "us-central1" (vertex-gemini only)
     int default_timeout_ms = 120000;
 
     bool empty() const {
         return provider_kind.empty() && base_url.empty()
-            && api_key_env.empty() && oauth_file.empty() && model.empty();
+            && api_key_env.empty() && oauth_file.empty() && model.empty()
+            && project_id.empty() && location.empty();
     }
 };
 

@@ -139,6 +139,37 @@ PreparedRequest PrepareGeminiGenerate(const MainAgentConfig& config,
     return req;
 }
 
+// Vertex AI shape — same body schema as gemini-generatecontent but
+// the URL is parameterized by GCP project + region, and it accepts
+// the cloud-platform-scoped OAuth tokens that the gemini CLI's
+// oauth_creds.json file contains.
+PreparedRequest PrepareVertexGemini(const MainAgentConfig& config,
+                                    const std::string& token,
+                                    const std::string& prompt) {
+    nlohmann::ordered_json part;
+    part["text"] = prompt;
+    nlohmann::ordered_json content;
+    content["role"] = "user";
+    content["parts"] = nlohmann::ordered_json::array({part});
+    nlohmann::ordered_json body;
+    body["contents"] = nlohmann::ordered_json::array({content});
+
+    PreparedRequest req;
+    // base_url defaults to https://{location}-aiplatform.googleapis.com when
+    // empty so users only need to set project + location for the typical case.
+    std::string base = config.base_url;
+    if (base.empty()) {
+        base = "https://" + config.location + "-aiplatform.googleapis.com";
+    }
+    if (!base.empty() && base.back() == '/') base.pop_back();
+    req.url = base + "/v1/projects/" + config.project_id +
+              "/locations/" + config.location +
+              "/publishers/google/models/" + config.model + ":generateContent";
+    req.body_json = body.dump();
+    req.header_lines = {"Authorization: Bearer " + token};
+    return req;
+}
+
 std::string ExtractOpenAiContent(const std::string& response_json) {
     try {
         const auto j = nlohmann::json::parse(response_json);
@@ -189,7 +220,9 @@ std::string ExtractGeminiContent(const std::string& response_json) {
 std::string ExtractContent(const std::string& provider_kind, const std::string& response_json) {
     if (provider_kind == "openai-chat") return ExtractOpenAiContent(response_json);
     if (provider_kind == "anthropic-messages") return ExtractAnthropicContent(response_json);
-    if (provider_kind == "gemini-generatecontent") return ExtractGeminiContent(response_json);
+    if (provider_kind == "gemini-generatecontent" || provider_kind == "vertex-gemini") {
+        return ExtractGeminiContent(response_json);
+    }
     return {};
 }
 
@@ -267,12 +300,21 @@ AgentResult MainAgent::run_task(const AgentTask& task) {
 
     if (config.provider_kind != "openai-chat" &&
         config.provider_kind != "anthropic-messages" &&
-        config.provider_kind != "gemini-generatecontent") {
+        config.provider_kind != "gemini-generatecontent" &&
+        config.provider_kind != "vertex-gemini") {
         return {.success = false,
                 .duration_ms = ElapsedMs(started_at),
                 .error_code = "ConfigInvalid",
                 .error_message = "main-agent provider_kind must be one of "
-                                 "openai-chat / anthropic-messages / gemini-generatecontent"};
+                                 "openai-chat / anthropic-messages / "
+                                 "gemini-generatecontent / vertex-gemini"};
+    }
+    if (config.provider_kind == "vertex-gemini" &&
+        (config.project_id.empty() || config.location.empty())) {
+        return {.success = false,
+                .duration_ms = ElapsedMs(started_at),
+                .error_code = "ConfigInvalid",
+                .error_message = "vertex-gemini requires project_id= and location="};
     }
 
     if (!CommandExists("curl") && !CommandExists("curl.exe")) {
@@ -296,6 +338,8 @@ AgentResult MainAgent::run_task(const AgentTask& task) {
         prepared = PrepareOpenAiChat(config, token_resolution.token, prompt);
     } else if (config.provider_kind == "anthropic-messages") {
         prepared = PrepareAnthropicMessages(config, token_resolution.token, prompt);
+    } else if (config.provider_kind == "vertex-gemini") {
+        prepared = PrepareVertexGemini(config, token_resolution.token, prompt);
     } else {
         prepared = PrepareGeminiGenerate(config, token_resolution.token, prompt);
     }

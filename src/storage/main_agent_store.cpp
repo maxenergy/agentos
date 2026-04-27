@@ -75,6 +75,8 @@ std::optional<MainAgentConfig> MainAgentStore::load() const {
         else if (key == "api_key_env") { config.api_key_env = value; any_field_set = true; }
         else if (key == "oauth_file") { config.oauth_file = value; any_field_set = true; }
         else if (key == "model") { config.model = value; any_field_set = true; }
+        else if (key == "project_id") { config.project_id = value; any_field_set = true; }
+        else if (key == "location") { config.location = value; any_field_set = true; }
         else if (key == "default_timeout_ms") {
             try { config.default_timeout_ms = std::stoi(value); any_field_set = true; }
             catch (...) {}
@@ -94,6 +96,8 @@ bool MainAgentStore::save(const MainAgentConfig& config) const {
     out << "api_key_env\t" << Escape(config.api_key_env) << "\n";
     out << "oauth_file\t" << Escape(config.oauth_file) << "\n";
     out << "model\t" << Escape(config.model) << "\n";
+    out << "project_id\t" << Escape(config.project_id) << "\n";
+    out << "location\t" << Escape(config.location) << "\n";
     out << "default_timeout_ms\t" << config.default_timeout_ms << "\n";
 
     std::error_code ec;
