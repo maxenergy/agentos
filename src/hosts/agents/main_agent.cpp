@@ -256,7 +256,16 @@ bool MainAgent::healthy() const {
     if (!CommandExists("curl") && !CommandExists("curl.exe")) return false;
     const auto config = store_.load();
     if (!config.has_value()) return false;
-    if (config->base_url.empty() || config->model.empty() || config->provider_kind.empty()) {
+    if (config->model.empty() || config->provider_kind.empty()) {
+        return false;
+    }
+    // base_url is optional for vertex-gemini (defaults to
+    // {location}-aiplatform.googleapis.com), required otherwise.
+    if (config->base_url.empty() && config->provider_kind != "vertex-gemini") {
+        return false;
+    }
+    if (config->provider_kind == "vertex-gemini" &&
+        (config->project_id.empty() || config->location.empty())) {
         return false;
     }
     const auto token = ResolveToken(*config);

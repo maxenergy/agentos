@@ -213,15 +213,19 @@ void RunChatPrompt(const std::string& prompt,
     const auto target = ResolveChatTarget(agent_registry);
     if (target.empty()) {
         std::cerr
-            << "main-agent is not configured. Configure it with one of:\n"
+            << "main-agent is not configured (or its auth token is unavailable).\n"
+            << "Run `agentos main-agent show` to inspect the current record. Examples:\n"
             << "  agentos main-agent set provider=openai-chat \\\n"
             << "    base_url=https://api.openai.com/v1 model=gpt-4o api_key_env=OPENAI_API_KEY\n"
             << "  agentos main-agent set provider=anthropic-messages \\\n"
             << "    base_url=https://api.anthropic.com model=claude-sonnet-4-5 api_key_env=ANTHROPIC_API_KEY\n"
             << "  agentos main-agent set provider=gemini-generatecontent \\\n"
             << "    base_url=https://generativelanguage.googleapis.com/v1beta \\\n"
-            << "    model=gemini-2.5-pro oauth_file=$HOME/.gemini/oauth_creds.json\n"
-            << "Then check status with `agentos main-agent show`.\n";
+            << "    model=gemini-2.5-flash api_key_env=GEMINI_API_KEY  # API key, NOT OAuth\n"
+            << "  agentos main-agent set provider=vertex-gemini \\\n"
+            << "    project_id=<your-gcp-project> location=us-central1 \\\n"
+            << "    model=gemini-2.5-flash oauth_file=$HOME/.gemini/oauth_creds.json\n"
+            << "Run `agentos main-agent list-providers` for the full reference.\n";
         return;
     }
 
