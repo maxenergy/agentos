@@ -29,7 +29,8 @@ void PrintUsage() {
         << "  agentos main-agent set provider=<openai-chat|anthropic-messages|gemini-generatecontent|vertex-gemini>\n"
         << "                         base_url=<url>          # vertex-gemini: optional, defaults to {location}-aiplatform.googleapis.com\n"
         << "                         model=<model_id>\n"
-        << "                         [api_key_env=ENV_VAR]\n"
+        << "                         [api_key_env=ENV_VAR]    # preferred for real secrets\n"
+        << "                         [api_key=LITERAL]        # fine for local dev (e.g. EMPTY); written to disk\n"
         << "                         [oauth_file=<path-to-json>]   # vertex-gemini accepts gemini CLI's oauth_creds.json\n"
         << "                         [project_id=<gcp-project>]    # vertex-gemini only\n"
         << "                         [location=<gcp-region>]       # vertex-gemini only, e.g. us-central1\n"
@@ -48,13 +49,18 @@ void PrintUsage() {
         << "    model=gemini-2.5-flash api_key_env=GEMINI_API_KEY  # API key from aistudio.google.com/apikey\n"
         << "  agentos main-agent set provider=vertex-gemini \\\n"
         << "    project_id=my-gcp-project location=us-central1 \\\n"
-        << "    model=gemini-2.5-flash oauth_file=C:/Users/you/.gemini/oauth_creds.json\n";
+        << "    model=gemini-2.5-flash oauth_file=C:/Users/you/.gemini/oauth_creds.json\n"
+        << "  # Local OpenAI-compatible server (llama.cpp / vLLM / LM Studio):\n"
+        << "  agentos main-agent set provider=openai-chat \\\n"
+        << "    base_url=http://192.168.110.2:8010/v1 \\\n"
+        << "    model=Qwen3.6-27B.q4_k_m.gguf api_key=EMPTY\n";
 }
 
 void PrintConfig(const MainAgentConfig& c) {
     std::cout << "provider_kind: " << c.provider_kind << "\n"
               << "base_url:      " << (c.base_url.empty() ? "(default)" : c.base_url) << "\n"
               << "model:         " << c.model << "\n"
+              << "api_key:       " << (c.api_key.empty() ? "(unset)" : "(set, literal)") << "\n"
               << "api_key_env:   " << (c.api_key_env.empty() ? "(unset)" : c.api_key_env) << "\n"
               << "oauth_file:    " << (c.oauth_file.empty() ? "(unset)" : c.oauth_file) << "\n"
               << "project_id:    " << (c.project_id.empty() ? "(unset)" : c.project_id) << "\n"
@@ -113,6 +119,7 @@ int RunMainAgentCommand(const MainAgentStore& store, int argc, char* argv[]) {
         }
         if (auto it = opts.find("base_url"); it != opts.end()) config.base_url = it->second;
         if (auto it = opts.find("model"); it != opts.end()) config.model = it->second;
+        if (auto it = opts.find("api_key"); it != opts.end()) config.api_key = it->second;
         if (auto it = opts.find("api_key_env"); it != opts.end()) config.api_key_env = it->second;
         if (auto it = opts.find("oauth_file"); it != opts.end()) config.oauth_file = it->second;
         if (auto it = opts.find("project_id"); it != opts.end()) config.project_id = it->second;
@@ -156,8 +163,9 @@ int RunMainAgentCommand(const MainAgentStore& store, int argc, char* argv[]) {
                 return 1;
             }
         }
-        if (config.api_key_env.empty() && config.oauth_file.empty()) {
-            std::cerr << "main-agent set: must specify api_key_env=ENV or oauth_file=path\n";
+        if (config.api_key_env.empty() && config.api_key.empty() && config.oauth_file.empty()) {
+            std::cerr << "main-agent set: must specify one of "
+                         "api_key_env=ENV / api_key=LITERAL / oauth_file=path\n";
             return 1;
         }
 

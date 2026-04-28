@@ -376,6 +376,9 @@ bool MainAgent::healthy() const {
     if (!config->api_key_env.empty()) {
         return !ReadEnv(config->api_key_env).empty();
     }
+    if (!config->api_key.empty()) {
+        return true;
+    }
     if (!config->oauth_file.empty()) {
         const auto contents = ReadOAuthFile(config->oauth_file);
         return contents.error.empty() && !contents.access_token.empty();
@@ -392,6 +395,14 @@ MainAgent::TokenResolution MainAgent::ResolveToken(const MainAgentConfig& config
                         " is not set in the current environment"};
         }
         return {value, {}, {}};
+    }
+    if (!config.api_key.empty()) {
+        // Literal api_key — primarily for local/self-hosted endpoints
+        // (llama.cpp / vLLM / LM Studio etc.) that ignore the value
+        // but still expect a non-empty Bearer header. Real provider
+        // secrets should still go through api_key_env so the value
+        // doesn't sit on disk in the workspace.
+        return {config.api_key, {}, {}};
     }
     if (!config.oauth_file.empty()) {
         auto contents = ReadOAuthFile(config.oauth_file);

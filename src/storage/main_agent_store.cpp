@@ -72,6 +72,7 @@ std::optional<MainAgentConfig> MainAgentStore::load() const {
 
         if (key == "provider_kind") { config.provider_kind = value; any_field_set = true; }
         else if (key == "base_url") { config.base_url = value; any_field_set = true; }
+        else if (key == "api_key") { config.api_key = value; any_field_set = true; }
         else if (key == "api_key_env") { config.api_key_env = value; any_field_set = true; }
         else if (key == "oauth_file") { config.oauth_file = value; any_field_set = true; }
         else if (key == "model") { config.model = value; any_field_set = true; }
@@ -93,6 +94,7 @@ bool MainAgentStore::save(const MainAgentConfig& config) const {
     out << "# AgentOS main-agent configuration. Managed by `agentos main-agent set`.\n";
     out << "provider_kind\t" << Escape(config.provider_kind) << "\n";
     out << "base_url\t" << Escape(config.base_url) << "\n";
+    out << "api_key\t" << Escape(config.api_key) << "\n";
     out << "api_key_env\t" << Escape(config.api_key_env) << "\n";
     out << "oauth_file\t" << Escape(config.oauth_file) << "\n";
     out << "model\t" << Escape(config.model) << "\n";

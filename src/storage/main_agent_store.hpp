@@ -33,7 +33,8 @@ namespace agentos {
 struct MainAgentConfig {
     std::string provider_kind;     // "openai-chat" | "anthropic-messages" | "gemini-generatecontent" | "vertex-gemini"
     std::string base_url;          // e.g. "https://api.openai.com/v1"
-    std::string api_key_env;       // env var name; mutually exclusive-ish with oauth_file
+    std::string api_key;           // literal value — only safe for local/dev placeholders (e.g. "EMPTY")
+    std::string api_key_env;       // env var name — preferred over `api_key` for real secrets
     std::string oauth_file;        // path to JSON file with `access_token` field
     std::string model;             // e.g. "gpt-4o" / "claude-sonnet-4-5" / "gemini-2.5-pro"
     std::string project_id;        // GCP project (vertex-gemini only)
@@ -42,8 +43,8 @@ struct MainAgentConfig {
 
     bool empty() const {
         return provider_kind.empty() && base_url.empty()
-            && api_key_env.empty() && oauth_file.empty() && model.empty()
-            && project_id.empty() && location.empty();
+            && api_key.empty() && api_key_env.empty() && oauth_file.empty()
+            && model.empty() && project_id.empty() && location.empty();
     }
 };
 
