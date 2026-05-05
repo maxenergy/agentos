@@ -26,3 +26,9 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - Added `CapabilityContractValidationResult` and diagnostics to represent declaration and input/output shape validation without moving callers yet.
 - The facade wraps existing schema validation messages so current public errors stay unchanged.
 - Capability Contract validation remains declaration/shape validation only; runtime authorization remains in `PolicyEngine`.
+
+## 2026-05-06 G011 Runtime Store StorageBackend Seam
+
+- Added `StorageBackend` plus `TsvStorageBackend` as the Runtime Store backend boundary.
+- The TSV adapter wraps existing atomic file, append, transaction, manifest, export/import, and migrate helpers without changing on-disk layout.
+- Compaction is represented on the backend seam but remains delegated to owning stores until callers move in later goals.

@@ -82,6 +82,7 @@ add_library(agentos_core
     src/memory/workflow_store.cpp
     src/memory/workflow_validation.cpp
     src/storage/main_agent_store.cpp
+    src/storage/storage_backend.cpp
     src/storage/storage_export.cpp
     src/storage/storage_policy.cpp
     src/storage/storage_transaction.cpp

@@ -18,9 +18,9 @@ Status values:
 | G008 | ready | G005 | medium | Replace route-hints TSV direction with Capability Declaration Route Hint coverage. |
 | G009 | blocked | G006 | high | Normalize Plugin protocol output before PluginSkillInvoker mapping. |
 | G010 | blocked | G009 | medium | Clarify Plugin Session process-pool policy and admin scope. |
-| G011 | ready | none | high | Introduce the Runtime Store StorageBackend seam with a TSV adapter. |
-| G012 | blocked | G011 | medium | Move storage commands and diagnostics through the StorageBackend seam. |
-| G013 | blocked | G011 | medium | Harden Audit History recovery tests and document lossy reconstruction. |
+| G011 | done | none | high | Introduce the Runtime Store StorageBackend seam with a TSV adapter. |
+| G012 | ready | G011 | medium | Move storage commands and diagnostics through the StorageBackend seam. |
+| G013 | ready | G011 | medium | Harden Audit History recovery tests and document lossy reconstruction. |
 | G014 | ready | none | medium | Extract Auth Login Flow mode modules from provider adapters. |
 | G015 | blocked | G014 | medium | Define Auth Profile selection across login modes. |
 | G016 | blocked | external provider | low | Track Anthropic PKCE defaults and promote only when stable endpoints exist. |

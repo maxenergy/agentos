@@ -7,6 +7,7 @@
 #include "storage/storage_export.hpp"
 #include "storage/storage_policy.hpp"
 #include "storage/storage_transaction.hpp"
+#include "storage/storage_backend.hpp"
 #include "storage/storage_version_store.hpp"
 #include "auth/session_store.hpp"
 #include "utils/atomic_file.hpp"
@@ -304,6 +305,55 @@ void TestStorageTransactionSkipsCorruptCommittedPrepare(const std::filesystem::p
         "storage recovery should remove corrupt committed transaction state after accounting for failure");
     Expect(!std::filesystem::exists(runtime_dir / ".transactions" / "valid-committed"),
         "storage recovery should remove valid committed transaction state");
+}
+
+void TestTsvStorageBackendCoreCapabilities(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "storage_backend_tsv";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    agentos::TsvStorageBackend backend(isolated_workspace);
+
+    const auto state_path = isolated_workspace / "runtime" / "backend" / "state.tsv";
+    backend.atomic_replace(state_path, "first\n");
+    backend.atomic_replace(state_path, "second\n");
+    Expect(ReadFile(state_path) == "second\n", "TSV StorageBackend atomic_replace should replace content");
+
+    const auto events_path = isolated_workspace / "runtime" / "backend" / "events.log";
+    backend.append_line(events_path, "alpha");
+    backend.append_line(events_path, "beta");
+    Expect(ReadFile(events_path) == "alpha\nbeta\n", "TSV StorageBackend append_line should append lines");
+
+    const auto transaction_path = isolated_workspace / "runtime" / "backend" / "transaction.tsv";
+    backend.prepare_transaction("backend-smoke", {
+        agentos::StorageTransactionWrite{.target_path = transaction_path, .content = "transactional\n"},
+    });
+    Expect(backend.commit_prepared_transaction("backend-smoke") == 1,
+        "TSV StorageBackend should commit prepared transaction writes");
+    Expect(ReadFile(transaction_path) == "transactional\n",
+        "TSV StorageBackend transaction should apply the target content");
+    const auto recovered = backend.recover_transactions();
+    Expect(recovered.committed_replayed == 0 && recovered.rolled_back == 0,
+        "TSV StorageBackend recovery should report no leftover transaction state after commit");
+
+    const auto migration = backend.migrate();
+    Expect(migration.changed && migration.created_manifest,
+        "TSV StorageBackend migrate should create the runtime storage manifest");
+    const auto status = backend.manifest_status();
+    Expect(status.current, "TSV StorageBackend manifest_status should report the current manifest after migrate");
+    Expect(!status.entries.empty(), "TSV StorageBackend manifest_status should expose manifest entries");
+
+    const auto verify = backend.verify_manifest();
+    Expect(!verify.valid, "TSV StorageBackend verify_manifest should report missing manifested files");
+    Expect(verify.checked_files == static_cast<int>(status.entries.size()),
+        "TSV StorageBackend verify_manifest should check every manifest entry");
+    Expect(!verify.diagnostics.empty() && verify.diagnostics.front().code == "MissingManifestFile",
+        "TSV StorageBackend verify_manifest should return audit-safe diagnostics");
+
+    const auto compact = backend.compact("memory");
+    Expect(compact.success, "TSV StorageBackend compact seam should be callable");
+    Expect(!compact.diagnostics.empty() && compact.diagnostics.front().code == "CompactionDelegated",
+        "TSV StorageBackend compact seam should explain delegated compaction");
 }
 
 void TestStorageVersionStorePersistsManifest(const std::filesystem::path& workspace) {
@@ -834,6 +884,7 @@ int main() {
     TestStorageTransactionRollsBackUncommittedPrepare(workspace);
     TestStorageTransactionRecoversCommittedPrepare(workspace);
     TestStorageTransactionSkipsCorruptCommittedPrepare(workspace);
+    TestTsvStorageBackendCoreCapabilities(workspace);
     TestStorageVersionStorePersistsManifest(workspace);
     TestStorageVersionStoreMigratesMissingManifest(workspace);
     TestStorageVersionStoreMigratesLegacyManifest(workspace);

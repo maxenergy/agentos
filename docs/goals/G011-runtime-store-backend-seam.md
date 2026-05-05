@@ -1,6 +1,6 @@
 # G011 Runtime Store StorageBackend Seam
 
-Status: ready
+Status: done
 
 ## Objective
 
@@ -62,3 +62,7 @@ ctest --test-dir build -R agentos_storage_tests --output-on-failure
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g001 --target agentos_storage_tests`
+- `ctest --test-dir build-codex-g001 -R agentos_storage_tests --output-on-failure`
