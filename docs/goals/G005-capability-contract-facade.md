@@ -1,6 +1,6 @@
 # G005 Capability Contract Validation Facade
 
-Status: ready
+Status: done
 
 ## Objective
 
@@ -55,3 +55,7 @@ ctest --test-dir build -R "agentos_file_skill_policy_tests|agentos_spec_parsing_
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g001 --target agentos_file_skill_policy_tests agentos_spec_parsing_tests`
+- `ctest --test-dir build-codex-g001 -R "agentos_file_skill_policy_tests|agentos_spec_parsing_tests" --output-on-failure`

@@ -1,3 +1,4 @@
+#include "core/schema/schema_validator.hpp"
 #include "utils/cancellation.hpp"
 #include "utils/spec_parsing.hpp"
 
@@ -98,6 +99,84 @@ void TestCancellationToken() {
         "wait_for_cancel must wake up promptly when cancel() is called from another thread");
 }
 
+agentos::SkillManifest BaseCapabilityManifest() {
+    return {
+        .name = "contract_probe",
+        .version = "test",
+        .description = "Capability Contract test manifest.",
+        .capabilities = {"test"},
+        .input_schema_json = R"({"type":"object"})",
+        .output_schema_json = R"({"type":"object"})",
+        .risk_level = "low",
+        .permissions = {},
+        .supports_streaming = false,
+        .idempotent = true,
+        .timeout_ms = 1000,
+    };
+}
+
+void TestCapabilityContractJsonObjectFacade() {
+    const auto required = agentos::ValidateCapabilityContractJsonObject(
+        R"({"type":"object","required":["path"]})",
+        R"({})",
+        "skill input");
+    Expect(!required.valid, "Capability Contract facade should reject missing required fields");
+    Expect(required.error_code == "RequiredFieldMissing",
+        "Capability Contract facade should classify required-field diagnostics");
+    Expect(!required.diagnostics.empty() && required.diagnostics.front().field == "path",
+        "Capability Contract required-field diagnostic should carry the field name");
+
+    const auto type = agentos::ValidateCapabilityContractJsonObject(
+        R"({"type":"object","properties":{"count":{"type":"integer"}}})",
+        R"({"count":"many"})",
+        "skill input");
+    Expect(!type.valid, "Capability Contract facade should reject invalid field types");
+    Expect(type.error_code == "InvalidFieldType",
+        "Capability Contract facade should classify type diagnostics");
+    Expect(!type.diagnostics.empty() && type.diagnostics.front().constraint == "integer",
+        "Capability Contract type diagnostic should carry the expected type");
+
+    const auto constraint = agentos::ValidateCapabilityContractJsonObject(
+        R"({"type":"object","properties":{"count":{"type":"integer","minimum":2}}})",
+        R"({"count":1})",
+        "skill input");
+    Expect(!constraint.valid, "Capability Contract facade should reject shape constraints");
+    Expect(constraint.error_code == "ConstraintViolation",
+        "Capability Contract facade should classify constraint diagnostics");
+    Expect(!constraint.diagnostics.empty() && constraint.diagnostics.front().constraint == "minimum",
+        "Capability Contract constraint diagnostic should carry the failed constraint");
+}
+
+void TestCapabilityContractDeclarationFacade() {
+    auto malformed = BaseCapabilityManifest();
+    malformed.input_schema_json = "{";
+    const auto malformed_result = agentos::ValidateCapabilityDeclaration(malformed);
+    Expect(!malformed_result.valid, "Capability Contract declaration facade should reject malformed schemas");
+    Expect(malformed_result.error_code == "MalformedSchema",
+        "Capability Contract declaration facade should classify malformed schema diagnostics");
+    Expect(!malformed_result.diagnostics.empty() && malformed_result.diagnostics.front().field == "input_schema_json",
+        "malformed schema diagnostic should identify the schema field");
+
+    auto invalid_risk = BaseCapabilityManifest();
+    invalid_risk.risk_level = "severe";
+    const auto risk_result = agentos::ValidateCapabilityDeclaration(invalid_risk);
+    Expect(!risk_result.valid, "Capability Contract declaration facade should reject invalid risk levels");
+    Expect(risk_result.error_code == "InvalidRiskLevel",
+        "Capability Contract declaration facade should classify invalid risk diagnostics");
+    Expect(!risk_result.diagnostics.empty() && risk_result.diagnostics.front().field == "risk_level",
+        "invalid risk diagnostic should identify risk_level");
+
+    auto unknown_permission = BaseCapabilityManifest();
+    unknown_permission.permissions = {"filesystem.read", "unknown.scope"};
+    const auto permission_result = agentos::ValidateCapabilityDeclaration(unknown_permission);
+    Expect(!permission_result.valid, "Capability Contract declaration facade should reject unknown permissions");
+    Expect(permission_result.error_code == "UnknownPermission",
+        "Capability Contract declaration facade should classify unknown permission diagnostics");
+    Expect(!permission_result.diagnostics.empty() &&
+               permission_result.diagnostics.front().constraint.find("unknown.scope") != std::string::npos,
+        "unknown permission diagnostic should carry the unknown permission");
+}
+
 }  // namespace
 
 int main() {
@@ -106,6 +185,8 @@ int main() {
     TestJsonObjectShape();
     TestJoinStrings();
     TestCancellationToken();
+    TestCapabilityContractJsonObjectFacade();
+    TestCapabilityContractDeclarationFacade();
 
     if (failures != 0) {
         std::cerr << failures << " spec parsing test assertion(s) failed\n";

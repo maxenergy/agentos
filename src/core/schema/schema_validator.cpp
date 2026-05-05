@@ -1,5 +1,7 @@
 #include "core/schema/schema_validator.hpp"
 
+#include "core/policy/permission_model.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -98,6 +100,53 @@ std::string JoinFields(const std::vector<std::string>& fields) {
         output << fields[index];
     }
     return output.str();
+}
+
+CapabilityContractValidationResult ValidCapabilityContract() {
+    return {};
+}
+
+CapabilityContractValidationResult InvalidCapabilityContract(
+    std::string error_code,
+    std::string message,
+    CapabilityContractDiagnostic diagnostic) {
+    CapabilityContractValidationResult result;
+    result.valid = false;
+    result.error_code = std::move(error_code);
+    result.message = std::move(message);
+    result.diagnostics.push_back(std::move(diagnostic));
+    return result;
+}
+
+std::string StringAfter(const std::string& value, const std::string& prefix) {
+    const auto found = value.find(prefix);
+    if (found == std::string::npos) {
+        return {};
+    }
+    return value.substr(found + prefix.size());
+}
+
+std::pair<std::string, std::string> SplitFieldConstraint(const std::string& value) {
+    const auto separator = value.find(':');
+    if (separator == std::string::npos) {
+        return {value, ""};
+    }
+    return {value.substr(0, separator), value.substr(separator + 1)};
+}
+
+CapabilityContractDiagnostic DiagnosticFromFieldSuffix(
+    const std::string& message,
+    const std::string& prefix,
+    const std::string& fallback_constraint) {
+    auto [field, constraint] = SplitFieldConstraint(StringAfter(message, prefix));
+    if (constraint.empty()) {
+        constraint = fallback_constraint;
+    }
+    return {
+        .field = std::move(field),
+        .constraint = std::move(constraint),
+        .message = message,
+    };
 }
 
 void AppendFailures(std::vector<std::string>& target, const std::vector<std::string>& failures) {
@@ -1884,6 +1933,118 @@ std::string JsonObjectRequiredBranchValidationError(
     const std::string_view subject) {
     return JsonObjectValidationErrorForParsedPair(
         schema_json, object_json, subject, JsonObjectRequiredBranchValidationErrorForParsed);
+}
+
+CapabilityContractValidationResult ValidateCapabilityContractJsonObject(
+    const std::string_view schema_json,
+    const std::string_view object_json,
+    const std::string_view subject) {
+    if (!IsParseableJsonObjectSchema(schema_json)) {
+        const std::string message = std::string(subject) + " schema must be a parseable JSON object";
+        return InvalidCapabilityContract(
+            "MalformedSchema",
+            message,
+            CapabilityContractDiagnostic{
+                .field = "schema",
+                .constraint = "parseable-json-object",
+                .message = message,
+            });
+    }
+    if (!ParseJsonObject(object_json).has_value()) {
+        const std::string message = std::string(subject) + " object must be a parseable JSON object";
+        return InvalidCapabilityContract(
+            "MalformedObject",
+            message,
+            CapabilityContractDiagnostic{
+                .field = "object",
+                .constraint = "parseable-json-object",
+                .message = message,
+            });
+    }
+
+    if (const auto message = JsonObjectRequiredFieldValidationError(schema_json, object_json, subject);
+        !message.empty()) {
+        return InvalidCapabilityContract(
+            "RequiredFieldMissing",
+            message,
+            DiagnosticFromFieldSuffix(message, " missing required field: ", "required"));
+    }
+    if (const auto message = JsonObjectPropertyTypeValidationError(schema_json, object_json, subject);
+        !message.empty()) {
+        return InvalidCapabilityContract(
+            "InvalidFieldType",
+            message,
+            DiagnosticFromFieldSuffix(message, " field has invalid type: ", "type"));
+    }
+    if (const auto message = JsonObjectSchemaValidationError(schema_json, object_json, subject);
+        !message.empty()) {
+        if (message.find(" field has invalid constraint: ") != std::string::npos) {
+            return InvalidCapabilityContract(
+                "ConstraintViolation",
+                message,
+                DiagnosticFromFieldSuffix(message, " field has invalid constraint: ", "constraint"));
+        }
+        return InvalidCapabilityContract(
+            "ConstraintViolation",
+            message,
+            CapabilityContractDiagnostic{
+                .field = "",
+                .constraint = "schema",
+                .message = message,
+            });
+    }
+
+    return ValidCapabilityContract();
+}
+
+CapabilityContractValidationResult ValidateCapabilityDeclaration(const SkillManifest& manifest) {
+    if (!IsParseableJsonObjectSchema(manifest.input_schema_json)) {
+        const auto message = "input_schema_json for " + manifest.name + " must be a parseable JSON object";
+        return InvalidCapabilityContract(
+            "MalformedSchema",
+            message,
+            CapabilityContractDiagnostic{
+                .field = "input_schema_json",
+                .constraint = "parseable-json-object",
+                .message = message,
+            });
+    }
+    if (!IsParseableJsonObjectSchema(manifest.output_schema_json)) {
+        const auto message = "output_schema_json for " + manifest.name + " must be a parseable JSON object";
+        return InvalidCapabilityContract(
+            "MalformedSchema",
+            message,
+            CapabilityContractDiagnostic{
+                .field = "output_schema_json",
+                .constraint = "parseable-json-object",
+                .message = message,
+            });
+    }
+    if (PermissionModel::parse_risk_level(manifest.risk_level) == RiskLevel::unknown) {
+        const auto message = "invalid risk level for " + manifest.name + ": " + manifest.risk_level;
+        return InvalidCapabilityContract(
+            "InvalidRiskLevel",
+            message,
+            CapabilityContractDiagnostic{
+                .field = "risk_level",
+                .constraint = manifest.risk_level,
+                .message = message,
+            });
+    }
+    if (const auto unknown_permissions = PermissionModel::unknown_permissions(manifest.permissions);
+        !unknown_permissions.empty()) {
+        const auto message = "unknown permissions for " + manifest.name + ": " + JoinFields(unknown_permissions);
+        return InvalidCapabilityContract(
+            "UnknownPermission",
+            message,
+            CapabilityContractDiagnostic{
+                .field = "permissions",
+                .constraint = JoinFields(unknown_permissions),
+                .message = message,
+            });
+    }
+
+    return ValidCapabilityContract();
 }
 
 SchemaValidationResult ValidateRequiredInputFields(

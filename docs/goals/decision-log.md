@@ -20,3 +20,9 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - Added `AgentDispatchInput` and `AgentDispatchResult` as the shared boundary for agent policy evaluation, dispatch, and step candidate creation.
 - Agent Dispatch records policy audit events but intentionally does not record final task steps; callers remain responsible for task lifecycle ownership.
 - Direct dispatch tests live in `agentos_agent_dispatch_tests`; the existing subagent session tests remain the compatibility suite for current callers.
+
+## 2026-05-06 G005 Capability Contract Facade
+
+- Added `CapabilityContractValidationResult` and diagnostics to represent declaration and input/output shape validation without moving callers yet.
+- The facade wraps existing schema validation messages so current public errors stay unchanged.
+- Capability Contract validation remains declaration/shape validation only; runtime authorization remains in `PolicyEngine`.

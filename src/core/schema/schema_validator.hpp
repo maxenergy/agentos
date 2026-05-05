@@ -16,6 +16,28 @@ struct SchemaValidationResult {
     std::string error_message;
 };
 
+struct CapabilityContractDiagnostic {
+    std::string field;
+    std::string constraint;
+    std::string message;
+};
+
+struct CapabilityContractValidationResult {
+    bool valid = true;
+    std::string error_code;
+    std::string message;
+    std::vector<CapabilityContractDiagnostic> diagnostics;
+};
+
+// Capability Contract validation is declaration and shape validation only.
+// Runtime authorization remains owned by PolicyEngine.
+CapabilityContractValidationResult ValidateCapabilityContractJsonObject(
+    std::string_view schema_json,
+    std::string_view object_json,
+    std::string_view subject);
+
+CapabilityContractValidationResult ValidateCapabilityDeclaration(const SkillManifest& manifest);
+
 SchemaValidationResult ValidateRequiredInputFields(
     const SkillManifest& manifest,
     const StringMap& arguments);
