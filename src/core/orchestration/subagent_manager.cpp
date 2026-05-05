@@ -523,41 +523,54 @@ TaskRunResult SubagentManager::run(
         }
 
         decomposition_agent_name = *decomposition_agent;
-        AgentTask decomposition_task{
-            .task_id = task.task_id + ".decomposition",
-            .task_type = "decomposition",
-            .objective = task.objective,
-            .workspace_path = task.workspace_path.string(),
-            .context_json = DecompositionContextJson(task, normalized_agent_names, subagent_roles),
-            .timeout_ms = task.timeout_ms,
-            .budget_limit = task.budget_limit,
-        };
-
-        auto policy = policy_engine_.evaluate_agent(task, planner->profile(), decomposition_task);
-        ApplyLessonPolicyHint(memory_manager_, task, decomposition_agent_name, policy);
-        audit_logger_.record_policy(task.task_id, decomposition_agent_name, policy);
-        if (!policy.allowed) {
+        TaskRequest decomposition_request = task;
+        decomposition_request.task_type = "decomposition";
+        auto decomposition_dispatch = DispatchAgent(
+            AgentDispatchInput{
+                .task = decomposition_request,
+                .agent = planner,
+                .agent_name = decomposition_agent_name,
+                .agent_task_id = task.task_id + ".decomposition",
+                .objective = task.objective,
+                .context_json = DecompositionContextJson(task, normalized_agent_names, subagent_roles),
+                .constraints_json = "",
+                .invocation_context = {
+                    {"task_type", "decomposition"},
+                    {"parent_task_id", task.task_id},
+                    {"agent", decomposition_agent_name},
+                    {"subagents", JoinAgentNames(normalized_agent_names)},
+                    {"roles", JoinAgentNames(subagent_roles)},
+                },
+                .cancel = cancel,
+            },
+            policy_engine_,
+            audit_logger_,
+            memory_manager_);
+        if (decomposition_dispatch.error_code == "PolicyDenied") {
             result.success = false;
             result.summary = "Decomposition agent was denied by policy.";
             result.error_code = "PolicyDenied";
-            result.error_message = policy.reason;
+            result.error_message = decomposition_dispatch.error_message;
             result.duration_ms = ElapsedMs(started_at);
             FinalizeTaskRun(audit_logger_, memory_manager_, task, result);
             return result;
         }
-
-        const auto decomposition = planner->run_task(decomposition_task);
-        if (!decomposition.success) {
+        if (!decomposition_dispatch.success) {
             result.success = false;
             result.summary = "Decomposition agent failed.";
-            result.error_code = decomposition.error_code.empty() ? "DecompositionFailed" : decomposition.error_code;
-            result.error_message = decomposition.error_message;
+            result.error_code = decomposition_dispatch.error_code.empty()
+                ? "DecompositionFailed"
+                : decomposition_dispatch.error_code;
+            result.error_message = decomposition_dispatch.error_message;
             result.duration_ms = ElapsedMs(started_at);
             FinalizeTaskRun(audit_logger_, memory_manager_, task, result);
             return result;
         }
 
-        const auto actions = ExtractPlanActions(decomposition.structured_output_json, audit_logger_, task.task_id);
+        const auto actions = ExtractPlanActions(
+            decomposition_dispatch.structured_output_json,
+            audit_logger_,
+            task.task_id);
         if (actions.empty()) {
             result.success = false;
             result.summary = "Decomposition agent did not return plan actions.";

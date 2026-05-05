@@ -27,6 +27,12 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - AgentLoop still records the final task step and owns `TaskRunResult` finalization; Subagent Orchestration still records returned step candidates in caller-controlled order.
 - `resume_session_id` forwarding is part of Agent Dispatch input so the shared seam preserves AgentLoop V2 resume behavior.
 
+## 2026-05-06 G003 Decomposition Planner Dispatch
+
+- `auto_decompose=true` planner calls now go through `DispatchAgent`, including policy audit, cancellation, and V2/legacy adapter selection.
+- Agent Dispatch still returns only a planner step candidate; Subagent Orchestration alone parses `plan_steps[].action` and injects subtasks.
+- The decomposition planner step remains non-visible in `TaskRunResult.steps` to preserve worker step ordering and existing orchestration output shape.
+
 ## 2026-05-06 G005 Capability Contract Facade
 
 - Added `CapabilityContractValidationResult` and diagnostics to represent declaration and input/output shape validation without moving callers yet.

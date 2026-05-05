@@ -179,7 +179,7 @@ private:
     double estimated_cost_ = 0.0;
 };
 
-class DecompositionTestAgent final : public agentos::IAgentAdapter {
+class DecompositionTestAgent final : public agentos::IAgentAdapter, public agentos::IAgentAdapterV2 {
 public:
     DecompositionTestAgent(std::string name, bool success, std::string structured_output_json)
         : name_(std::move(name)),
@@ -219,7 +219,9 @@ public:
     }
 
     agentos::AgentResult run_task(const agentos::AgentTask& task) override {
-        (void)task;
+        legacy_calls_ += 1;
+        last_task_id_ = task.task_id;
+        last_objective_ = task.objective;
         return {
             .success = success_,
             .summary = success_ ? "decomposition result" : "decomposition failed",
@@ -240,10 +242,38 @@ public:
         return false;
     }
 
+    agentos::AgentResult invoke(
+        const agentos::AgentInvocation& invocation,
+        const agentos::AgentEventCallback& /*on_event*/) override {
+        v2_calls_ += 1;
+        last_task_id_ = invocation.task_id;
+        last_objective_ = invocation.objective;
+        last_context_ = invocation.context;
+        return {
+            .success = success_,
+            .summary = success_ ? "decomposition result" : "decomposition failed",
+            .structured_output_json = structured_output_json_,
+            .duration_ms = 1,
+            .error_code = success_ ? "" : "PlannerFailed",
+            .error_message = success_ ? "" : "configured planner failure",
+        };
+    }
+
+    int legacy_calls() const { return legacy_calls_; }
+    int v2_calls() const { return v2_calls_; }
+    const std::string& last_task_id() const { return last_task_id_; }
+    const std::string& last_objective() const { return last_objective_; }
+    const agentos::StringMap& last_context() const { return last_context_; }
+
 private:
     std::string name_;
     bool success_ = true;
     std::string structured_output_json_;
+    int legacy_calls_ = 0;
+    int v2_calls_ = 0;
+    std::string last_task_id_;
+    std::string last_objective_;
+    agentos::StringMap last_context_;
 };
 
 void RegisterCore(TestRuntime& runtime) {
@@ -484,10 +514,11 @@ void TestSubagentManagerAutoDecomposeAcceptsRootPlanSteps(const std::filesystem:
     RegisterCore(runtime);
     runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("root_worker_a", "analysis"));
     runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("root_worker_b", "review"));
-    runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
+    auto root_decomposer = std::make_shared<DecompositionTestAgent>(
         "root_decomposer",
         true,
-        R"({"plan_steps":[{"action":"step1"},{"action":"step2"}]})"));
+        R"({"plan_steps":[{"action":"step1"},{"action":"step2"}]})");
+    runtime.agent_registry.register_agent(root_decomposer);
 
     agentos::SubagentManager manager(
         runtime.agent_registry,
@@ -512,6 +543,15 @@ void TestSubagentManagerAutoDecomposeAcceptsRootPlanSteps(const std::filesystem:
 
     Expect(result.success, "strict root plan_steps should drive auto decomposition");
     Expect(result.steps.size() == 2, "strict root plan_steps should inject two subtasks");
+    Expect(root_decomposer->v2_calls() == 1,
+        "auto decomposition should call the planner through Agent Dispatch V2 path");
+    Expect(root_decomposer->legacy_calls() == 0,
+        "auto decomposition should not bypass Agent Dispatch with direct run_task()");
+    Expect(root_decomposer->last_task_id() == "subagent-auto-decompose-root.decomposition",
+        "auto decomposition dispatch should use a planner-specific task id");
+    Expect(root_decomposer->last_context().contains("task_type") &&
+            root_decomposer->last_context().at("task_type") == "decomposition",
+        "auto decomposition dispatch should mark the planner invocation as decomposition");
     Expect(result.steps[0].summary.find("step1") != std::string::npos,
         "first injected subtask should carry root plan_steps[0].action");
     Expect(result.steps[1].summary.find("step2") != std::string::npos,

@@ -10,7 +10,7 @@ Status values:
 | --- | --- | --- | --- | --- |
 | G001 | done | none | high | Create the Agent Dispatch seam and Dispatch Result type. |
 | G002 | done | G001 | high | Move AgentLoop and SubagentManager agent paths onto Agent Dispatch. |
-| G003 | ready | G002 | medium | Route decomposition planner dispatch through Agent Dispatch. |
+| G003 | done | G002 | medium | Route decomposition planner dispatch through Agent Dispatch. |
 | G004 | ready | G002 | medium | Wire REPL development/research dispatch through normal routing. |
 | G005 | done | none | medium | Define the Capability Contract validation result and facade. |
 | G006 | done | G005 | medium | Move Skill input and Plugin output callers onto Capability Contract validation. |
