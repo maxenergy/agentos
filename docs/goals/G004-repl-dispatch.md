@@ -1,6 +1,6 @@
 # G004 REPL Development And Research Dispatch
 
-Status: blocked
+Status: done
 Depends on: G002
 
 ## Objective
@@ -55,3 +55,9 @@ ctest --test-dir build -R agentos_cli_integration_tests --output-on-failure
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g014 --target agentos_cli_integration_tests`
+- `ctest --test-dir build-codex-g014 -R agentos_cli_integration_tests --output-on-failure`
+
+Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so a focused diff check was used for this packet.

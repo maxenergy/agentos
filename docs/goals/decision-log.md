@@ -33,6 +33,12 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - Agent Dispatch still returns only a planner step candidate; Subagent Orchestration alone parses `plan_steps[].action` and injects subtasks.
 - The decomposition planner step remains non-visible in `TaskRunResult.steps` to preserve worker step ordering and existing orchestration output shape.
 
+## 2026-05-06 G004 REPL Development And Research Dispatch
+
+- REPL free-form text now records a `ClassifyInteractiveRequest` route decision after slash-command handling and persists the decision under `runtime/routing`.
+- `development_agent` decisions dispatch a normal `development_request` task through `AgentLoop`; the existing background job wrapper remains only REPL presentation.
+- `research_agent` decisions dispatch a normal `research_request` task with network policy enabled so Capability Contract and policy checks run through the normal skill path.
+
 ## 2026-05-06 G005 Capability Contract Facade
 
 - Added `CapabilityContractValidationResult` and diagnostics to represent declaration and input/output shape validation without moving callers yet.

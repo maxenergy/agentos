@@ -1,28 +1,49 @@
 #include "cli/interactive_commands.hpp"
 
+#include "cli/intent_classifier.hpp"
+#include "storage/main_agent_store.hpp"
 #include "utils/signal_cancellation.hpp"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <conio.h>
 #endif
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
+
+#include <nlohmann/json.hpp>
+
+#ifndef _WIN32
+#include <termios.h>
+#include <unistd.h>
+#endif
 
 namespace agentos {
 
 namespace {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+constexpr int kInteractiveChatTimeoutMs = 120000;
 
 std::string MakeTaskId(const std::string& prefix) {
     const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -41,6 +62,28 @@ std::vector<std::string> SplitCommaList(const std::string& value) {
         }
     }
     return items;
+}
+
+std::string JoinStrings(const std::vector<std::string>& values, const std::string& separator) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << separator;
+        }
+        out << values[i];
+    }
+    return out.str();
+}
+
+std::string JoinAgentCapabilities(const std::vector<AgentCapability>& values) {
+    std::vector<std::string> names;
+    names.reserve(values.size());
+    for (const auto& cap : values) {
+        if (!cap.name.empty()) {
+            names.push_back(cap.name);
+        }
+    }
+    return JoinStrings(names, ",");
 }
 
 // Tokenize a line by whitespace, respecting double-quoted spans.
@@ -134,17 +177,711 @@ void PrintResult(const TaskRunResult& result) {
     std::cout << '\n';
 }
 
-// ── Banner ──────────────────────────────────────────────────────────────────
-
-void EnableUtf8Console() {
-#ifdef _WIN32
-    SetConsoleOutputCP(65001);
-    SetConsoleCP(65001);
-#endif
+std::string ReadTextFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
 }
 
+std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 120) {
+    if (text.size() <= max_chars) {
+        return text;
+    }
+    return text.substr(0, max_chars) + "...";
+}
+
+bool LooksLikeMemoryQuestion(const std::string& line) {
+    static const std::regex memory_re(
+        R"((\b(what\s+do\s+you\s+remember|what\s+is\s+in\s+memory|show\s+memory|memory\s+summary|remembered|lessons?)\b)|你.*(记得|记住|记忆|学到).*(什么|哪些|内容)|你(还)?记得什么|你记住了什么|你的记忆|记忆里有什么|学到了什么|记住了哪些|记得哪些|详细记忆|完整记忆|全部记忆|记住的教训|可复用工作流|记忆详情)",
+        std::regex_constants::icase);
+    return std::regex_search(line, memory_re);
+}
+
+bool LooksLikeDetailedMemoryQuestion(const std::string& line) {
+    static const std::regex detail_re(
+        R"((\b(full|raw|detailed|details|stats|debug)\s+memory\b)|详细.*(记忆|memory)|完整.*(记忆|memory)|全部.*(记忆|memory)|记忆.*(明细|详情|详细|完整)|memory\s+(details|stats|raw))",
+        std::regex_constants::icase);
+    return std::regex_search(line, detail_re);
+}
+
+bool LooksLikeModelIdentityQuestion(const std::string& line) {
+    static const std::regex model_re(
+        R"((\b(what\s+(model|llm)\s+(are|is)\s+you|what\s+is\s+your\s+model|model\s+name|current\s+model|which\s+model)\b)|你.*(是什么|哪个|什么).*(模型|model)|当前.*(模型|model)|底层.*(模型|model)|使用.*(模型|model)|模型.*(名字|名称|是什么|哪个))",
+        std::regex_constants::icase);
+    return std::regex_search(line, model_re);
+}
+
+bool LooksLikeSkillListQuestion(const std::string& line) {
+    static const std::regex skills_re(
+        R"((\b(what\s+(skills?|abilities|capabilities)\s+(do\s+you\s+have|are\s+available)|list\s+skills?|show\s+skills?|available\s+skills?|what\s+can\s+you\s+do)\b)|你.*(有什么|有哪些|会什么|能做什么).*(技能|能力)|有哪些.*(技能|能力)|列出.*(技能|能力)|技能.*(有哪些|列表|清单))",
+        std::regex_constants::icase);
+    return std::regex_search(line, skills_re);
+}
+
+bool LooksLikeAgentListQuestion(const std::string& line) {
+    static const std::regex agents_re(
+        R"((\b(what\s+agents?\s+(do\s+you\s+have|are\s+available)|list\s+agents?|show\s+agents?|available\s+agents?|registered\s+agents?)\b)|(登记|注册|可用|有哪些|列出).*(agent|agents|代理|智能体)|(agent|agents|代理|智能体).*(有哪些|列表|清单|如何用|怎么用))",
+        std::regex_constants::icase);
+    return std::regex_search(line, agents_re);
+}
+
+bool LooksLikeSpecificSkillUsageQuestion(const std::string& line) {
+    static const std::regex usage_re(
+        R"((\b(how\s+to\s+use|usage|help|args?|arguments?|examples?)\b)|如何使用|怎么使用|如何用|怎么用|用法|参数|示例|例子|能做什么|有什么用)",
+        std::regex_constants::icase);
+    return std::regex_search(line, usage_re);
+}
+
+bool LooksLikeBrowserConnectionError(const std::string& line) {
+    static const std::regex error_re(
+        R"((ERR_CONNECTION_REFUSED|connection\s+refused|refused\s+to\s+connect|site\s+can'?t\s+be\s+reached|127\.0\.0\.1.*refused|localhost.*refused|checking\s+the\s+connection|checking\s+the\s+proxy\s+and\s+the\s+firewall|代理|防火墙|无法访问|拒绝连接))",
+        std::regex_constants::icase);
+    return std::regex_search(line, error_re);
+}
+
+std::string StripPoliteTaskWords(std::string query) {
+    static const std::array<std::string, 10> words = {
+        "你帮我", "帮我", "请", "搜索", "查找", "找", "一下", "小红书", "我已经登录了", "已经登录了"
+    };
+    for (const auto& word : words) {
+        std::size_t pos = std::string::npos;
+        while ((pos = query.find(word)) != std::string::npos) {
+            query.erase(pos, word.size());
+        }
+    }
+    for (char& ch : query) {
+        if (ch == '，' || ch == '。' || ch == ',' || ch == '.' || ch == ':' || ch == ';') {
+            ch = ' ';
+        }
+    }
+    const auto start = query.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto end = query.find_last_not_of(" \t\r\n");
+    return query.substr(start, end - start + 1);
+}
+
+std::string StripTrailingSentencePunctuation(std::string query) {
+    while (!query.empty()) {
+        const char ch = query.back();
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' ||
+            ch == '.' || ch == ',' || ch == ':' || ch == ';' ||
+            ch == '!' || ch == '?') {
+            query.pop_back();
+            continue;
+        }
+        break;
+    }
+    static const std::array<std::string, 6> suffixes = {"。", "，", "！", "？", "；", "："};
+    bool removed = true;
+    while (removed) {
+        removed = false;
+        for (const auto& suffix : suffixes) {
+            if (query.size() >= suffix.size() &&
+                query.compare(query.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                query.erase(query.size() - suffix.size());
+                removed = true;
+                break;
+            }
+        }
+    }
+    return query;
+}
+
+std::optional<std::string> TextAfterLastSearchTrigger(const std::string& line) {
+    static const std::array<std::string, 7> triggers = {
+        "搜索", "查找", "帮我找", "帮我搜", "找", "搜", "search"
+    };
+    std::size_t best_pos = std::string::npos;
+    std::string best_trigger;
+    for (const auto& trigger : triggers) {
+        auto pos = line.find(trigger);
+        while (pos != std::string::npos) {
+            if (best_pos == std::string::npos || pos > best_pos) {
+                best_pos = pos;
+                best_trigger = trigger;
+            }
+            pos = line.find(trigger, pos + trigger.size());
+        }
+    }
+    if (best_pos == std::string::npos) {
+        return std::nullopt;
+    }
+    auto query = StripTrailingSentencePunctuation(line.substr(best_pos + best_trigger.size()));
+    query = StripPoliteTaskWords(query);
+    if (query.empty()) {
+        return std::nullopt;
+    }
+    return query;
+}
+
+std::optional<std::string> ExtractXiaohongshuSearchQuery(const std::string& line,
+                                                         const SkillRegistry& skill_registry) {
+    if (!skill_registry.find("xiaohongshu_search")) {
+        return std::nullopt;
+    }
+    static const std::regex xhs_re(
+        R"((小红书|xiaohongshu|rednote|xhs).*(搜索|查找|找|热门|热搜|top\s*\d+|趋势|话题|笔记)|(搜索|查找|找).*(小红书|xiaohongshu|rednote|xhs))",
+        std::regex_constants::icase);
+    if (!std::regex_search(line, xhs_re)) {
+        return std::nullopt;
+    }
+
+    std::smatch quoted;
+    static const std::regex quoted_re(R"(["'“”‘’]([^"'“”‘’]+)["'“”‘’])");
+    if (std::regex_search(line, quoted, quoted_re) && quoted.size() >= 2) {
+        return quoted[1].str();
+    }
+
+    auto query = TextAfterLastSearchTrigger(line).value_or("");
+    if (query.empty()) {
+        query = StripPoliteTaskWords(line);
+    }
+    query = StripTrailingSentencePunctuation(query);
+    if (query.empty()) {
+        query = "热门话题 top5";
+    }
+    if (query.find("热门") == std::string::npos &&
+        query.find("热搜") == std::string::npos &&
+        query.find("top") == std::string::npos &&
+        query.find("Top") == std::string::npos &&
+        query.find("话题") == std::string::npos) {
+        query += " 热门";
+    }
+    return query;
+}
+
+std::vector<std::pair<std::string, SkillStats>> TopSkillsByCalls(
+    const std::unordered_map<std::string, SkillStats>& values,
+    const std::size_t limit) {
+    std::vector<std::pair<std::string, SkillStats>> entries;
+    entries.reserve(values.size());
+    for (const auto& [name, stats] : values) {
+        entries.emplace_back(name, stats);
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.second.total_calls > rhs.second.total_calls;
+    });
+    if (entries.size() > limit) {
+        entries.resize(limit);
+    }
+    return entries;
+}
+
+std::vector<std::pair<std::string, AgentRuntimeStats>> TopAgentsByRuns(
+    const std::unordered_map<std::string, AgentRuntimeStats>& values,
+    const std::size_t limit) {
+    std::vector<std::pair<std::string, AgentRuntimeStats>> entries(values.begin(), values.end());
+    std::sort(entries.begin(), entries.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.second.total_runs > rhs.second.total_runs;
+    });
+    if (entries.size() > limit) {
+        entries.resize(limit);
+    }
+    return entries;
+}
+
+bool IsUserFacingMemoryObjective(const TaskMemoryRecord& task) {
+    if (task.objective.empty() || task.task_type == "chat") {
+        return false;
+    }
+    static const std::array<std::string, 5> internal_markers = {
+        "Previous secondary-agent attempt failed primary acceptance",
+        "Execute task type:",
+        "Repair the work",
+        "Write the deliverables manifest",
+        "prompt"
+    };
+    for (const auto& marker : internal_markers) {
+        if (task.objective.find(marker) != std::string::npos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void PrintMemoryOverview(const MemoryManager& memory_manager) {
+    const auto& tasks = memory_manager.task_log();
+    const auto lessons = memory_manager.lesson_store().list();
+    const auto workflows = memory_manager.workflow_candidates();
+    const auto stored_workflows = memory_manager.workflow_store().list();
+
+    std::vector<std::string> recent_objectives;
+    for (auto it = tasks.rbegin(); it != tasks.rend() && recent_objectives.size() < 3; ++it) {
+        if (!IsUserFacingMemoryObjective(*it)) {
+            continue;
+        }
+        const auto objective = ShortenForConsole(it->objective, 72);
+        if (std::find(recent_objectives.begin(), recent_objectives.end(), objective) == recent_objectives.end()) {
+            recent_objectives.push_back(objective);
+        }
+    }
+
+    const auto top_skills = TopSkillsByCalls(memory_manager.skill_stats(), 4);
+    const auto top_agents = TopAgentsByRuns(memory_manager.agent_stats(), 4);
+
+    std::cout << "我记得这些重点：\n";
+    if (!recent_objectives.empty()) {
+        std::cout << "- 最近主要任务：";
+        for (std::size_t i = 0; i < recent_objectives.size(); ++i) {
+            if (i > 0) {
+                std::cout << "；";
+            }
+            std::cout << recent_objectives[i];
+        }
+        std::cout << '\n';
+    } else {
+        std::cout << "- 最近还没有可总结的任务记录。\n";
+    }
+
+    std::cout << "- 已记录 " << lessons.size() << " 条经验教训、"
+              << workflows.size() << " 个可推广 workflow 候选、"
+              << stored_workflows.size() << " 个已保存 workflow。\n";
+
+    if (!top_skills.empty()) {
+        std::cout << "- 常用技能：";
+        for (std::size_t i = 0; i < top_skills.size(); ++i) {
+            if (i > 0) {
+                std::cout << "、";
+            }
+            std::cout << top_skills[i].first;
+        }
+        std::cout << "。\n";
+    }
+
+    if (!top_agents.empty()) {
+        std::cout << "- 常用代理：";
+        for (std::size_t i = 0; i < top_agents.size(); ++i) {
+            if (i > 0) {
+                std::cout << "、";
+            }
+            std::cout << top_agents[i].first;
+        }
+        std::cout << "。\n";
+    }
+
+    if (!lessons.empty()) {
+        std::cout << "- 最近学到的风险：";
+        const auto count = std::min<std::size_t>(lessons.size(), 3);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i > 0) {
+                std::cout << "；";
+            }
+            std::cout << ShortenForConsole(lessons[i].summary, 58);
+        }
+        std::cout << "。\n";
+    }
+
+    std::cout << "\n想看细节可以问：`详细记忆`，"
+                 "或用命令 `memory stats|lessons|workflows|stored-workflows`。\n\n";
+}
+
+void PrintMemoryDetails(const MemoryManager& memory_manager) {
+    const auto& tasks = memory_manager.task_log();
+    const auto lessons = memory_manager.lesson_store().list();
+    const auto workflows = memory_manager.workflow_candidates();
+    const auto stored_workflows = memory_manager.workflow_store().list();
+
+    std::cout << "AgentOS 本地记忆\n";
+    if (!memory_manager.storage_dir().empty()) {
+        std::cout << "  storage: " << memory_manager.storage_dir().string() << '\n';
+    }
+    std::cout << "  task_log_entries: " << tasks.size() << '\n'
+              << "  lessons: " << lessons.size() << '\n'
+              << "  workflow_candidates: " << workflows.size() << '\n'
+              << "  stored_workflows: " << stored_workflows.size() << '\n';
+
+    if (!tasks.empty()) {
+        std::cout << "\n最近任务:\n";
+        const auto start = tasks.size() > 5 ? tasks.size() - 5 : 0;
+        for (std::size_t i = start; i < tasks.size(); ++i) {
+            const auto& task = tasks[i];
+            std::cout << "  " << task.task_id
+                      << " type=" << task.task_type
+                      << " success=" << (task.success ? "true" : "false")
+                      << " duration_ms=" << task.duration_ms
+                      << " objective=" << ShortenForConsole(task.objective) << '\n';
+        }
+    }
+
+    const auto top_skills = TopSkillsByCalls(memory_manager.skill_stats(), 6);
+    if (!top_skills.empty()) {
+        std::cout << "\n常用 skill:\n";
+        for (const auto& [name, stats] : top_skills) {
+            std::cout << "  " << name
+                      << " calls=" << stats.total_calls
+                      << " success=" << stats.success_calls
+                      << " avg_ms=" << stats.avg_latency_ms << '\n';
+        }
+    }
+
+    const auto top_agents = TopAgentsByRuns(memory_manager.agent_stats(), 6);
+    if (!top_agents.empty()) {
+        std::cout << "\n常用 agent:\n";
+        for (const auto& [name, stats] : top_agents) {
+            std::cout << "  " << name
+                      << " runs=" << stats.total_runs
+                      << " success=" << stats.success_runs
+                      << " failed=" << stats.failed_runs
+                      << " avg_ms=" << stats.avg_duration_ms << '\n';
+        }
+    }
+
+    if (!lessons.empty()) {
+        std::cout << "\n记住的 lessons:\n";
+        const auto count = std::min<std::size_t>(lessons.size(), 6);
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto& lesson = lessons[i];
+            std::cout << "  " << ShortenForConsole(lesson.summary)
+                      << " count=" << lesson.occurrence_count;
+            if (!lesson.error_code.empty()) {
+                std::cout << " error=" << lesson.error_code;
+            }
+            std::cout << '\n';
+        }
+    }
+
+    if (!workflows.empty()) {
+        std::cout << "\n可推广 workflow 候选:\n";
+        const auto count = std::min<std::size_t>(workflows.size(), 6);
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto& workflow = workflows[i];
+            std::cout << "  " << workflow.name
+                      << " trigger=" << workflow.trigger_task_type
+                      << " score=" << workflow.score
+                      << " use=" << workflow.use_count << '\n';
+        }
+    }
+
+    std::cout << "\n可用命令: memory summary | memory stats | memory lessons | memory workflows | memory stored-workflows\n\n";
+}
+
+std::optional<SkillManifest> FindMentionedSkill(const std::string& line,
+                                                const SkillRegistry& skill_registry) {
+    auto manifests = skill_registry.list();
+    std::sort(manifests.begin(), manifests.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.name.size() > rhs.name.size();
+    });
+    auto lower = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    };
+    const auto lower_line = lower(line);
+    for (const auto& manifest : manifests) {
+        if (!manifest.name.empty() && lower_line.find(lower(manifest.name)) != std::string::npos) {
+            return manifest;
+        }
+    }
+    return std::nullopt;
+}
+
+void PrintMainModelIdentity(const AgentRegistry& agent_registry,
+                            const std::filesystem::path& workspace) {
+    const MainAgentStore store(workspace / "runtime" / "main_agent.tsv");
+    const auto config = store.load();
+    const auto main = agent_registry.find("main");
+    std::cout << "当前首选聊天代理是 `main`。\n";
+    if (!config.has_value()) {
+        std::cout << "main-agent 还没有配置。可用 `agentos main-agent set ...` 设置模型。\n\n";
+        return;
+    }
+    std::cout << "- provider: " << config->provider_kind << '\n'
+              << "- model: " << config->model << '\n'
+              << "- base_url: " << (config->base_url.empty() ? "(default)" : config->base_url) << '\n'
+              << "- auth: " << (!config->api_key_env.empty()
+                                    ? ("env:" + config->api_key_env)
+                                    : (!config->api_key.empty() ? "literal api_key is set" :
+                                       (!config->oauth_file.empty() ? ("oauth_file:" + config->oauth_file) : "(unset)")))
+              << '\n';
+    if (main) {
+        std::cout << "- status: " << (main->healthy() ? "healthy" : "unhealthy") << '\n';
+    }
+    std::cout << "\n说明：AgentOS 是本地运行时；上面的 model 是普通聊天默认调用的底层模型。\n\n";
+}
+
+std::optional<nlohmann::json> FindLatestCompletedDevelopmentStatus(const std::filesystem::path& workspace) {
+    const auto agents_root = workspace / "runtime" / "agents";
+    std::error_code ec;
+    if (!std::filesystem::exists(agents_root, ec) || !std::filesystem::is_directory(agents_root, ec)) {
+        return std::nullopt;
+    }
+
+    std::filesystem::path latest_status;
+    std::filesystem::file_time_type latest_time{};
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(agents_root, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || entry.path().filename() != "status.json") {
+            continue;
+        }
+        const auto path_text = entry.path().string();
+        if (path_text.find("dev-") == std::string::npos) {
+            continue;
+        }
+        const auto write_time = entry.last_write_time(ec);
+        if (latest_status.empty() || write_time > latest_time) {
+            latest_status = entry.path();
+            latest_time = write_time;
+        }
+    }
+    if (latest_status.empty()) {
+        return std::nullopt;
+    }
+    try {
+        auto status = nlohmann::json::parse(ReadTextFile(latest_status));
+        status["_status_path"] = latest_status.string();
+        if (status.value("state", std::string{}) != "completed" ||
+            !status.value("success", false)) {
+            return std::nullopt;
+        }
+        return status;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::string ExtractFirstFencedCodeBlock(const std::string& text) {
+    const auto open = text.find("```");
+    if (open == std::string::npos) {
+        return {};
+    }
+    const auto first_newline = text.find('\n', open + 3);
+    if (first_newline == std::string::npos) {
+        return {};
+    }
+    const auto close = text.find("```", first_newline + 1);
+    if (close == std::string::npos || close <= first_newline + 1) {
+        return {};
+    }
+    return text.substr(first_newline + 1, close - first_newline - 1);
+}
+
+bool PrintLocalBrowserErrorFollowup(const std::string& line,
+                                    const std::filesystem::path& workspace) {
+    if (!LooksLikeBrowserConnectionError(line)) {
+        return false;
+    }
+    const auto status = FindLatestCompletedDevelopmentStatus(workspace);
+    if (!status.has_value()) {
+        return false;
+    }
+
+    const auto summary = status->value("summary", std::string{});
+    const auto commands = ExtractFirstFencedCodeBlock(summary);
+    std::cout << "(route: local_context -> latest_development_result)\n";
+    std::cout << "你这个报错是在接着上一个开发任务说。刚才的验证只是在验收时临时启动了服务，验收结束后进程已经停止，所以浏览器访问 127.0.0.1 会出现 ERR_CONNECTION_REFUSED。\n\n";
+    if (!commands.empty()) {
+        std::cout << "需要先在 PowerShell 里启动生成的服务器：\n\n"
+                  << "```powershell\n" << commands << "```\n\n";
+    }
+    std::cout << "然后打开 `http://127.0.0.1:8080/`。如果你换了端口，例如 `-p 18080`，浏览器也要打开 `http://127.0.0.1:18080/`。\n";
+    if (status->contains("_status_path") && (*status)["_status_path"].is_string()) {
+        std::cout << "最近任务状态: " << (*status)["_status_path"].get<std::string>() << "\n";
+    }
+    std::cout << '\n';
+    return true;
+}
+
+void PrintRegisteredSkillsGuide(const SkillRegistry& skill_registry) {
+    const auto skills = skill_registry.list();
+    if (skills.empty()) {
+        std::cout << "当前没有注册 skill。\n\n";
+        return;
+    }
+    std::vector<SkillManifest> healthy_skills;
+    std::vector<std::string> unavailable_skills;
+    for (const auto& m : skills) {
+        const auto adapter = skill_registry.find(m.name);
+        if (adapter && adapter->healthy()) {
+            healthy_skills.push_back(m);
+        } else {
+            unavailable_skills.push_back(m.name);
+        }
+    }
+
+    if (healthy_skills.empty()) {
+        std::cout << "当前没有可用 skill。\n\n";
+    } else {
+        std::cout << "可用 skill (" << healthy_skills.size() << "):\n";
+    }
+    for (const auto& m : healthy_skills) {
+        std::cout << "  " << m.name
+                  << "  状态=健康";
+        if (!m.description.empty()) {
+            std::cout << "  " << m.description;
+        }
+        if (!m.capabilities.empty()) {
+            std::cout << " capabilities=" << JoinStrings(m.capabilities, ",");
+        }
+        if (!m.risk_level.empty()) {
+            std::cout << " risk=" << m.risk_level;
+        }
+        std::cout << '\n';
+    }
+    if (!unavailable_skills.empty()) {
+        std::cout << "\n未列出的不可用 skill (" << unavailable_skills.size()
+                  << "): " << JoinStrings(unavailable_skills, ",") << '\n'
+                  << "原因通常是当前系统缺少对应 CLI 依赖；它们不会作为可用技能展示。\n";
+    }
+    std::cout << "\n使用方式：\n"
+              << "  run <skill_name> key=value ...\n"
+              << "  skills\n"
+              << "  如何使用 <skill_name> 技能？\n\n";
+}
+
+void PrintRegisteredAgentsGuide(const AgentRegistry& agent_registry) {
+    const auto agents = agent_registry.list_profiles();
+    if (agents.empty()) {
+        std::cout << "当前没有注册 agent。\n\n";
+        return;
+    }
+    std::cout << "已登记的 agent (" << agents.size() << "):\n";
+    for (const auto& prof : agents) {
+        const auto adapter = agent_registry.find(prof.agent_name);
+        std::cout << "  " << prof.agent_name
+                  << "  状态=" << (adapter && adapter->healthy() ? "健康" : "异常");
+        if (!prof.description.empty()) {
+            std::cout << "  " << prof.description;
+        }
+        const auto caps = JoinAgentCapabilities(prof.capabilities);
+        if (!caps.empty()) {
+            std::cout << " capabilities=" << caps;
+        }
+        if (!prof.cost_tier.empty()) {
+            std::cout << " cost=" << prof.cost_tier;
+        }
+        if (prof.supports_network) {
+            std::cout << " network=true";
+        }
+        std::cout << '\n';
+    }
+    std::cout << "\n使用方式：\n"
+              << "  普通聊天默认走 `main`。\n"
+              << "  开发类任务会后台派发给开发 agent / skill。\n"
+              << "  显式调度：run analysis target=<agent_name> objective=<text>\n\n";
+}
+
+void PrintSkillUsageGuide(const SkillManifest& manifest) {
+    std::cout << "Skill `" << manifest.name << "` 用法\n";
+    if (!manifest.description.empty()) {
+        std::cout << "说明: " << manifest.description << '\n';
+    }
+    if (!manifest.capabilities.empty()) {
+        std::cout << "能力: " << JoinStrings(manifest.capabilities, ",") << '\n';
+    }
+    if (!manifest.risk_level.empty()) {
+        std::cout << "风险级别: " << manifest.risk_level << '\n';
+    }
+    if (!manifest.permissions.empty()) {
+        std::cout << "权限: " << JoinStrings(manifest.permissions, ",") << '\n';
+    }
+    if (manifest.timeout_ms > 0) {
+        std::cout << "超时: " << manifest.timeout_ms << "ms\n";
+    }
+    std::cout << "\n调用格式:\n"
+              << "  run " << manifest.name << " key=value ...\n";
+    if (!manifest.input_schema_json.empty()) {
+        std::cout << "\n输入 schema:\n" << manifest.input_schema_json << '\n';
+    }
+    std::cout << '\n';
+}
+
+TaskRunResult RunDirectSkillFromNaturalLanguage(const std::string& skill_name,
+                                                const StringMap& arguments,
+                                                const std::string& objective,
+                                                AgentLoop& loop,
+                                                const std::filesystem::path& workspace) {
+    TaskRequest task{
+        .task_id = MakeTaskId("interactive-skill"),
+        .task_type = skill_name,
+        .objective = objective,
+        .workspace_path = workspace,
+        .inputs = arguments,
+    };
+    task.allow_network = true;
+    task.timeout_ms = 120000;
+    return loop.run(task);
+}
+
+std::optional<std::filesystem::path> ExtractExistingWorkspacePath(const std::string& line) {
+    auto existing_directory = [](const std::string& text) -> std::optional<std::filesystem::path> {
+        std::filesystem::path candidate = text;
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec) && std::filesystem::is_directory(candidate, ec)) {
+            return std::filesystem::weakly_canonical(candidate, ec);
+        }
+        return std::nullopt;
+    };
+
+    static const std::regex quoted_path_re(R"(["']((?:[A-Za-z]:[\\/]|/)[^"']+)["'])");
+    for (std::sregex_iterator it(line.begin(), line.end(), quoted_path_re), end; it != end; ++it) {
+        if (auto path = existing_directory((*it)[1].str()); path.has_value()) {
+            return path;
+        }
+    }
+
+    static const std::regex plain_path_re(R"((?:[A-Za-z]:[\\/]|/)[A-Za-z0-9_.@$~+%#(){}\[\]\-\\/]+)");
+    for (std::sregex_iterator it(line.begin(), line.end(), plain_path_re), end; it != end; ++it) {
+        if (auto path = existing_directory(it->str()); path.has_value()) {
+            return path;
+        }
+    }
+    return std::nullopt;
+}
+
+// ── Banner ──────────────────────────────────────────────────────────────────
+
+class ConsoleCodePageGuard {
+public:
+    ConsoleCodePageGuard() {
+#ifdef _WIN32
+        DWORD mode = 0;
+        const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+        output_is_console_ = output != INVALID_HANDLE_VALUE && output != nullptr &&
+                             GetConsoleMode(output, &mode) != 0;
+        input_is_console_ = input != INVALID_HANDLE_VALUE && input != nullptr &&
+                            GetConsoleMode(input, &mode) != 0;
+        original_output_cp_ = GetConsoleOutputCP();
+        original_input_cp_ = GetConsoleCP();
+        if (output_is_console_) {
+            SetConsoleOutputCP(65001);
+        }
+        if (input_is_console_) {
+            SetConsoleCP(65001);
+        }
+#endif
+    }
+
+    ~ConsoleCodePageGuard() {
+#ifdef _WIN32
+        if (output_is_console_ && original_output_cp_ != 0) {
+            SetConsoleOutputCP(original_output_cp_);
+        }
+        if (input_is_console_ && original_input_cp_ != 0) {
+            SetConsoleCP(original_input_cp_);
+        }
+#endif
+    }
+
+    ConsoleCodePageGuard(const ConsoleCodePageGuard&) = delete;
+    ConsoleCodePageGuard& operator=(const ConsoleCodePageGuard&) = delete;
+
+private:
+#ifdef _WIN32
+    UINT original_output_cp_ = 0;
+    UINT original_input_cp_ = 0;
+    bool output_is_console_ = false;
+    bool input_is_console_ = false;
+#endif
+};
+
 void PrintBanner(const std::filesystem::path& workspace) {
-    EnableUtf8Console();
     std::cout
         << "\n"
         << "  +==================================================+\n"
@@ -170,6 +907,7 @@ void PrintHelp() {
         << "  memory lessons                    Show lesson store\n"
         << "  memory workflows                  Show workflow candidates\n"
         << "  memory stored-workflows           Show stored workflows\n"
+        << "  jobs                              Show background development jobs\n"
         << "  schedule list                     List scheduled tasks\n"
         << "  schedule history                  Show scheduler run history\n"
         << "  help                              Show this help message\n"
@@ -197,7 +935,37 @@ void PrintHelp() {
 // available for orchestrated specialist work via `agentos subagents
 // run`, but they are not the chat shell. Returns empty if main is
 // unhealthy so the caller can print a setup hint.
-std::string ResolveChatTarget(const AgentRegistry& agent_registry) {
+bool IsCodexOAuthMainAgentConfig(const std::filesystem::path& workspace) {
+    const MainAgentStore store(workspace / "runtime" / "main_agent.tsv");
+    const auto config = store.load();
+    if (!config.has_value()) {
+        return false;
+    }
+    if (config->provider_kind != "openai-chat" || config->oauth_file.empty()) {
+        return false;
+    }
+    const auto oauth_file = config->oauth_file;
+    return oauth_file.find(".codex") != std::string::npos ||
+           oauth_file.find("codex") != std::string::npos;
+}
+
+std::string ResolveChatTarget(const AgentRegistry& agent_registry,
+                              const std::filesystem::path& workspace) {
+    if (const char* override_target = std::getenv("AGENTOS_CHAT_TARGET")) {
+        const std::string target = override_target;
+        const auto adapter = agent_registry.find(target);
+        if (adapter && adapter->healthy()) {
+            return target;
+        }
+    }
+
+    if (IsCodexOAuthMainAgentConfig(workspace)) {
+        const auto adapter = agent_registry.find("codex_cli");
+        if (adapter && adapter->healthy()) {
+            return "codex_cli";
+        }
+    }
+
     const auto adapter = agent_registry.find("main");
     if (adapter && adapter->healthy()) {
         return "main";
@@ -210,7 +978,7 @@ void RunChatPrompt(const std::string& prompt,
                    AgentLoop& loop,
                    AuditLogger& audit_logger,
                    const std::filesystem::path& workspace) {
-    const auto target = ResolveChatTarget(agent_registry);
+    const auto target = ResolveChatTarget(agent_registry, workspace);
     if (target.empty()) {
         std::cerr
             << "main-agent is not configured (or its auth token is unavailable).\n"
@@ -241,55 +1009,17 @@ void RunChatPrompt(const std::string& prompt,
     };
     task.preferred_target = target;
     // Chat hits an external LLM CLI/REST round-trip, which routinely takes
-    // 10–30s. The TaskRequest default of 5000ms makes "hi" time out before
-    // the provider even responds, so chat dispatches use a 2-minute ceiling
-    // unless the underlying agent has already been given a tighter task
-    // timeout from somewhere upstream.
+    // longer than the TaskRequest default of 5000ms. Keep the interactive
+    // default aligned with main-agent's default_timeout_ms.
     if (task.timeout_ms <= 5000) {
-        task.timeout_ms = 120000;
+        task.timeout_ms = kInteractiveChatTimeoutMs;
     }
 
     std::cout << "(routing to " << target
-              << " — this can take 10–30s; Ctrl-C to cancel)" << std::endl;
-    auto task_cancel = InstallSignalCancellation();
+              << " — 120s ceiling, falls back to gemini/anthropic/openai/qwen on failure; Ctrl-C to cancel)"
+              << std::endl;
 
-    // Heartbeat thread so the user sees progress instead of a silent freeze.
-    // Most provider adapters here are sync wrappers without streaming events,
-    // so we fall back to printing a dot every 2s on the same line as the
-    // routing message, then erase the dots when the result arrives. This
-    // is purely cosmetic — the real work is happening on the calling thread.
-    std::atomic<bool> done{false};
-    std::mutex cv_m;
-    std::condition_variable cv;
-    std::thread heartbeat([&] {
-        int dots = 0;
-        while (true) {
-            std::unique_lock<std::mutex> lk(cv_m);
-            if (cv.wait_for(lk, std::chrono::seconds(2), [&] { return done.load(); })) {
-                break;
-            }
-            std::cout << "." << std::flush;
-            ++dots;
-            if (dots >= 30) {
-                // After ~60s, switch to a more explicit "still waiting" line
-                // on a new line so the user knows it's not just spinning.
-                std::cout << " still waiting (provider response can be slow)..." << std::endl;
-                dots = 0;
-            }
-        }
-    });
-
-    const auto result = loop.run(task, std::move(task_cancel));
-
-    {
-        std::lock_guard<std::mutex> lk(cv_m);
-        done = true;
-    }
-    cv.notify_all();
-    if (heartbeat.joinable()) {
-        heartbeat.join();
-    }
-    std::cout << std::endl;  // terminate the heartbeat dot line cleanly
+    const auto result = RunChatWithFallback(task, agent_registry, loop, target);
 
     // Concise chat output: print just the assistant reply plus a one-line
     // route/duration trailer. The full structured agent_result.v1 JSON is
@@ -340,7 +1070,668 @@ void RunChatPrompt(const std::string& prompt,
     }
 }
 
+TaskRequest BuildDevelopmentTaskRequest(const std::string& prompt,
+                                        const std::filesystem::path& default_workspace,
+                                        std::filesystem::path& task_workspace) {
+    const auto workspace_override = ExtractExistingWorkspacePath(prompt);
+    task_workspace = workspace_override.value_or(default_workspace);
+    const auto root_task_id = MakeTaskId("dev");
+
+    TaskRequest task{
+        .task_id = root_task_id,
+        .task_type = "development_request",
+        .objective = prompt,
+        .workspace_path = task_workspace,
+    };
+    task.preferred_target = "development_request";
+    task.idempotency_key = task.task_id;
+    task.inputs["objective"] = prompt;
+    task.inputs["interactive"] = "true";
+    task.inputs["root_task_id"] = root_task_id;
+    task.timeout_ms = 0;
+    return task;
+}
+
+TaskRunResult ExecuteDevelopmentTask(const TaskRequest& task,
+                                     AgentLoop& loop,
+                                     AuditLogger& audit_logger) {
+    auto task_cancel = InstallSignalCancellation();
+    const auto result = loop.run(task, std::move(task_cancel));
+    if (!result.success && result.error_code != "AcceptanceFailed" &&
+        result.error_code != "AcceptanceBlocked") {
+        PrintResult(result);
+    }
+    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
+    return result;
+}
+
+void RunDevelopmentPrompt(const std::string& prompt,
+                          AgentLoop& loop,
+                          AuditLogger& audit_logger,
+                          const std::filesystem::path& default_workspace) {
+    std::filesystem::path task_workspace;
+    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
+    if (task_workspace != default_workspace) {
+        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
+    }
+    (void)ExecuteDevelopmentTask(task, loop, audit_logger);
+}
+
+TaskRequest BuildResearchTaskRequest(const std::string& prompt,
+                                      const std::filesystem::path& workspace) {
+    TaskRequest task{
+        .task_id = MakeTaskId("research"),
+        .task_type = "research_request",
+        .objective = prompt,
+        .workspace_path = workspace,
+    };
+    task.preferred_target = "research_request";
+    task.idempotency_key = task.task_id;
+    task.inputs["objective"] = prompt;
+    task.inputs["interactive"] = "true";
+    task.allow_network = true;
+    task.timeout_ms = 0;
+    return task;
+}
+
+TaskRunResult RunResearchPrompt(const std::string& prompt,
+                                AgentLoop& loop,
+                                AuditLogger& audit_logger,
+                                const std::filesystem::path& workspace) {
+    auto task_cancel = InstallSignalCancellation();
+    const auto result = loop.run(BuildResearchTaskRequest(prompt, workspace),
+                                 std::move(task_cancel));
+    if (!result.success) {
+        PrintResult(result);
+    }
+    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
+    return result;
+}
+
+struct BackgroundJob {
+    std::string id;
+    std::string objective;
+    std::filesystem::path workspace;
+    std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
+    std::atomic<bool> finished{false};
+    bool success = false;
+    int duration_ms = 0;
+    std::string error_code;
+    std::string error_message;
+    std::mutex mutex;
+    std::thread worker;
+};
+
+std::optional<std::filesystem::path> FindBackgroundTaskDir(const std::filesystem::path& workspace,
+                                                           const std::string& job_id) {
+    const auto agents_root = workspace / "runtime" / "agents";
+    std::error_code ec;
+    if (!std::filesystem::exists(agents_root, ec) || !std::filesystem::is_directory(agents_root, ec)) {
+        return std::nullopt;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(agents_root, ec)) {
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        const auto candidate = entry.path() / job_id;
+        if (std::filesystem::exists(candidate, ec) && std::filesystem::is_directory(candidate, ec)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string ReadBackgroundStatusSummary(const std::filesystem::path& task_dir) {
+    std::error_code ec;
+    if (!std::filesystem::exists(task_dir, ec)) {
+        return {};
+    }
+    std::filesystem::path latest_status;
+    std::filesystem::file_time_type latest_time{};
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(task_dir, ec)) {
+        if (!entry.is_regular_file(ec) || entry.path().filename() != "status.json") {
+            continue;
+        }
+        const auto write_time = entry.last_write_time(ec);
+        if (latest_status.empty() || write_time > latest_time) {
+            latest_status = entry.path();
+            latest_time = write_time;
+        }
+    }
+    if (latest_status.empty()) {
+        return {};
+    }
+    try {
+        const auto status = nlohmann::json::parse(ReadTextFile(latest_status));
+        std::ostringstream out;
+        out << status.value("state", std::string("unknown"));
+        if (status.contains("elapsed_ms") && status["elapsed_ms"].is_number_integer()) {
+            out << " elapsed=" << (status["elapsed_ms"].get<int>() / 1000) << "s";
+        }
+        if (status.contains("heartbeat_count") && status["heartbeat_count"].is_number_integer()) {
+            out << " heartbeat=" << status["heartbeat_count"].get<int>();
+        }
+        out << " status=" << latest_status.string();
+        return out.str();
+    } catch (const std::exception&) {
+        return "status=" + latest_status.string();
+    }
+}
+
+void ReapFinishedJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
+    for (const auto& job : jobs) {
+        if (job && job->finished.load() && job->worker.joinable()) {
+            job->worker.join();
+        }
+    }
+}
+
+void ListBackgroundJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
+    ReapFinishedJobs(jobs);
+    if (jobs.empty()) {
+        std::cout << "No background jobs.\n\n";
+        return;
+    }
+    std::cout << "Background jobs (" << jobs.size() << "):\n";
+    for (const auto& job : jobs) {
+        if (!job) {
+            continue;
+        }
+        std::lock_guard<std::mutex> lock(job->mutex);
+        const auto elapsed_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - job->started_at).count());
+        std::cout << "  " << job->id
+                  << "  state=" << (job->finished.load() ? "finished" : "running")
+                  << "  elapsed=" << (elapsed_ms / 1000) << "s"
+                  << "  workspace=" << job->workspace.string() << '\n';
+        if (const auto task_dir = FindBackgroundTaskDir(job->workspace, job->id); task_dir.has_value()) {
+            std::cout << "    task_dir=" << task_dir->string() << '\n';
+            const auto status = ReadBackgroundStatusSummary(*task_dir);
+            if (!status.empty()) {
+                std::cout << "    " << status << '\n';
+            }
+        }
+        if (job->finished.load()) {
+            std::cout << "    success=" << (job->success ? "true" : "false");
+            if (!job->error_code.empty()) {
+                std::cout << " error=" << job->error_code;
+            }
+            if (!job->error_message.empty()) {
+                std::cout << " message=" << job->error_message;
+            }
+            std::cout << '\n';
+        }
+    }
+    std::cout << '\n';
+}
+
+void StartBackgroundDevelopmentPrompt(const std::string& prompt,
+                                      AgentLoop& loop,
+                                      AuditLogger& audit_logger,
+                                      const std::filesystem::path& default_workspace,
+                                      std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
+    std::filesystem::path task_workspace;
+    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
+    if (task_workspace != default_workspace) {
+        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
+    }
+
+    auto job = std::make_shared<BackgroundJob>();
+    job->id = task.inputs.at("root_task_id");
+    job->objective = prompt;
+    job->workspace = task_workspace;
+    job->started_at = std::chrono::steady_clock::now();
+    job->worker = std::thread([job, task, &loop, &audit_logger]() mutable {
+        const auto result = ExecuteDevelopmentTask(task, loop, audit_logger);
+        {
+            std::lock_guard<std::mutex> lock(job->mutex);
+            job->success = result.success;
+            job->duration_ms = result.duration_ms;
+            job->error_code = result.error_code;
+            job->error_message = result.error_message;
+        }
+        job->finished.store(true);
+    });
+    jobs.push_back(job);
+
+    std::cout << "(background development job started: " << job->id << ")\n"
+              << "Use `jobs` to inspect progress. Status files will appear under:\n"
+              << "  " << (task_workspace / "runtime" / "agents").string() << "\n\n";
+}
+
+UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
+                                            const AgentRegistry& agent_registry,
+                                            const MemoryManager& memory_manager,
+                                            const Scheduler& scheduler,
+                                            const AuditLogger& audit_logger,
+                                            const std::filesystem::path& workspace) {
+    UsageSnapshot snapshot;
+    snapshot.workspace = workspace;
+    snapshot.audit_log = audit_logger.log_path();
+    snapshot.scheduled_tasks = scheduler.list().size();
+    snapshot.workflow_candidates = memory_manager.workflow_candidates().size();
+
+    snapshot.commands = {
+        {"run", "run <task_type> [key=value ...]", "Execute a task through the agent loop", {}},
+        {"chat", "chat <text>", "Send free-form text to a chat agent", {}},
+        {"agents", "agents", "List registered agent adapters", {}},
+        {"skills", "skills", "List registered skills", {}},
+        {"jobs", "jobs", "Show background development jobs", {}},
+    };
+    for (const auto& profile : agent_registry.list_profiles()) {
+        const auto adapter = agent_registry.find(profile.agent_name);
+        snapshot.agents.push_back({
+            profile.agent_name,
+            profile.description,
+            adapter && adapter->healthy(),
+            adapter && adapter->healthy() ? "healthy" : "unhealthy",
+        });
+    }
+    for (const auto& manifest : skill_registry.list()) {
+        const auto adapter = skill_registry.find(manifest.name);
+        snapshot.skills.push_back({
+            manifest.name,
+            manifest.description,
+            adapter && adapter->healthy(),
+            adapter && adapter->healthy() ? "healthy" : "unhealthy",
+        });
+    }
+    return snapshot;
+}
+
 }  // namespace
+
+namespace {
+
+bool IsRetryableChatError(const std::string& code) {
+    return code == "ExternalProcessFailed" || code == "Timeout" ||
+           code == "AuthExpired" || code == "AuthUnavailable" ||
+           code == "AgentUnavailable" || code == "NotConfigured" ||
+           code == "ConfigInvalid";
+}
+
+TaskRunResult DispatchChatAttempt(TaskRequest task,
+                                  AgentRegistry& agent_registry,
+                                  AgentLoop& loop,
+                                  const std::string& target) {
+    (void)agent_registry;
+    task.preferred_target = target;
+    if (task.timeout_ms <= 0) {
+        task.timeout_ms = kInteractiveChatTimeoutMs;
+    }
+    auto cancel = InstallSignalCancellation();
+
+    std::atomic<bool> done{false};
+    std::mutex cv_m;
+    std::condition_variable cv;
+    std::thread heartbeat([&] {
+        int dots = 0;
+        while (true) {
+            std::unique_lock<std::mutex> lk(cv_m);
+            if (cv.wait_for(lk, std::chrono::seconds(2), [&] { return done.load(); })) {
+                break;
+            }
+            std::cout << "." << std::flush;
+            if (++dots >= 15) {
+                std::cout << " still waiting..." << std::endl;
+                dots = 0;
+            }
+        }
+    });
+
+    const auto result = loop.run(task, std::move(cancel));
+
+    {
+        std::lock_guard<std::mutex> lk(cv_m);
+        done = true;
+    }
+    cv.notify_all();
+    if (heartbeat.joinable()) heartbeat.join();
+    std::cout << std::endl;
+    return result;
+}
+
+}  // namespace
+
+TaskRunResult RunChatWithFallback(TaskRequest task,
+                                  AgentRegistry& agent_registry,
+                                  AgentLoop& loop,
+                                  const std::string& primary_target) {
+    std::vector<std::string> tried;
+    auto try_target = [&](const std::string& target) -> TaskRunResult {
+        tried.push_back(target);
+        return DispatchChatAttempt(task, agent_registry, loop, target);
+    };
+
+    auto result = try_target(primary_target);
+    if (result.success) return result;
+
+    if (!IsRetryableChatError(result.error_code)) {
+        return result;
+    }
+
+    static constexpr std::array<const char*, 4> kFallbackOrder = {
+        "gemini", "anthropic", "openai", "qwen"};
+    std::string last_code = result.error_code.empty() ? "Unknown" : result.error_code;
+    for (const auto* candidate : kFallbackOrder) {
+        const std::string name = candidate;
+        if (name == primary_target) continue;
+        if (std::find(tried.begin(), tried.end(), name) != tried.end()) continue;
+        const auto adapter = agent_registry.find(name);
+        if (!adapter || !adapter->healthy()) continue;
+
+        std::cout << "(fell back to " << name
+                  << " after " << (tried.empty() ? primary_target : tried.back())
+                  << " failed: " << last_code << ")" << std::endl;
+        result = try_target(name);
+        if (result.success) return result;
+        last_code = result.error_code.empty() ? last_code : result.error_code;
+        if (!IsRetryableChatError(result.error_code)) {
+            break;
+        }
+    }
+
+    std::ostringstream tried_csv;
+    for (size_t i = 0; i < tried.size(); ++i) {
+        if (i != 0) tried_csv << ',';
+        tried_csv << tried[i];
+    }
+    if (!result.error_message.empty()) {
+        result.error_message += " ";
+    }
+    result.error_message += "tried=" + tried_csv.str();
+    return result;
+}
+
+class TerminalRawMode {
+public:
+    TerminalRawMode() {
+#ifndef _WIN32
+        enabled_ = ::isatty(STDIN_FILENO) == 1 && ::tcgetattr(STDIN_FILENO, &original_) == 0;
+        if (!enabled_) {
+            return;
+        }
+        termios raw = original_;
+        raw.c_lflag &= static_cast<unsigned>(~(ICANON | ECHO));
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        if (::tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
+            enabled_ = false;
+        }
+#endif
+    }
+
+    ~TerminalRawMode() {
+#ifndef _WIN32
+        if (enabled_) {
+            ::tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_);
+        }
+#endif
+    }
+
+    bool enabled() const {
+        return enabled_;
+    }
+
+private:
+    bool enabled_ = false;
+#ifndef _WIN32
+    termios original_{};
+#endif
+};
+
+void RedrawInputLine(const std::string& prompt,
+                     const std::string& line,
+                     const std::size_t cursor) {
+    std::cout << "\r" << prompt << line << "\x1b[K";
+    const auto right = line.size() - std::min(cursor, line.size());
+    if (right > 0) {
+        std::cout << "\x1b[" << right << "D";
+    }
+    std::cout << std::flush;
+}
+
+std::vector<std::string> LoadReplHistory(const std::filesystem::path& path) {
+    constexpr std::size_t kMaxHistoryEntries = 500;
+    std::vector<std::string> history;
+    std::ifstream input(path, std::ios::binary);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) {
+            continue;
+        }
+        if (line == "exit" || line == "quit" || line == "/exit" || line == "/quit") {
+            continue;
+        }
+        if (history.empty() || history.back() != line) {
+            history.push_back(line);
+        }
+    }
+    if (history.size() > kMaxHistoryEntries) {
+        history.erase(history.begin(), history.end() - static_cast<std::ptrdiff_t>(kMaxHistoryEntries));
+    }
+    return history;
+}
+
+void SaveReplHistory(const std::filesystem::path& path,
+                     const std::vector<std::string>& history) {
+    constexpr std::size_t kMaxHistoryEntries = 500;
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        return;
+    }
+    const auto start = history.size() > kMaxHistoryEntries
+        ? history.size() - kMaxHistoryEntries
+        : std::size_t{0};
+    for (std::size_t index = start; index < history.size(); ++index) {
+        if (!history[index].empty()) {
+            output << history[index] << '\n';
+        }
+    }
+}
+
+bool ReadInteractiveLine(const std::string& prompt,
+                         std::string& line,
+                         std::vector<std::string>& history) {
+#ifdef _WIN32
+    std::cout << prompt << std::flush;
+    if (!_isatty(_fileno(stdin))) {
+        return static_cast<bool>(std::getline(std::cin, line));
+    }
+
+    line.clear();
+    std::string draft;
+    std::size_t cursor = 0;
+    std::size_t history_index = history.size();
+    while (true) {
+        const int ch = _getch();
+        if (ch == '\r' || ch == '\n') {
+            std::cout << "\n";
+            if (!line.empty() && (history.empty() || history.back() != line)) {
+                history.push_back(line);
+            }
+            return true;
+        }
+        if (ch == 3) {
+            std::cout << "^C\n";
+            line.clear();
+            return true;
+        }
+        if (ch == 4 && line.empty()) {
+            return false;
+        }
+        if (ch == 8) {
+            if (cursor > 0) {
+                line.erase(cursor - 1, 1);
+                --cursor;
+                RedrawInputLine(prompt, line, cursor);
+            }
+            continue;
+        }
+        if (ch == 0 || ch == 224) {
+            const int key = _getch();
+            if (key == 72) {
+                if (!history.empty() && history_index > 0) {
+                    if (history_index == history.size()) {
+                        draft = line;
+                    }
+                    --history_index;
+                    line = history[history_index];
+                    cursor = line.size();
+                    RedrawInputLine(prompt, line, cursor);
+                }
+            } else if (key == 80) {
+                if (history_index < history.size()) {
+                    ++history_index;
+                    line = history_index == history.size() ? draft : history[history_index];
+                    cursor = line.size();
+                    RedrawInputLine(prompt, line, cursor);
+                }
+            } else if (key == 75) {
+                if (cursor > 0) {
+                    --cursor;
+                    std::cout << "\x1b[D" << std::flush;
+                }
+            } else if (key == 77) {
+                if (cursor < line.size()) {
+                    ++cursor;
+                    std::cout << "\x1b[C" << std::flush;
+                }
+            } else if (key == 71) {
+                cursor = 0;
+                RedrawInputLine(prompt, line, cursor);
+            } else if (key == 79) {
+                cursor = line.size();
+                RedrawInputLine(prompt, line, cursor);
+            } else if (key == 83 && cursor < line.size()) {
+                line.erase(cursor, 1);
+                RedrawInputLine(prompt, line, cursor);
+            }
+            continue;
+        }
+        if (ch >= 32) {
+            line.insert(cursor, 1, static_cast<char>(ch));
+            ++cursor;
+            RedrawInputLine(prompt, line, cursor);
+        }
+    }
+#else
+    if (::isatty(STDIN_FILENO) != 1) {
+        std::cout << prompt << std::flush;
+        return static_cast<bool>(std::getline(std::cin, line));
+    }
+
+    TerminalRawMode raw_mode;
+    if (!raw_mode.enabled()) {
+        std::cout << prompt << std::flush;
+        return static_cast<bool>(std::getline(std::cin, line));
+    }
+
+    line.clear();
+    std::string draft;
+    std::size_t cursor = 0;
+    std::size_t history_index = history.size();
+    std::cout << prompt << std::flush;
+
+    while (true) {
+        char ch = 0;
+        if (::read(STDIN_FILENO, &ch, 1) != 1) {
+            return false;
+        }
+        if (ch == '\n' || ch == '\r') {
+            std::cout << "\n";
+            if (!line.empty() && (history.empty() || history.back() != line)) {
+                history.push_back(line);
+            }
+            return true;
+        }
+        if (ch == 3) {
+            std::cout << "^C\n";
+            line.clear();
+            return true;
+        }
+        if (ch == 4) {
+            if (line.empty()) {
+                return false;
+            }
+            continue;
+        }
+        if (ch == 127 || ch == 8) {
+            if (cursor > 0) {
+                line.erase(cursor - 1, 1);
+                --cursor;
+                RedrawInputLine(prompt, line, cursor);
+            }
+            continue;
+        }
+        if (ch == 27) {
+            char seq1 = 0;
+            char seq2 = 0;
+            if (::read(STDIN_FILENO, &seq1, 1) != 1) {
+                continue;
+            }
+            if (seq1 != '[' && seq1 != 'O') {
+                continue;
+            }
+            if (::read(STDIN_FILENO, &seq2, 1) != 1) {
+                continue;
+            }
+            if (seq2 == 'A') {
+                if (!history.empty() && history_index > 0) {
+                    if (history_index == history.size()) {
+                        draft = line;
+                    }
+                    --history_index;
+                    line = history[history_index];
+                    cursor = line.size();
+                    RedrawInputLine(prompt, line, cursor);
+                }
+            } else if (seq2 == 'B') {
+                if (history_index < history.size()) {
+                    ++history_index;
+                    line = history_index == history.size() ? draft : history[history_index];
+                    cursor = line.size();
+                    RedrawInputLine(prompt, line, cursor);
+                }
+            } else if (seq2 == 'C') {
+                if (cursor < line.size()) {
+                    ++cursor;
+                    std::cout << "\x1b[C" << std::flush;
+                }
+            } else if (seq2 == 'D') {
+                if (cursor > 0) {
+                    --cursor;
+                    std::cout << "\x1b[D" << std::flush;
+                }
+            } else if (seq2 == 'H') {
+                cursor = 0;
+                RedrawInputLine(prompt, line, cursor);
+            } else if (seq2 == 'F') {
+                cursor = line.size();
+                RedrawInputLine(prompt, line, cursor);
+            } else if (seq2 >= '0' && seq2 <= '9') {
+                char terminator = 0;
+                (void)::read(STDIN_FILENO, &terminator, 1);
+                if (seq2 == '3' && terminator == '~' && cursor < line.size()) {
+                    line.erase(cursor, 1);
+                    RedrawInputLine(prompt, line, cursor);
+                }
+            }
+            continue;
+        }
+        if (ch >= 32) {
+            line.insert(cursor, 1, ch);
+            ++cursor;
+            RedrawInputLine(prompt, line, cursor);
+        }
+    }
+#endif
+}
 
 // ── Entry point ─────────────────────────────────────────────────────────────
 
@@ -354,22 +1745,26 @@ int RunInteractiveCommand(
     const std::filesystem::path& workspace,
     const int /*argc*/,
     char* /*argv*/[]) {
+    ConsoleCodePageGuard console_code_page_guard;
 
     PrintBanner(workspace);
 
     auto cancel = InstallSignalCancellation();
+    std::vector<std::shared_ptr<BackgroundJob>> background_jobs;
+    const auto history_path = workspace / "runtime" / "repl_history.txt";
+    std::vector<std::string> line_history = LoadReplHistory(history_path);
 
     std::string line;
     while (true) {
+        ReapFinishedJobs(background_jobs);
+
         // Check if Ctrl-C was pressed between commands.
         if (cancel && cancel->is_cancelled()) {
             std::cout << "\nInterrupted. Exiting interactive console.\n";
             break;
         }
 
-        std::cout << "agentos> " << std::flush;
-
-        if (!std::getline(std::cin, line)) {
+        if (!ReadInteractiveLine("agentos> ", line, line_history)) {
             // EOF (Ctrl-D on Unix, Ctrl-Z on Windows).
             std::cout << "\n";
             break;
@@ -384,6 +1779,9 @@ int RunInteractiveCommand(
         const auto end = line.find_last_not_of(" \t\r\n");
         if (end != std::string::npos) {
             line = line.substr(0, end + 1);
+        }
+        if (!line_history.empty()) {
+            line_history.back() = line;
         }
 
         const auto tokens = Tokenize(line);
@@ -401,9 +1799,27 @@ int RunInteractiveCommand(
 
         // ── exit / quit ─────────────────────────────────────────────────
         if (command == "exit" || command == "quit") {
+            if (!line_history.empty() && line_history.back() == line) {
+                line_history.pop_back();
+            }
+            SaveReplHistory(history_path, line_history);
+            const auto running = std::count_if(background_jobs.begin(), background_jobs.end(),
+                [](const std::shared_ptr<BackgroundJob>& job) {
+                    return job && !job->finished.load();
+                });
+            if (running > 0) {
+                std::cout << "Waiting for " << running
+                          << " background job(s) before exit. Press Ctrl-C again to force terminate.\n";
+                for (const auto& job : background_jobs) {
+                    if (job && job->worker.joinable()) {
+                        job->worker.join();
+                    }
+                }
+            }
             std::cout << "Goodbye.\n";
             break;
         }
+        SaveReplHistory(history_path, line_history);
 
         // ── help ────────────────────────────────────────────────────────
         if (command == "help") {
@@ -431,37 +1847,13 @@ int RunInteractiveCommand(
 
         // ── agents ──────────────────────────────────────────────────────
         if (command == "agents") {
-            const auto agents = agent_registry.list_profiles();
-            if (agents.empty()) {
-                std::cout << "No agents registered.\n";
-            } else {
-                std::cout << "Registered agents (" << agents.size() << "):\n";
-                for (const auto& prof : agents) {
-                    std::cout << "  " << prof.agent_name
-                              << "  cost=" << prof.cost_tier
-                              << "  streaming=" << (prof.supports_streaming ? "true" : "false")
-                              << '\n';
-                }
-            }
-            std::cout << '\n';
+            PrintRegisteredAgentsGuide(agent_registry);
             continue;
         }
 
         // ── skills ──────────────────────────────────────────────────────
         if (command == "skills") {
-            const auto skills = skill_registry.list();
-            if (skills.empty()) {
-                std::cout << "No skills registered.\n";
-            } else {
-                std::cout << "Registered skills (" << skills.size() << "):\n";
-                for (const auto& m : skills) {
-                    std::cout << "  " << m.name
-                              << "  risk=" << m.risk_level
-                              << "  idempotent=" << (m.idempotent ? "true" : "false")
-                              << '\n';
-                }
-            }
-            std::cout << '\n';
+            PrintRegisteredSkillsGuide(skill_registry);
             continue;
         }
 
@@ -471,6 +1863,7 @@ int RunInteractiveCommand(
             std::cout << "  workspace: " << workspace.string() << '\n';
             std::cout << "  skills: " << skill_registry.list().size() << '\n';
             std::cout << "  agents: " << agent_registry.list_profiles().size() << '\n';
+            std::cout << "  background_jobs: " << background_jobs.size() << '\n';
             std::cout << "  scheduled_tasks: " << scheduler.list().size() << '\n';
             std::cout << "  workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
             std::cout << "  audit_log: " << audit_logger.log_path().string() << '\n';
@@ -625,9 +2018,101 @@ int RunInteractiveCommand(
                       << ". Type 'help' for available commands.\n";
             continue;
         }
+
+        // ── jobs ────────────────────────────────────────────────────────
+        if (command == "jobs") {
+            ListBackgroundJobs(background_jobs);
+            continue;
+        }
+
+        const auto usage_snapshot = BuildInteractiveUsageSnapshot(
+            skill_registry, agent_registry, memory_manager, scheduler, audit_logger, workspace);
+        const auto route_decision = ClassifyInteractiveRequest(
+            line,
+            skill_registry,
+            agent_registry,
+            usage_snapshot,
+            workspace,
+            [&agent_registry, &workspace]() { return ResolveChatTarget(agent_registry, workspace); },
+            [&skill_registry]() { return skill_registry.find("development_request") ? "development_request" : ""; },
+            [&skill_registry]() { return skill_registry.find("research_request") ? "research_request" : ""; },
+            [&skill_registry](const std::string& text) {
+                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value();
+            },
+            [&skill_registry](const std::string& text) {
+                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value()
+                    ? std::string("xiaohongshu_search")
+                    : std::string{};
+            });
+        WriteRouteDecision(workspace, route_decision);
+        PrintRouteDecision(route_decision, RuntimeLanguage::English);
+
+        switch (route_decision.route) {
+        case InteractiveRouteKind::direct_skill:
+            if (const auto xhs_query = ExtractXiaohongshuSearchQuery(line, skill_registry); xhs_query.has_value()) {
+                std::cout << "(运行 skill xiaohongshu_search query=\"" << *xhs_query << "\")\n";
+                const auto result = RunDirectSkillFromNaturalLanguage(
+                    "xiaohongshu_search",
+                    StringMap{{"query", *xhs_query}},
+                    line,
+                    loop,
+                    workspace);
+                PrintResult(result);
+                std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
+                continue;
+            }
+            break;
+        case InteractiveRouteKind::local_intent:
+            if (LooksLikeModelIdentityQuestion(line)) {
+                PrintMainModelIdentity(agent_registry, workspace);
+                continue;
+            }
+            if (LooksLikeSpecificSkillUsageQuestion(line)) {
+                if (const auto manifest = FindMentionedSkill(line, skill_registry); manifest.has_value()) {
+                    PrintSkillUsageGuide(*manifest);
+                    continue;
+                }
+            }
+            if (LooksLikeAgentListQuestion(line)) {
+                PrintRegisteredAgentsGuide(agent_registry);
+                continue;
+            }
+            if (LooksLikeSkillListQuestion(line)) {
+                PrintRegisteredSkillsGuide(skill_registry);
+                continue;
+            }
+            if (LooksLikeMemoryQuestion(line)) {
+                if (LooksLikeDetailedMemoryQuestion(line)) {
+                    PrintMemoryDetails(memory_manager);
+                } else {
+                    PrintMemoryOverview(memory_manager);
+                }
+                continue;
+            }
+            if (PrintLocalBrowserErrorFollowup(line, workspace)) {
+                continue;
+            }
+            break;
+        case InteractiveRouteKind::development_agent:
+            StartBackgroundDevelopmentPrompt(line, loop, audit_logger, workspace, background_jobs);
+            continue;
+        case InteractiveRouteKind::research_agent:
+            (void)RunResearchPrompt(line, loop, audit_logger, workspace);
+            continue;
+        case InteractiveRouteKind::chat_agent:
+            RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);
+            continue;
+        case InteractiveRouteKind::unknown_command:
+            break;
+        }
         RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);
     }
 
+    for (const auto& job : background_jobs) {
+        if (job && job->worker.joinable()) {
+            job->worker.join();
+        }
+    }
     return 0;
 }
 

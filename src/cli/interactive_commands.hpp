@@ -25,4 +25,15 @@ int RunInteractiveCommand(
     int argc,
     char* argv[]);
 
+// Run a chat task against `primary_target`; on failure walk the priority
+// list gemini, anthropic, openai, qwen, skipping the primary and any
+// adapter that is missing or `!healthy()`. On full exhaustion, the returned
+// result.error_message carries `tried=<csv>` so callers see the full chain.
+// Exposed for tests.
+TaskRunResult RunChatWithFallback(
+    TaskRequest task,
+    AgentRegistry& agent_registry,
+    AgentLoop& loop,
+    const std::string& primary_target);
+
 }  // namespace agentos

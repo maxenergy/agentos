@@ -40,10 +40,12 @@
 #include "hosts/plugin/plugin_host.hpp"
 #include "memory/memory_manager.hpp"
 #include "scheduler/scheduler.hpp"
+#include "skills/builtin/development_skill.hpp"
 #include "skills/builtin/file_patch_skill.hpp"
 #include "skills/builtin/file_read_skill.hpp"
 #include "skills/builtin/file_write_skill.hpp"
 #include "skills/builtin/http_fetch_skill.hpp"
+#include "skills/builtin/research_skill.hpp"
 #include "skills/builtin/workflow_run_skill.hpp"
 #include "storage/main_agent_store.hpp"
 #include "storage/storage_version_store.hpp"
@@ -824,6 +826,10 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<FileWriteSkill>());
     runtime.skill_registry.register_skill(std::make_shared<FilePatchSkill>());
     runtime.skill_registry.register_skill(std::make_shared<HttpFetchSkill>(runtime.cli_host));
+    runtime.skill_registry.register_skill(std::make_shared<DevelopmentSkill>(
+        runtime.agent_registry, runtime.loop, runtime.audit_logger, workspace));
+    runtime.skill_registry.register_skill(std::make_shared<ResearchSkill>(
+        runtime.agent_registry, runtime.loop, runtime.audit_logger, workspace));
     runtime.skill_registry.register_skill(std::make_shared<WorkflowRunSkill>(
         runtime.skill_registry, &runtime.memory_manager.workflow_store()));
     runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(MakeRgSearchSpec(), runtime.cli_host));

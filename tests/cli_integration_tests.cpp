@@ -1968,6 +1968,73 @@ void TestRunAuthProfileOverride() {
         "agentos run without profile= must not leak prior override names");
 }
 
+void TestInteractiveFreeFormDispatch() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+
+    {
+        const auto workspace = FreshWorkspace("interactive_development_dispatch");
+        const auto empty_bin = workspace / "empty-bin";
+        std::filesystem::create_directories(empty_bin);
+        SetEnvForTest("PATH", empty_bin.string());
+
+        const auto result = RunAgentosWithStdin(
+            workspace,
+            {"interactive"},
+            "please build a small command line tool\nexit\n");
+        Expect(result.exit_code == 0, "interactive development dispatch should exit cleanly");
+        Expect(result.output.find("(route: development_agent -> development_request") != std::string::npos,
+            "interactive development free-form text should be classified as a development route");
+        Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
+            "interactive development dispatch should invoke the registered development_request skill");
+        const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+        Expect(audit.find("development_request") != std::string::npos,
+            "interactive development dispatch should be visible in audit as a normal task");
+        const auto task_log = ReadTextFile(workspace / "runtime" / "memory" / "task_log.tsv");
+        Expect(task_log.find("development_request") != std::string::npos,
+            "interactive development dispatch should be visible in memory as a normal task");
+    }
+
+    {
+        const auto workspace = FreshWorkspace("interactive_research_dispatch");
+        const auto empty_bin = workspace / "empty-bin";
+        std::filesystem::create_directories(empty_bin);
+        SetEnvForTest("PATH", empty_bin.string());
+
+        const auto result = RunAgentosWithStdin(
+            workspace,
+            {"interactive"},
+            "please research current provider integration details\nexit\n");
+        Expect(result.exit_code == 0, "interactive research dispatch should exit cleanly");
+        Expect(result.output.find("(route: research_agent -> research_request") != std::string::npos,
+            "interactive research free-form text should be classified as a research route");
+        Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
+            "interactive research dispatch should invoke the registered research_request skill");
+        const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+        Expect(audit.find("research_request") != std::string::npos,
+            "interactive research dispatch should be visible in audit as a normal task");
+        const auto task_log = ReadTextFile(workspace / "runtime" / "memory" / "task_log.tsv");
+        Expect(task_log.find("research_request") != std::string::npos,
+            "interactive research dispatch should be visible in memory as a normal task");
+    }
+
+    {
+        const auto workspace = FreshWorkspace("interactive_chat_dispatch");
+        SetEnvForTest("PATH", old_path);
+
+        const auto result = RunAgentosWithStdin(
+            workspace,
+            {"interactive"},
+            "hello there\nexit\n");
+        Expect(result.exit_code == 0, "interactive chat fallback should exit cleanly");
+        Expect(result.output.find("(route: chat_agent") != std::string::npos,
+            "interactive non-classified free-form text should still fall through to chat");
+        Expect(result.output.find("main-agent is not configured") != std::string::npos,
+            "interactive chat fallback should preserve the existing main-agent setup hint");
+    }
+
+    SetEnvForTest("PATH", old_path);
+}
+
 void TestDiagnosticsCommand() {
     const auto workspace = FreshWorkspace("diagnostics");
 
@@ -2027,6 +2094,7 @@ int main() {
     TestSubagentsCommand();
     TestAuthCommands();
     TestRunAuthProfileOverride();
+    TestInteractiveFreeFormDispatch();
     TestDiagnosticsCommand();
 
     if (failures != 0) {

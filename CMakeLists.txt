@@ -30,6 +30,7 @@ add_library(agentos_core
     src/cli/auth_interactive.cpp
     src/cli/cli_specs_commands.cpp
     src/cli/diagnostics_commands.cpp
+    src/cli/intent_classifier.cpp
     src/cli/interactive_commands.cpp
     src/cli/main_agent_commands.cpp
     src/cli/serve_commands.cpp
@@ -114,10 +115,12 @@ add_library(agentos_core
     src/hosts/plugin/plugin_schema_validator.cpp
     src/hosts/plugin/plugin_skill_invoker.cpp
     src/hosts/plugin/plugin_spec_utils.cpp
+    src/skills/builtin/development_skill.cpp
     src/skills/builtin/file_read_skill.cpp
     src/skills/builtin/file_write_skill.cpp
     src/skills/builtin/file_patch_skill.cpp
     src/skills/builtin/http_fetch_skill.cpp
+    src/skills/builtin/research_skill.cpp
     src/skills/builtin/workflow_run_skill.cpp
     src/hosts/agents/local_planning_agent.cpp
 )
