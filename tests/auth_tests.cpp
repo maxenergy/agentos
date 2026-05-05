@@ -1,4 +1,5 @@
 #include "auth/auth_manager.hpp"
+#include "auth/auth_login_flow.hpp"
 #include "auth/auth_profile_store.hpp"
 #include "auth/credential_broker.hpp"
 #include "auth/oauth_pkce.hpp"
@@ -355,6 +356,96 @@ void TestAuthApiKeySession(const std::filesystem::path& workspace) {
         refresh_failed = true;
     }
     Expect(refresh_failed, "api-key session refresh should be unsupported");
+}
+
+void TestAuthLoginFlowModulesWithFixtureStores(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "auth_login_flow_modules";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    SetEnvForTest("AGENTOS_FLOW_TEST_KEY", "flow-secret");
+
+    agentos::SessionStore session_store(isolated_workspace / "sessions.tsv");
+    agentos::SecureTokenStore token_store;
+    const agentos::AuthProviderDescriptor descriptor{
+        .provider = agentos::AuthProviderId::gemini,
+        .provider_name = "gemini",
+        .supported_modes = {
+            agentos::AuthMode::api_key,
+            agentos::AuthMode::cli_session_passthrough,
+            agentos::AuthMode::browser_oauth,
+            agentos::AuthMode::cloud_adc,
+        },
+        .browser_login_supported = true,
+        .headless_supported = true,
+        .refresh_token_supported = true,
+        .cli_session_passthrough_supported = true,
+    };
+
+    agentos::AuthLoginFlowContext context{
+        .descriptor = descriptor,
+        .session_store = session_store,
+        .token_store = token_store,
+        .workspace_path = isolated_workspace,
+        .default_api_key_env = "AGENTOS_FLOW_TEST_KEY",
+        .probe_cli_session = []() {
+            return agentos::AuthSession{
+                .session_id = "external-session",
+                .provider = agentos::AuthProviderId::gemini,
+                .mode = agentos::AuthMode::cli_session_passthrough,
+                .profile_name = "external",
+                .account_label = "fixture-cli",
+                .managed_by_agentos = false,
+                .managed_by_external_cli = true,
+                .refresh_supported = false,
+                .headless_compatible = false,
+                .access_token_ref = "external-cli:fixture",
+                .expires_at = std::chrono::system_clock::now() + std::chrono::hours(24),
+                .metadata = {{"provider", "gemini"}, {"cli", "fixture"}},
+            };
+        },
+        .cloud_adc_available = []() {
+            return true;
+        },
+    };
+
+    const auto api_key = agentos::LoginWithApiKeyEnvRef(context, "api", {});
+    Expect(api_key.mode == agentos::AuthMode::api_key,
+        "Auth Login Flow API-key module should create api_key sessions");
+    Expect(api_key.access_token_ref == "env:AGENTOS_FLOW_TEST_KEY",
+        "Auth Login Flow API-key module should store an env ref");
+
+    const auto cli_session = agentos::LoginWithCliSessionPassthrough(context, "cli");
+    Expect(cli_session.mode == agentos::AuthMode::cli_session_passthrough,
+        "Auth Login Flow CLI module should preserve cli-session mode");
+    Expect(cli_session.profile_name == "cli",
+        "Auth Login Flow CLI module should apply the requested profile");
+    Expect(cli_session.session_id == agentos::MakeAuthSessionId(
+            agentos::AuthProviderId::gemini,
+            agentos::AuthMode::cli_session_passthrough,
+            "cli"),
+        "Auth Login Flow CLI module should regenerate the session id for the profile");
+
+    const auto browser_session = agentos::LoginWithBrowserOAuthPkce(context, "browser", {});
+    Expect(browser_session.mode == agentos::AuthMode::browser_oauth,
+        "Auth Login Flow browser module should use the fixture probe fallback");
+    Expect(browser_session.profile_name == "browser",
+        "Auth Login Flow browser module should apply the requested profile");
+
+    const auto adc_session = agentos::LoginWithCloudAdc(context, "adc");
+    Expect(adc_session.mode == agentos::AuthMode::cloud_adc,
+        "Auth Login Flow ADC module should create cloud_adc sessions when availability is injected");
+    Expect(adc_session.access_token_ref == "external-cli:gcloud-adc",
+        "Auth Login Flow ADC module should use the gcloud ADC token ref");
+
+    auto refreshable = adc_session;
+    refreshable.metadata["credential_source"] = "google_adc";
+    refreshable.expires_at = std::chrono::system_clock::now() - std::chrono::minutes(1);
+    const auto refreshed = agentos::RefreshAuthLoginFlow(context, refreshable);
+    Expect(refreshed.metadata.at("refreshed_by") == "static-adapter",
+        "Auth Login Flow refresh module should refresh non-native sessions through the static fallback");
+    Expect(refreshed.expires_at > refreshable.expires_at,
+        "Auth Login Flow refresh module should advance the expiry");
 }
 
 void TestSecureRandomBytesContract(const std::filesystem::path& workspace) {
@@ -1474,6 +1565,7 @@ int main() {
     const auto workspace = FreshWorkspace();
 
     TestAuthApiKeySession(workspace);
+    TestAuthLoginFlowModulesWithFixtureStores(workspace);
     TestSecureRandomBytesContract(workspace);
     TestOAuthListenerRequestValidation(workspace);
     TestOAuthPkceScaffold(workspace);

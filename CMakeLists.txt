@@ -40,6 +40,7 @@ add_library(agentos_core
     src/cli/subagents_commands.cpp
     src/cli/trust_commands.cpp
     src/auth/auth_manager.cpp
+    src/auth/auth_login_flow.cpp
     src/auth/auth_models.cpp
     src/auth/auth_profile_store.cpp
     src/auth/credential_broker.cpp

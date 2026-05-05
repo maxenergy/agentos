@@ -1,5 +1,6 @@
 #include "auth/provider_adapters.hpp"
 
+#include "auth/auth_login_flow.hpp"
 #include "auth/oauth_pkce.hpp"
 #include "utils/command_utils.hpp"
 
@@ -55,14 +56,6 @@ std::string OptionOrDefault(
 
 std::chrono::system_clock::time_point LongLivedSessionExpiry() {
     return std::chrono::system_clock::now() + std::chrono::hours(24 * 365);
-}
-
-bool HasNativeOAuthCompletionOptions(const std::map<std::string, std::string>& options) {
-    return options.contains("callback_url") &&
-           options.contains("state") &&
-           options.contains("code_verifier") &&
-           options.contains("redirect_uri") &&
-           options.contains("client_id");
 }
 
 AuthStatus MissingSessionStatus(const AuthProviderDescriptor& descriptor, const std::string& profile_name) {
@@ -203,30 +196,6 @@ bool GoogleAdcLooksAvailable() {
     return false;
 }
 
-AuthSession MakeCloudAdcSession(
-    const AuthProviderId provider,
-    const std::string& provider_name,
-    const std::string& profile_name) {
-    return {
-        .session_id = MakeAuthSessionId(provider, AuthMode::cloud_adc, profile_name),
-        .provider = provider,
-        .mode = AuthMode::cloud_adc,
-        .profile_name = profile_name,
-        .account_label = "google-application-default-credentials",
-        .managed_by_agentos = false,
-        .managed_by_external_cli = true,
-        .refresh_supported = true,
-        .headless_compatible = true,
-        .access_token_ref = "external-cli:gcloud-adc",
-        .expires_at = LongLivedSessionExpiry(),
-        .metadata = {
-            {"provider", provider_name},
-            {"credential_source", "google_adc"},
-            {"cli", "gcloud"},
-        },
-    };
-}
-
 }  // namespace
 
 StaticAuthProviderAdapter::StaticAuthProviderAdapter(
@@ -255,69 +224,30 @@ AuthSession StaticAuthProviderAdapter::login(const AuthMode mode, const std::map
     }
 
     const auto profile_name = OptionOrDefault(options, "profile", "default");
-    AuthSession session;
+    AuthLoginFlowContext flow_context{
+        .descriptor = descriptor_,
+        .session_store = session_store_,
+        .token_store = token_store_,
+        .cli_host = cli_host_,
+        .workspace_path = workspace_path_,
+        .default_api_key_env = default_api_key_env(),
+        .probe_cli_session = [this]() {
+            return probe_cli_session();
+        },
+        .cloud_adc_available = []() {
+            return (CommandExists("gcloud") || CommandExists("gcloud.cmd")) && GoogleAdcLooksAvailable();
+        },
+    };
 
+    AuthSession session;
     if (mode == AuthMode::api_key) {
-        const auto env_name = OptionOrDefault(options, "api_key_env", default_api_key_env());
-        session = make_api_key_session(profile_name, env_name);
+        session = LoginWithApiKeyEnvRef(flow_context, profile_name, options);
     } else if (mode == AuthMode::cli_session_passthrough) {
-        auto probed_session = probe_cli_session();
-        if (!probed_session.has_value()) {
-            throw std::runtime_error("CliSessionUnavailable");
-        }
-        probed_session->profile_name = profile_name;
-        probed_session->session_id = MakeAuthSessionId(descriptor_.provider, AuthMode::cli_session_passthrough, profile_name);
-        session = *probed_session;
+        session = LoginWithCliSessionPassthrough(flow_context, profile_name);
     } else if (mode == AuthMode::browser_oauth) {
-        if (HasNativeOAuthCompletionOptions(options)) {
-            if (!cli_host_) {
-                throw std::runtime_error("NativeOAuthUnavailable");
-            }
-            const auto callback = ValidateOAuthCallbackUrl(OAuthPkceStart{
-                .provider = descriptor_.provider,
-                .profile_name = profile_name,
-                .state = options.at("state"),
-                .code_verifier = options.at("code_verifier"),
-                .redirect_uri = options.at("redirect_uri"),
-            }, options.at("callback_url"));
-            const auto defaults = OAuthDefaultsForProvider(descriptor_.provider);
-            const auto token_endpoint = OptionOrDefault(options, "token_endpoint", defaults.token_endpoint);
-            session = CompleteOAuthLogin(
-                *cli_host_,
-                session_store_,
-                token_store_,
-                OAuthLoginOrchestrationInput{
-                    .start = OAuthPkceStart{
-                        .provider = descriptor_.provider,
-                        .profile_name = profile_name,
-                        .state = options.at("state"),
-                        .code_verifier = options.at("code_verifier"),
-                        .redirect_uri = options.at("redirect_uri"),
-                    },
-                    .callback = callback,
-                    .token_endpoint = token_endpoint,
-                    .client_id = options.at("client_id"),
-                    .account_label = OptionOrDefault(options, "account_label", descriptor_.provider_name + ":" + profile_name),
-                },
-                workspace_path_);
-        } else {
-            auto probed_session = probe_cli_session();
-            if (!probed_session.has_value()) {
-                throw std::runtime_error("BrowserOAuthUnavailable");
-            }
-            probed_session->mode = AuthMode::browser_oauth;
-            probed_session->profile_name = profile_name;
-            probed_session->session_id = MakeAuthSessionId(descriptor_.provider, AuthMode::browser_oauth, profile_name);
-            session = *probed_session;
-        }
+        session = LoginWithBrowserOAuthPkce(flow_context, profile_name, options);
     } else if (mode == AuthMode::cloud_adc) {
-        if (descriptor_.provider != AuthProviderId::gemini) {
-            throw std::runtime_error("UnsupportedAuthMode");
-        }
-        if ((!CommandExists("gcloud") && !CommandExists("gcloud.cmd")) || !GoogleAdcLooksAvailable()) {
-            throw std::runtime_error("CloudAdcUnavailable");
-        }
-        session = MakeCloudAdcSession(descriptor_.provider, descriptor_.provider_name, profile_name);
+        session = LoginWithCloudAdc(flow_context, profile_name);
     } else {
         throw std::runtime_error("UnsupportedAuthMode");
     }
@@ -342,27 +272,16 @@ AuthSession StaticAuthProviderAdapter::refresh(const AuthSession& session) {
     if (!session.refresh_supported) {
         throw std::runtime_error("RefreshUnsupported");
     }
-    if (session.metadata.contains("credential_source") &&
-        session.metadata.at("credential_source") == "oauth_pkce" &&
-        session.metadata.contains("token_endpoint") &&
-        session.metadata.contains("client_id") &&
-        cli_host_) {
-        return RefreshOAuthSession(
-            *cli_host_,
-            session_store_,
-            token_store_,
-            OAuthRefreshOrchestrationInput{
-                .existing_session = session,
-                .token_endpoint = session.metadata.at("token_endpoint"),
-                .client_id = session.metadata.at("client_id"),
-            },
-            workspace_path_);
-    }
-
-    auto refreshed = session;
-    refreshed.expires_at = LongLivedSessionExpiry();
-    refreshed.metadata["refreshed_by"] = "static-adapter";
-    return refreshed;
+    return RefreshAuthLoginFlow(
+        AuthLoginFlowContext{
+            .descriptor = descriptor_,
+            .session_store = session_store_,
+            .token_store = token_store_,
+            .cli_host = cli_host_,
+            .workspace_path = workspace_path_,
+            .default_api_key_env = default_api_key_env(),
+        },
+        session);
 }
 
 void StaticAuthProviderAdapter::logout(const std::string& profile_name) {

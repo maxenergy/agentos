@@ -32,3 +32,9 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - Added `StorageBackend` plus `TsvStorageBackend` as the Runtime Store backend boundary.
 - The TSV adapter wraps existing atomic file, append, transaction, manifest, export/import, and migrate helpers without changing on-disk layout.
 - Compaction is represented on the backend seam but remains delegated to owning stores until callers move in later goals.
+
+## 2026-05-06 G014 Auth Login Flow Modules
+
+- Extracted Auth Login Flow modes behind `auth_login_flow.*`; provider adapters now select modes but delegate token/session construction to the flow module.
+- Login flows use `SecureTokenStore` and `SessionStore` through the existing Credential Store seams and do not select platform token backends.
+- `StaticAuthProviderAdapter` remains responsible for descriptors, defaults, endpoint diagnostics, and provider probes.
