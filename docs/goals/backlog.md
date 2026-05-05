@@ -13,10 +13,10 @@ Status values:
 | G003 | ready | G002 | medium | Route decomposition planner dispatch through Agent Dispatch. |
 | G004 | ready | G002 | medium | Wire REPL development/research dispatch through normal routing. |
 | G005 | done | none | medium | Define the Capability Contract validation result and facade. |
-| G006 | ready | G005 | medium | Move Skill input and Plugin output callers onto Capability Contract validation. |
+| G006 | done | G005 | medium | Move Skill input and Plugin output callers onto Capability Contract validation. |
 | G007 | ready | G005 | medium | Complete learned Capability Declaration validation and reload for `learn_skill`. |
 | G008 | ready | G005 | medium | Replace route-hints TSV direction with Capability Declaration Route Hint coverage. |
-| G009 | blocked | G006 | high | Normalize Plugin protocol output before PluginSkillInvoker mapping. |
+| G009 | ready | G006 | high | Normalize Plugin protocol output before PluginSkillInvoker mapping. |
 | G010 | blocked | G009 | medium | Clarify Plugin Session process-pool policy and admin scope. |
 | G011 | done | none | high | Introduce the Runtime Store StorageBackend seam with a TSV adapter. |
 | G012 | ready | G011 | medium | Move storage commands and diagnostics through the StorageBackend seam. |

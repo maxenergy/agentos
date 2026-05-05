@@ -42,6 +42,15 @@ SchemaValidationResult ValidateRequiredInputFields(
     const SkillManifest& manifest,
     const StringMap& arguments);
 
+SchemaValidationResult ValidateCapabilityInput(
+    const SkillManifest& manifest,
+    const StringMap& arguments);
+
+CapabilityContractValidationResult ValidateCapabilityOutput(
+    const SkillManifest& manifest,
+    std::string_view output_json,
+    std::string_view subject);
+
 bool IsParseableJsonObjectSchema(std::string_view schema_json);
 
 std::string JsonObjectSchemaValidationError(

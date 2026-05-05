@@ -6,7 +6,19 @@
 namespace agentos {
 
 std::string PluginOutputSchemaError(const PluginSpec& spec, const std::string& output_json) {
-    return JsonObjectSchemaValidationError(spec.output_schema_json, output_json, "plugin output");
+    const auto validation = ValidateCapabilityOutput(
+        SkillManifest{
+            .name = spec.name,
+            .version = spec.manifest_version,
+            .description = spec.description,
+            .input_schema_json = spec.input_schema_json,
+            .output_schema_json = spec.output_schema_json,
+            .risk_level = spec.risk_level,
+            .permissions = spec.permissions,
+        },
+        output_json,
+        "plugin output");
+    return validation.valid ? "" : validation.message;
 }
 
 }  // namespace agentos

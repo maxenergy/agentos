@@ -1,7 +1,6 @@
 #include "hosts/cli/cli_spec_loader.hpp"
 
 #include "core/schema/schema_validator.hpp"
-#include "core/policy/permission_model.hpp"
 #include "utils/spec_parsing.hpp"
 
 #include <algorithm>
@@ -24,14 +23,47 @@ bool IsSupportedParseMode(const std::string& parse_mode) {
     return parse_mode == "text" || parse_mode == "json" || parse_mode == "json_lines";
 }
 
-bool IsSupportedRiskLevel(const std::string& risk_level) {
-    return PermissionModel::parse_risk_level(risk_level) != RiskLevel::unknown;
-}
 
 struct CliSpecParseResult {
     std::optional<CliSpec> spec;
     std::string error_message;
 };
+
+SkillManifest CapabilityManifestFromCliSpec(const CliSpec& spec) {
+    return {
+        .name = spec.name,
+        .description = spec.description,
+        .input_schema_json = spec.input_schema_json,
+        .output_schema_json = spec.output_schema_json,
+        .risk_level = spec.risk_level,
+        .permissions = spec.permissions,
+        .timeout_ms = spec.timeout_ms,
+    };
+}
+
+std::string CliCapabilityDeclarationError(const CliSpec& spec) {
+    const auto validation = ValidateCapabilityDeclaration(CapabilityManifestFromCliSpec(spec));
+    if (validation.valid) {
+        return {};
+    }
+    if (validation.diagnostics.empty()) {
+        return validation.message;
+    }
+    const auto& diagnostic = validation.diagnostics.front();
+    if (diagnostic.field == "risk_level") {
+        return "unsupported risk_level: " + spec.risk_level;
+    }
+    if (diagnostic.field == "permissions") {
+        return "unknown permissions: " + diagnostic.constraint;
+    }
+    if (diagnostic.field == "input_schema_json") {
+        return "input_schema_json must be a parseable JSON object";
+    }
+    if (diagnostic.field == "output_schema_json") {
+        return "output_schema_json must be a parseable JSON object";
+    }
+    return validation.message;
+}
 
 bool AssignIntField(
     const std::vector<std::string>& fields,
@@ -141,35 +173,16 @@ CliSpecParseResult ParseCliSpecLine(const std::string& line) {
             .error_message = "unsupported CLI parse_mode: " + spec.parse_mode,
         };
     }
-    if (!IsSupportedRiskLevel(spec.risk_level)) {
-        return {
-            .spec = std::nullopt,
-            .error_message = "unsupported risk_level: " + spec.risk_level,
-        };
-    }
-    if (const auto unknown_permissions = PermissionModel::unknown_permissions(spec.permissions);
-        !unknown_permissions.empty()) {
-        return {
-            .spec = std::nullopt,
-            .error_message = "unknown permissions: " + JoinStrings(unknown_permissions),
-        };
-    }
     if (const auto required_arg_error = RequiredArgTemplateError(spec); !required_arg_error.empty()) {
         return {
             .spec = std::nullopt,
             .error_message = required_arg_error,
         };
     }
-    if (!IsParseableJsonObjectSchema(spec.input_schema_json)) {
+    if (const auto declaration_error = CliCapabilityDeclarationError(spec); !declaration_error.empty()) {
         return {
             .spec = std::nullopt,
-            .error_message = "input_schema_json must be a parseable JSON object",
-        };
-    }
-    if (!IsParseableJsonObjectSchema(spec.output_schema_json)) {
-        return {
-            .spec = std::nullopt,
-            .error_message = "output_schema_json must be a parseable JSON object",
+            .error_message = declaration_error,
         };
     }
     return {

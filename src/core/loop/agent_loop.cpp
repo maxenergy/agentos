@@ -152,7 +152,7 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
         };
     }
 
-    if (const auto schema = ValidateRequiredInputFields(manifest, call.arguments); !schema.valid) {
+    if (const auto schema = ValidateCapabilityInput(manifest, call.arguments); !schema.valid) {
         TaskStepRecord step{
             .target_kind = RouteTargetKind::skill,
             .target_name = route.target_name,

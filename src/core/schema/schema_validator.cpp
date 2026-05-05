@@ -2086,4 +2086,17 @@ SchemaValidationResult ValidateRequiredInputFields(
     return result;
 }
 
+SchemaValidationResult ValidateCapabilityInput(
+    const SkillManifest& manifest,
+    const StringMap& arguments) {
+    return ValidateRequiredInputFields(manifest, arguments);
+}
+
+CapabilityContractValidationResult ValidateCapabilityOutput(
+    const SkillManifest& manifest,
+    const std::string_view output_json,
+    const std::string_view subject) {
+    return ValidateCapabilityContractJsonObject(manifest.output_schema_json, output_json, subject);
+}
+
 }  // namespace agentos

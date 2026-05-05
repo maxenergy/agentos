@@ -212,7 +212,50 @@ std::string HealthTemplatePlaceholderError(const PluginSpec& spec) {
     return {};
 }
 
+SkillManifest CapabilityManifestFromPluginSpec(const PluginSpec& spec) {
+    return {
+        .name = spec.name,
+        .version = spec.manifest_version,
+        .description = spec.description,
+        .input_schema_json = spec.input_schema_json,
+        .output_schema_json = spec.output_schema_json,
+        .risk_level = spec.risk_level,
+        .permissions = spec.permissions,
+        .timeout_ms = spec.timeout_ms,
+    };
+}
+
+std::string PluginCapabilityDeclarationError(const PluginSpec& spec) {
+    const auto validation = ValidateCapabilityDeclaration(CapabilityManifestFromPluginSpec(spec));
+    if (validation.valid) {
+        return {};
+    }
+    if (validation.diagnostics.empty()) {
+        return validation.message;
+    }
+    const auto& diagnostic = validation.diagnostics.front();
+    if (diagnostic.field == "risk_level") {
+        return "unsupported risk_level: " + spec.risk_level;
+    }
+    if (diagnostic.field == "permissions") {
+        return "unknown permissions: " + diagnostic.constraint;
+    }
+    if (diagnostic.field == "input_schema_json") {
+        return "input_schema_json must be a parseable JSON object";
+    }
+    if (diagnostic.field == "output_schema_json") {
+        return "output_schema_json must be a parseable JSON object";
+    }
+    return validation.message;
+}
+
 PluginSpecParseResult ValidatePluginSpec(PluginSpec spec) {
+    if (const auto declaration_error = PluginCapabilityDeclarationError(spec); !declaration_error.empty()) {
+        return {
+            .spec = std::nullopt,
+            .error_message = declaration_error,
+        };
+    }
     if (!PluginSpecIsSupported(spec)) {
         return {
             .spec = std::nullopt,
@@ -229,18 +272,6 @@ PluginSpecParseResult ValidatePluginSpec(PluginSpec spec) {
         return {
             .spec = std::nullopt,
             .error_message = health_arg_error,
-        };
-    }
-    if (!IsParseableJsonObjectSchema(spec.input_schema_json)) {
-        return {
-            .spec = std::nullopt,
-            .error_message = "input_schema_json must be a parseable JSON object",
-        };
-    }
-    if (!IsParseableJsonObjectSchema(spec.output_schema_json)) {
-        return {
-            .spec = std::nullopt,
-            .error_message = "output_schema_json must be a parseable JSON object",
         };
     }
     return {

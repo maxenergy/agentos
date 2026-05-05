@@ -1,6 +1,6 @@
 # G006 Move Callers To Capability Contract Validation
 
-Status: blocked
+Status: done
 Depends on: G005
 
 ## Objective
@@ -57,3 +57,11 @@ ctest --test-dir build -R "agentos_file_skill_policy_tests|agentos_cli_plugin_te
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g014 --target agentos_file_skill_policy_tests agentos_cli_plugin_tests agentos_spec_parsing_tests`
+- `ctest --test-dir build-codex-g014 -R "agentos_file_skill_policy_tests|agentos_cli_plugin_tests|agentos_spec_parsing_tests" --output-on-failure`
+- `rg -n "ValidateRequiredInputFields|JsonObjectSchemaValidationError|IsParseableJsonObjectSchema|PermissionModel::unknown_permissions|parse_risk_level" src/core/loop/agent_loop.cpp src/hosts/cli/cli_spec_loader.cpp src/hosts/plugin/plugin_manifest_loader.cpp src/hosts/plugin/plugin_schema_validator.cpp src/hosts/plugin/plugin_execution.cpp`
+- `git diff --check -- src/core/schema/schema_validator.cpp src/core/schema/schema_validator.hpp src/core/loop/agent_loop.cpp src/hosts/plugin/plugin_schema_validator.cpp src/hosts/cli/cli_spec_loader.cpp src/hosts/plugin/plugin_manifest_loader.cpp`
+
+Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so the focused touched-file check was used for this packet.
