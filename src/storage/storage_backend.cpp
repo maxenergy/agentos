@@ -56,6 +56,13 @@ StorageVerifyResult TsvStorageBackend::verify_manifest() const {
                 .message = "manifested runtime file is missing",
                 .relative_path = entry.relative_path,
             });
+        } else if (!std::filesystem::is_regular_file(path)) {
+            result.valid = false;
+            result.diagnostics.push_back(StorageBackendDiagnostic{
+                .code = "NonRegularManifestFile",
+                .message = "manifested runtime path is not a regular file",
+                .relative_path = entry.relative_path,
+            });
         }
     }
     return result;

@@ -1119,6 +1119,15 @@ void TestMemoryAndStorageCommands() {
     Expect(incomplete_backup_verify.output.find("missing=1") != std::string::npos,
         "storage verify src=... should report missing backup source files");
 
+    std::filesystem::create_directory(backup_source / "runtime" / "auth_sessions.tsv");
+    const auto non_regular_backup_verify = RunAgentos(workspace, {
+        "storage", "verify", "src=" + backup_source.string(), "strict=true"});
+    Expect(non_regular_backup_verify.exit_code != 0,
+        "storage verify src=... strict=true should fail when a manifested path is not a regular file");
+    Expect(non_regular_backup_verify.output.find("non_regular=1") != std::string::npos,
+        "storage verify src=... should report non-regular manifest paths through backend diagnostics");
+    std::filesystem::remove_all(backup_source / "runtime" / "auth_sessions.tsv");
+
     const auto import_source = workspace / "storage_import_source";
     std::filesystem::create_directories(import_source / "runtime");
     {

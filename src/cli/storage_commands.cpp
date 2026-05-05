@@ -1,5 +1,6 @@
 #include "cli/storage_commands.hpp"
 
+#include "storage/storage_backend.hpp"
 #include "storage/storage_export.hpp"
 #include "storage/storage_policy.hpp"
 #include "storage/storage_transaction.hpp"
@@ -50,9 +51,8 @@ std::filesystem::path WorkspaceRootFromManifest(const StorageVersionStore& stora
         : std::filesystem::current_path();
 }
 
-void PrintStorageStatus(const StorageVersionStore& storage_version_store) {
+void PrintStorageStatus(const StorageBackend& storage_backend, const std::filesystem::path& workspace) {
     const auto policy = CurrentStoragePolicy();
-    const auto workspace = WorkspaceRootFromManifest(storage_version_store);
     std::cout
         << "decision_id=" << policy.decision_id
         << " backend=" << policy.backend
@@ -65,7 +65,7 @@ void PrintStorageStatus(const StorageVersionStore& storage_version_store) {
         << " compatibility_contract=\"" << policy.compatibility_contract << "\""
         << '\n';
 
-    for (const auto& entry : storage_version_store.list()) {
+    for (const auto& entry : storage_backend.manifest_status().entries) {
         const auto path = workspace / entry.relative_path;
         std::uintmax_t bytes = 0;
         bool exists = false;
@@ -93,24 +93,31 @@ void PrintStorageStatus(const StorageVersionStore& storage_version_store) {
 }
 
 int VerifyStorageState(
-    const StorageVersionStore& storage_version_store,
+    const StorageBackend& storage_backend,
     const std::filesystem::path& root,
     const bool strict) {
-    const auto workspace = !root.empty()
-        ? root
-        : (storage_version_store.manifest_path().parent_path().filename() == "runtime"
-        ? storage_version_store.manifest_path().parent_path().parent_path()
-        : std::filesystem::current_path());
+    const auto workspace = !root.empty() ? root : std::filesystem::current_path();
+    const auto manifest_status = storage_backend.manifest_status();
+    const auto verify_result = storage_backend.verify_manifest();
 
     std::size_t total = 0;
     std::size_t missing = 0;
     std::size_t non_regular = 0;
-    for (const auto& entry : storage_version_store.list()) {
+    for (const auto& entry : manifest_status.entries) {
         ++total;
-        const auto path = workspace / entry.relative_path;
-        std::error_code error;
-        const bool exists = std::filesystem::exists(path, error) && !error;
-        const bool regular = exists && std::filesystem::is_regular_file(path, error) && !error;
+        bool exists = true;
+        bool regular = true;
+        for (const auto& diagnostic : verify_result.diagnostics) {
+            if (diagnostic.relative_path != entry.relative_path) {
+                continue;
+            }
+            if (diagnostic.code == "MissingManifestFile") {
+                exists = false;
+                regular = false;
+            } else if (diagnostic.code == "NonRegularManifestFile") {
+                regular = false;
+            }
+        }
         if (!exists) {
             ++missing;
         } else if (!regular) {
@@ -239,9 +246,11 @@ int RunStorageCommand(
 
     const auto command = std::string(argv[2]);
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto workspace = WorkspaceRootFromManifest(storage_version_store);
+    TsvStorageBackend storage_backend(workspace);
     if (command == "status") {
-        storage_version_store.ensure_current();
-        PrintStorageStatus(storage_version_store);
+        storage_backend.migrate();
+        PrintStorageStatus(storage_backend, workspace);
         return 0;
     }
 
@@ -249,16 +258,16 @@ int RunStorageCommand(
         const auto source = options.contains("src") ? std::filesystem::path(options.at("src")) : std::filesystem::path{};
         const bool strict = options.contains("strict") && options.at("strict") == "true";
         if (!source.empty()) {
-            StorageVersionStore source_store(source / "runtime" / "storage_manifest.tsv");
-            if (source_store.list().empty()) {
+            TsvStorageBackend source_backend(source);
+            if (source_backend.manifest_status().entries.empty()) {
                 std::cerr << "src does not contain a readable runtime/storage_manifest.tsv\n";
                 return 1;
             }
-            return VerifyStorageState(source_store, source, strict);
+            return VerifyStorageState(source_backend, source, strict);
         }
 
-        storage_version_store.ensure_current();
-        return VerifyStorageState(storage_version_store, {}, strict);
+        storage_backend.migrate();
+        return VerifyStorageState(storage_backend, workspace, strict);
     }
 
     if (command == "backups") {
@@ -281,7 +290,7 @@ int RunStorageCommand(
         }
 
         try {
-            const auto result = ImportStorageState(workspace, backup_root);
+            const auto result = storage_backend.import_state(backup_root);
             storage_version_store.ensure_current();
             std::cout
                 << "restored_files=" << result.imported_files
@@ -298,7 +307,7 @@ int RunStorageCommand(
     }
 
     if (command == "migrate") {
-        const auto result = storage_version_store.migrate_to_current();
+        const auto result = storage_backend.migrate();
         std::vector<std::string> normalized_targets;
         if (!memory_manager.storage_dir().empty()) {
             const auto task_log_path = memory_manager.storage_dir() / "task_log.tsv";
@@ -366,11 +375,8 @@ int RunStorageCommand(
             return 1;
         }
 
-        storage_version_store.ensure_current();
-        const auto result = ExportStorageState(
-            std::filesystem::current_path(),
-            storage_version_store,
-            std::filesystem::path(destination));
+        storage_backend.migrate();
+        const auto result = storage_backend.export_state(std::filesystem::path(destination));
         std::cout
             << "exported_files=" << result.exported_files
             << " destination=" << result.destination_root.string()
@@ -385,9 +391,7 @@ int RunStorageCommand(
             return 1;
         }
 
-        const auto result = ImportStorageState(
-            std::filesystem::current_path(),
-            std::filesystem::path(source));
+        const auto result = storage_backend.import_state(std::filesystem::path(source));
         storage_version_store.ensure_current();
         std::cout
             << "imported_files=" << result.imported_files
@@ -399,7 +403,7 @@ int RunStorageCommand(
     }
 
     if (command == "recover") {
-        const auto result = RecoverStorageTransactions(storage_version_store.manifest_path().parent_path());
+        const auto result = storage_backend.recover_transactions();
         std::cout
             << "committed_replayed=" << result.committed_replayed
             << " rolled_back=" << result.rolled_back
@@ -431,7 +435,8 @@ int RunStorageCommand(
             return 1;
         }
 
-        storage_version_store.ensure_current();
+        storage_backend.compact(target);
+        storage_backend.migrate();
         std::cout << "compacted=";
         for (std::size_t index = 0; index < compacted.size(); ++index) {
             if (index != 0) {

@@ -19,7 +19,7 @@ Status values:
 | G009 | ready | G006 | high | Normalize Plugin protocol output before PluginSkillInvoker mapping. |
 | G010 | blocked | G009 | medium | Clarify Plugin Session process-pool policy and admin scope. |
 | G011 | done | none | high | Introduce the Runtime Store StorageBackend seam with a TSV adapter. |
-| G012 | ready | G011 | medium | Move storage commands and diagnostics through the StorageBackend seam. |
+| G012 | done | G011 | medium | Move storage commands and diagnostics through the StorageBackend seam. |
 | G013 | ready | G011 | medium | Harden Audit History recovery tests and document lossy reconstruction. |
 | G014 | done | none | medium | Extract Auth Login Flow mode modules from provider adapters. |
 | G015 | ready | G014 | medium | Define Auth Profile selection across login modes. |

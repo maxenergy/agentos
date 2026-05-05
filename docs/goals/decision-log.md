@@ -45,6 +45,12 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - The TSV adapter wraps existing atomic file, append, transaction, manifest, export/import, and migrate helpers without changing on-disk layout.
 - Compaction is represented on the backend seam but remains delegated to owning stores until callers move in later goals.
 
+## 2026-05-06 G012 Storage Commands Through StorageBackend
+
+- Storage status, verify, export, import, migrate, recover, and compact commands now construct a `TsvStorageBackend` for backend-owned storage operations.
+- Manifest diagnostics are sourced from `StorageBackend::verify_manifest`, including missing and non-regular manifest paths while preserving the existing CLI summary format.
+- Runtime store compaction remains owned by the concrete stores, with `StorageBackend::compact` called as the backend seam and reporting delegated TSV compaction.
+
 ## 2026-05-06 G014 Auth Login Flow Modules
 
 - Extracted Auth Login Flow modes behind `auth_login_flow.*`; provider adapters now select modes but delegate token/session construction to the flow module.

@@ -1,6 +1,6 @@
 # G012 Storage Commands Through StorageBackend
 
-Status: blocked
+Status: done
 Depends on: G011
 
 ## Objective
@@ -54,3 +54,10 @@ ctest --test-dir build -R "agentos_storage_tests|agentos_cli_integration_tests" 
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g014 --target agentos_storage_tests agentos_cli_integration_tests`
+- `ctest --test-dir build-codex-g014 -R "agentos_storage_tests|agentos_cli_integration_tests" --output-on-failure`
+- `git diff --check -- src/cli/storage_commands.cpp src/storage/storage_backend.cpp tests/cli_integration_tests.cpp`
+
+Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so the focused touched-file check was used for this packet.
