@@ -56,3 +56,9 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - Extracted Auth Login Flow modes behind `auth_login_flow.*`; provider adapters now select modes but delegate token/session construction to the flow module.
 - Login flows use `SecureTokenStore` and `SessionStore` through the existing Credential Store seams and do not select platform token backends.
 - `StaticAuthProviderAdapter` remains responsible for descriptors, defaults, endpoint diagnostics, and provider probes.
+
+## 2026-05-06 G015 Auth Profile Strategy
+
+- Auth Profile remains the provider-specific session selection concept; `profile=` and `auth_profile=` stay compatible as task-level overrides.
+- Provider defaults are persisted through `runtime/auth_profiles.tsv`; auth status, refresh, logout, OAuth, and login commands resolve omitted profiles through the default mapping.
+- Multiple sessions for one provider are listed with `auth profiles [provider]`, with exactly the mapped default marked as `default=true`.

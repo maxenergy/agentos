@@ -22,7 +22,7 @@ Status values:
 | G012 | done | G011 | medium | Move storage commands and diagnostics through the StorageBackend seam. |
 | G013 | ready | G011 | medium | Harden Audit History recovery tests and document lossy reconstruction. |
 | G014 | done | none | medium | Extract Auth Login Flow mode modules from provider adapters. |
-| G015 | ready | G014 | medium | Define Auth Profile selection across login modes. |
+| G015 | done | G014 | medium | Define Auth Profile selection across login modes. |
 | G016 | blocked | external provider | low | Track Anthropic PKCE defaults and promote only when stable endpoints exist. |
 | G017 | ready | none | low | Keep domain language and architecture docs synchronized during goals. |
 

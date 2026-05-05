@@ -1,6 +1,6 @@
 # G015 Auth Profile Strategy
 
-Status: blocked
+Status: done
 Depends on: G014
 
 ## Objective
@@ -54,3 +54,10 @@ ctest --test-dir build -R "agentos_auth_tests|agentos_agent_provider_tests|agent
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g014 --target agentos_auth_tests agentos_agent_provider_tests agentos_cli_integration_tests`
+- `ctest --test-dir build-codex-g014 -R "agentos_auth_tests|agentos_agent_provider_tests|agentos_cli_integration_tests" --output-on-failure`
+- `git diff --cached --check`
+
+Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so the staged diff check was used for this packet.
