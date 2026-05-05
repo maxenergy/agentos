@@ -1,6 +1,7 @@
 #include "core/orchestration/subagent_manager.hpp"
 
 #include "core/execution/task_lifecycle.hpp"
+#include "core/orchestration/agent_dispatch.hpp"
 #include "core/orchestration/agent_result_normalizer.hpp"
 #include "memory/lesson_hints.hpp"
 #include "utils/cancellation.hpp"
@@ -15,6 +16,7 @@
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 
 namespace agentos {
 
@@ -727,111 +729,37 @@ TaskStepRecord SubagentManager::run_one(
     const std::string& agent_name,
     const std::string& role,
     const std::shared_ptr<CancellationToken>& cancel) const {
-    const auto started_at = std::chrono::steady_clock::now();
-
-    // Pre-dispatch cancellation: covers parallel futures that the executor
-    // launched before the orchestrator tripped the token. The check repeats
-    // after policy evaluation below for the legacy run_task path.
-    if (cancel && cancel->is_cancelled()) {
-        return {
-            .target_kind = RouteTargetKind::agent,
-            .target_name = agent_name,
-            .success = false,
-            .duration_ms = ElapsedMs(started_at),
-            .error_code = "Cancelled",
-            .error_message = "subagent dispatch was cancelled by the orchestrator",
-        };
-    }
-
     const auto agent = agent_registry_.find(agent_name);
-    if (!agent || !agent->healthy()) {
-        return {
-            .target_kind = RouteTargetKind::agent,
-            .target_name = agent_name,
-            .success = false,
-            .duration_ms = ElapsedMs(started_at),
-            .error_code = "AgentUnavailable",
-            .error_message = "Subagent was not found or is unhealthy.",
-        };
-    }
-
     const auto subtask_objective = SubtaskObjectiveFor(task, agent_name, role);
-    AgentTask agent_task{
-        .task_id = task.task_id + "." + agent_name,
-        .task_type = task.task_type,
-        .objective = "[" + role + "] " + subtask_objective,
-        .workspace_path = task.workspace_path.string(),
-        .auth_profile = task.auth_profile,
-        .context_json = SubagentContextJson(task, agent_name, role, subtask_objective),
-        .constraints_json = "",
-        .timeout_ms = task.timeout_ms,
-        .budget_limit = task.budget_limit,
-    };
+    auto dispatch_result = DispatchAgent(
+        AgentDispatchInput{
+            .task = task,
+            .agent = agent,
+            .agent_name = agent_name,
+            .agent_task_id = task.task_id + "." + agent_name,
+            .objective = "[" + role + "] " + subtask_objective,
+            .context_json = SubagentContextJson(task, agent_name, role, subtask_objective),
+            .invocation_context = {
+                {"task_type", task.task_type},
+                {"parent_task_id", task.task_id},
+                {"agent", agent_name},
+                {"role", role},
+                {"original_objective", task.objective},
+                {"subtask_objective", subtask_objective},
+            },
+            .cancel = cancel,
+        },
+        policy_engine_,
+        audit_logger_,
+        memory_manager_);
 
-    auto policy = policy_engine_.evaluate_agent(task, agent->profile(), agent_task);
-    ApplyLessonPolicyHint(memory_manager_, task, agent_name, policy);
-    audit_logger_.record_policy(task.task_id, agent_name, policy);
-    if (!policy.allowed) {
-        return {
-            .target_kind = RouteTargetKind::agent,
-            .target_name = agent_name,
-            .success = false,
-            .duration_ms = ElapsedMs(started_at),
-            .error_code = "PolicyDenied",
-            .error_message = policy.reason,
-        };
+    auto step = std::move(dispatch_result.step);
+    if (step.error_code == "Cancelled" && step.error_message == "agent dispatch was cancelled by the orchestrator") {
+        step.error_message = "subagent dispatch was cancelled by the orchestrator";
+    } else if (step.error_code == "AgentUnavailable" && step.error_message == "Agent was not found or is unhealthy.") {
+        step.error_message = "Subagent was not found or is unhealthy.";
     }
-
-    // Phase 4 routing: prefer the V2 invoke() path on adapters that implement
-    // IAgentAdapterV2 so the orchestrator gets structured AgentUsage and a
-    // CancellationToken hook. Legacy-only adapters fall back to run_task().
-    AgentResult agent_result;
-    if (auto* v2 = dynamic_cast<IAgentAdapterV2*>(agent.get())) {
-        AgentInvocation invocation;
-        invocation.task_id = agent_task.task_id;
-        invocation.objective = agent_task.objective;
-        invocation.workspace_path = task.workspace_path;
-        invocation.auth_profile = task.auth_profile;
-        invocation.context = {
-            {"task_type", task.task_type},
-            {"parent_task_id", task.task_id},
-            {"agent", agent_name},
-            {"role", role},
-            {"original_objective", task.objective},
-            {"subtask_objective", subtask_objective},
-        };
-        invocation.timeout_ms = task.timeout_ms;
-        invocation.budget_limit_usd = task.budget_limit;
-        // Forward the orchestrator-scoped cancel token. V2 adapters that
-        // honor it can interrupt mid-call (e.g. close the SSE socket); the
-        // rest still get the pre-dispatch check above.
-        invocation.cancel = cancel;
-        agent_result = v2->invoke(invocation);
-    } else {
-        // Legacy path has no in-flight cancellation hook; the pre-dispatch
-        // check above is the only interruption point.
-        agent_result = agent->run_task(agent_task);
-    }
-
-    // Prefer measured `usage.cost_usd` when the V2 adapter populated it; fall
-    // back to legacy `estimated_cost` when usage is empty (zero means "we
-    // measured zero", but V2 adapters that have nothing to measure leave
-    // both fields at 0.0 so the orchestrator behavior is unchanged).
-    const double effective_cost = agent_result.usage.cost_usd > 0.0
-        ? agent_result.usage.cost_usd
-        : agent_result.estimated_cost;
-    return {
-        .target_kind = RouteTargetKind::agent,
-        .target_name = agent_name,
-        .success = agent_result.success,
-        .duration_ms = agent_result.duration_ms > 0 ? agent_result.duration_ms : ElapsedMs(started_at),
-        .estimated_cost = effective_cost,
-        .summary = agent_result.summary,
-        .structured_output_json = agent_result.structured_output_json,
-        .artifacts = agent_result.artifacts,
-        .error_code = agent_result.error_code,
-        .error_message = agent_result.error_message,
-    };
+    return step;
 }
 
 }  // namespace agentos

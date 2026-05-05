@@ -1,6 +1,6 @@
 # G002 Move Agent Callers Onto Agent Dispatch
 
-Status: blocked
+Status: done
 Depends on: G001
 
 ## Objective
@@ -58,3 +58,10 @@ ctest --test-dir build -R "agentos_subagent_session_tests|agentos_cli_integratio
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g014 --target agentos_agent_dispatch_tests agentos_subagent_session_tests agentos_cli_integration_tests`
+- `ctest --test-dir build-codex-g014 -R "agentos_agent_dispatch_tests|agentos_subagent_session_tests|agentos_cli_integration_tests" --output-on-failure`
+- `git diff --check -- src/core/loop/agent_loop.cpp src/core/orchestration/subagent_manager.cpp src/core/orchestration/agent_dispatch.cpp src/core/orchestration/agent_dispatch.hpp`
+
+Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so the focused touched-file check was used for this packet.

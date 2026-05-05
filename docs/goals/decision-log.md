@@ -21,6 +21,12 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - Agent Dispatch records policy audit events but intentionally does not record final task steps; callers remain responsible for task lifecycle ownership.
 - Direct dispatch tests live in `agentos_agent_dispatch_tests`; the existing subagent session tests remain the compatibility suite for current callers.
 
+## 2026-05-06 G002 Agent Dispatch Callers
+
+- `AgentLoop::run_agent_task` and `SubagentManager::run_one` now call `DispatchAgent` for agent policy evaluation, policy audit, V2 invocation preference, and legacy fallback.
+- AgentLoop still records the final task step and owns `TaskRunResult` finalization; Subagent Orchestration still records returned step candidates in caller-controlled order.
+- `resume_session_id` forwarding is part of Agent Dispatch input so the shared seam preserves AgentLoop V2 resume behavior.
+
 ## 2026-05-06 G005 Capability Contract Facade
 
 - Added `CapabilityContractValidationResult` and diagnostics to represent declaration and input/output shape validation without moving callers yet.

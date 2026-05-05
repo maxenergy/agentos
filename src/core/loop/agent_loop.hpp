@@ -30,13 +30,15 @@ public:
     // the agent dispatch path and checked before routing/policy work so the
     // caller can interrupt long-running tasks externally (e.g. Ctrl-C).
     TaskRunResult run(const TaskRequest& task,
-                      std::shared_ptr<CancellationToken> cancel = {});
+                      std::shared_ptr<CancellationToken> cancel = {},
+                      const AgentEventCallback& on_agent_event = {});
 
 private:
     TaskRunResult run_skill_task(const TaskRequest& task, const RouteDecision& route);
     TaskRunResult run_agent_task(const TaskRequest& task,
                                  const RouteDecision& route,
-                                 const std::shared_ptr<CancellationToken>& cancel);
+                                 const std::shared_ptr<CancellationToken>& cancel,
+                                 const AgentEventCallback& on_agent_event);
 
     SkillRegistry& skill_registry_;
     AgentRegistry& agent_registry_;

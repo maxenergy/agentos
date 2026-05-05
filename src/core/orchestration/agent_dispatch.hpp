@@ -3,6 +3,7 @@
 #include "core/models.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@ struct AgentDispatchInput {
     std::string constraints_json;
     StringMap invocation_context;
     StringMap invocation_constraints;
+    std::optional<std::string> resume_session_id;
     std::shared_ptr<CancellationToken> cancel;
     AgentEventCallback on_agent_event;
 };

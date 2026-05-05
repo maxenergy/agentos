@@ -1,6 +1,7 @@
 #include "core/loop/agent_loop.hpp"
 
 #include "core/execution/task_lifecycle.hpp"
+#include "core/orchestration/agent_dispatch.hpp"
 #include "core/schema/schema_validator.hpp"
 #include "memory/lesson_hints.hpp"
 #include "utils/cancellation.hpp"
@@ -8,6 +9,8 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <optional>
+#include <utility>
 
 namespace agentos {
 
@@ -53,7 +56,9 @@ AgentLoop::AgentLoop(
       memory_manager_(memory_manager),
       execution_cache_(execution_cache) {}
 
-TaskRunResult AgentLoop::run(const TaskRequest& task, std::shared_ptr<CancellationToken> cancel) {
+TaskRunResult AgentLoop::run(const TaskRequest& task,
+                             std::shared_ptr<CancellationToken> cancel,
+                             const AgentEventCallback& on_agent_event) {
     audit_logger_.record_task_start(task);
 
     // Pre-routing check: if the orchestrator cancelled before we even
@@ -94,7 +99,7 @@ TaskRunResult AgentLoop::run(const TaskRequest& task, std::shared_ptr<Cancellati
     if (route.target_kind == RouteTargetKind::skill) {
         result = run_skill_task(task, route);
     } else {
-        result = run_agent_task(task, route, cancel);
+        result = run_agent_task(task, route, cancel, on_agent_event);
     }
 
     FinalizeTaskRun(audit_logger_, memory_manager_, task, result);
@@ -199,7 +204,8 @@ TaskRunResult AgentLoop::run_skill_task(const TaskRequest& task, const RouteDeci
 
 TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task,
                                         const RouteDecision& route,
-                                        const std::shared_ptr<CancellationToken>& cancel) {
+                                        const std::shared_ptr<CancellationToken>& cancel,
+                                        const AgentEventCallback& on_agent_event) {
     const auto started_at = std::chrono::steady_clock::now();
     auto agent = agent_registry_.find(route.target_name);
 
@@ -215,104 +221,63 @@ TaskRunResult AgentLoop::run_agent_task(const TaskRequest& task,
         };
     }
 
-    AgentTask agent_task{
-        .task_id = task.task_id,
-        .task_type = task.task_type,
-        .objective = task.objective,
-        .workspace_path = task.workspace_path.string(),
-        .auth_profile = task.auth_profile,
-        .context_json = InputsAsJson(task.inputs),
-        .constraints_json = AgentConstraintsAsJson(task),
-        .timeout_ms = task.timeout_ms,
-        .budget_limit = task.budget_limit,
+    StringMap invocation_context{
+        {"task_type", task.task_type},
+        {"parent_task_id", task.task_id},
+        {"agent", route.target_name},
     };
-
-    auto policy = policy_engine_.evaluate_agent(task, agent->profile(), agent_task);
-    ApplyLessonPolicyHint(memory_manager_, task, route.target_name, policy);
-    audit_logger_.record_policy(task.task_id, route.target_name, policy);
-    if (!policy.allowed) {
-        return {
-            .success = false,
-            .summary = "Policy denied the selected agent.",
-            .route_target = route.target_name,
-            .route_kind = RouteTargetKind::agent,
-            .error_code = "PolicyDenied",
-            .error_message = policy.reason,
-            .duration_ms = ElapsedMs(started_at),
-        };
+    for (const auto& [key, value] : task.inputs) {
+        invocation_context[key] = value;
     }
 
-    // Pre-dispatch cancellation check after policy so denial diagnostics
-    // still flow through audit even when the user is also cancelling.
-    if (cancel && cancel->is_cancelled()) {
-        TaskStepRecord cancelled_step{
-            .target_kind = RouteTargetKind::agent,
-            .target_name = route.target_name,
-            .success = false,
-            .duration_ms = ElapsedMs(started_at),
-            .error_code = "Cancelled",
-            .error_message = "agent dispatch was cancelled by the orchestrator",
-        };
-        RecordTaskStep(audit_logger_, task.task_id, cancelled_step);
-        return {
-            .success = false,
-            .summary = "Agent dispatch cancelled.",
-            .route_target = route.target_name,
-            .route_kind = RouteTargetKind::agent,
-            .error_code = "Cancelled",
-            .error_message = cancelled_step.error_message,
-            .duration_ms = cancelled_step.duration_ms,
-            .steps = {cancelled_step},
-        };
+    StringMap invocation_constraints;
+    if (task.inputs.contains("model")) {
+        invocation_constraints["model"] = task.inputs.at("model");
     }
 
-    AgentResult agent_result;
-    if (auto* v2 = dynamic_cast<IAgentAdapterV2*>(agent.get())) {
-        AgentInvocation invocation;
-        invocation.task_id = agent_task.task_id;
-        invocation.objective = agent_task.objective;
-        invocation.workspace_path = task.workspace_path;
-        invocation.auth_profile = task.auth_profile;
-        invocation.context = {
-            {"task_type", task.task_type},
-            {"parent_task_id", task.task_id},
-            {"agent", route.target_name},
-        };
-        if (task.inputs.contains("model")) {
-            invocation.constraints["model"] = task.inputs.at("model");
+    auto dispatch_result = DispatchAgent(
+        AgentDispatchInput{
+            .task = task,
+            .agent = agent,
+            .agent_name = route.target_name,
+            .agent_task_id = task.task_id,
+            .objective = task.objective,
+            .context_json = InputsAsJson(task.inputs),
+            .constraints_json = AgentConstraintsAsJson(task),
+            .invocation_context = std::move(invocation_context),
+            .invocation_constraints = std::move(invocation_constraints),
+            .resume_session_id = task.inputs.contains("resume_session_id")
+                ? std::make_optional(task.inputs.at("resume_session_id"))
+                : std::nullopt,
+            .cancel = cancel,
+            .on_agent_event = on_agent_event,
+        },
+        policy_engine_,
+        audit_logger_,
+        memory_manager_);
+
+    auto step = dispatch_result.step;
+    std::string summary = step.summary;
+    if (summary.empty()) {
+        if (step.error_code == "PolicyDenied") {
+            summary = "Policy denied the selected agent.";
+        } else if (step.error_code == "Cancelled") {
+            summary = "Agent dispatch cancelled.";
+        } else if (step.error_code == "AgentUnavailable") {
+            summary = "Selected agent is no longer registered.";
         }
-        invocation.timeout_ms = task.timeout_ms;
-        invocation.budget_limit_usd = task.budget_limit;
-        invocation.cancel = cancel;
-        agent_result = v2->invoke(invocation);
-    } else {
-        agent_result = agent->run_task(agent_task);
     }
-
-    const double effective_cost = agent_result.usage.cost_usd > 0.0
-        ? agent_result.usage.cost_usd
-        : agent_result.estimated_cost;
-    TaskStepRecord step{
-        .target_kind = RouteTargetKind::agent,
-        .target_name = route.target_name,
-        .success = agent_result.success,
-        .duration_ms = agent_result.duration_ms,
-        .estimated_cost = effective_cost,
-        .summary = agent_result.summary,
-        .error_code = agent_result.error_code,
-        .error_message = agent_result.error_message,
-    };
 
     RecordTaskStep(audit_logger_, task.task_id, step);
 
     return {
-        .success = agent_result.success,
-        .summary = agent_result.summary,
+        .success = dispatch_result.success,
+        .summary = summary,
         .route_target = route.target_name,
         .route_kind = RouteTargetKind::agent,
-        .output_json = agent_result.structured_output_json,
-        .error_code = agent_result.error_code,
-        .error_message = agent_result.error_message,
+        .output_json = dispatch_result.structured_output_json,
+        .error_code = dispatch_result.error_code,
+        .error_message = dispatch_result.error_message,
         .duration_ms = ElapsedMs(started_at),
         .steps = {step},
     };

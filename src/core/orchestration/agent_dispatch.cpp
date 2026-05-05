@@ -108,6 +108,7 @@ AgentDispatchResult DispatchAgent(
         invocation.constraints = input.invocation_constraints;
         invocation.timeout_ms = input.task.timeout_ms;
         invocation.budget_limit_usd = input.task.budget_limit;
+        invocation.resume_session_id = input.resume_session_id;
         invocation.cancel = input.cancel;
         agent_result = v2->invoke(invocation, input.on_agent_event);
     } else {

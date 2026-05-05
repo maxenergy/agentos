@@ -9,9 +9,9 @@ Status values:
 | Goal | Status | Depends On | Risk | Summary |
 | --- | --- | --- | --- | --- |
 | G001 | done | none | high | Create the Agent Dispatch seam and Dispatch Result type. |
-| G002 | ready | G001 | high | Move AgentLoop and SubagentManager agent paths onto Agent Dispatch. |
-| G003 | blocked | G002 | medium | Route decomposition planner dispatch through Agent Dispatch. |
-| G004 | blocked | G002 | medium | Wire REPL development/research dispatch through normal routing. |
+| G002 | done | G001 | high | Move AgentLoop and SubagentManager agent paths onto Agent Dispatch. |
+| G003 | ready | G002 | medium | Route decomposition planner dispatch through Agent Dispatch. |
+| G004 | ready | G002 | medium | Wire REPL development/research dispatch through normal routing. |
 | G005 | done | none | medium | Define the Capability Contract validation result and facade. |
 | G006 | ready | G005 | medium | Move Skill input and Plugin output callers onto Capability Contract validation. |
 | G007 | ready | G005 | medium | Complete learned Capability Declaration validation and reload for `learn_skill`. |
