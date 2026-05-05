@@ -8,8 +8,8 @@ Status values:
 
 | Goal | Status | Depends On | Risk | Summary |
 | --- | --- | --- | --- | --- |
-| G001 | ready | none | high | Create the Agent Dispatch seam and Dispatch Result type. |
-| G002 | blocked | G001 | high | Move AgentLoop and SubagentManager agent paths onto Agent Dispatch. |
+| G001 | done | none | high | Create the Agent Dispatch seam and Dispatch Result type. |
+| G002 | ready | G001 | high | Move AgentLoop and SubagentManager agent paths onto Agent Dispatch. |
 | G003 | blocked | G002 | medium | Route decomposition planner dispatch through Agent Dispatch. |
 | G004 | blocked | G002 | medium | Wire REPL development/research dispatch through normal routing. |
 | G005 | ready | none | medium | Define the Capability Contract validation result and facade. |
@@ -56,4 +56,3 @@ Batch 4:
 - G010
 - G016
 - G017 as ongoing maintenance
-

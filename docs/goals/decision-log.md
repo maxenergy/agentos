@@ -15,3 +15,8 @@ Use this log for small decisions made while executing goal packets. Prefer `CONT
 - Auth Profile is the credential/session selection concept. Avoid "account".
 - Auth Login Flow obtains tokens and sessions; Credential Store owns platform backend selection.
 
+## 2026-05-06 G001 Agent Dispatch Seam
+
+- Added `AgentDispatchInput` and `AgentDispatchResult` as the shared boundary for agent policy evaluation, dispatch, and step candidate creation.
+- Agent Dispatch records policy audit events but intentionally does not record final task steps; callers remain responsible for task lifecycle ownership.
+- Direct dispatch tests live in `agentos_agent_dispatch_tests`; the existing subagent session tests remain the compatibility suite for current callers.

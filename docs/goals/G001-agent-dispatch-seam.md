@@ -1,6 +1,6 @@
 # G001 Agent Dispatch Seam
 
-Status: ready
+Status: done
 
 ## Objective
 
@@ -67,3 +67,10 @@ cmake --build build --target agentos_subagent_session_tests
 ctest --test-dir build -R agentos_subagent_session_tests --output-on-failure
 git diff --check
 ```
+
+Completed verification:
+
+- `cmake --build build-codex-g001 --target agentos_agent_dispatch_tests`
+- `ctest --test-dir build-codex-g001 -R agentos_agent_dispatch_tests --output-on-failure`
+- `cmake --build build-codex-g001 --target agentos_subagent_session_tests`
+- `ctest --test-dir build-codex-g001 -R agentos_subagent_session_tests --output-on-failure`
