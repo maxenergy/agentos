@@ -1,7 +1,40 @@
-build/
-out/
-runtime/
+# Build outputs
+/build/
+/build-*/
+/out/
+/dist/
+**/build/
+**/dist/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+compile_commands.json
+CMakeUserPresets.json
+
+# Runtime and local generated state
+/runtime/
+/runtime_export/
+/cli_import_target/
+/rtsp_check/
+
+# Local agent worktrees and tool state
+/.claude/worktrees/
+
+# IDE and editor state
 .vs/
 .idea/
-CMakeUserPresets.json
-GEMINI.md
+.vscode/
+
+# Local logs and temp files
+*.log
+*.tmp
+*.temp
+
+# OS metadata
+.DS_Store
+Thumbs.db
