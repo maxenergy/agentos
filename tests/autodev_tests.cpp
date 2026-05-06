@@ -615,6 +615,11 @@ void TestApproveSpecFreezesHashBoundRevision() {
         "events.ndjson should record spec approved event");
     Expect(events.find("\"type\":\"autodev.tasks.materialized\"") != std::string::npos,
         "events.ndjson should record task materialization event");
+    std::string load_events_error;
+    const auto event_lines = store.load_event_lines(submit.job.job_id, &load_events_error);
+    Expect(event_lines.has_value(), "load_event_lines should read append-only runtime event history");
+    Expect(event_lines.has_value() && !event_lines->empty(),
+        "load_event_lines should return runtime event lines");
 }
 
 }  // namespace

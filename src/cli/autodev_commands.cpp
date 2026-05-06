@@ -40,7 +40,8 @@ void PrintUsage() {
         << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
         << "  agentos autodev validate-spec job_id=<job_id>\n"
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
-        << "  agentos autodev tasks job_id=<job_id>\n";
+        << "  agentos autodev tasks job_id=<job_id>\n"
+        << "  agentos autodev events job_id=<job_id>\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -363,6 +364,54 @@ int RunTasks(const std::filesystem::path& workspace, const int argc, char* argv[
     return 0;
 }
 
+int RunEvents(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev events failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev events failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto lines = store.load_event_lines(job_id_it->second, &error);
+    if (!lines.has_value()) {
+        std::cerr << "autodev events failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev events\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << lines->size() << '\n';
+    for (const auto& line : *lines) {
+        try {
+            const auto event = nlohmann::json::parse(line);
+            std::cout << "- " << event.value("at", "") << " "
+                      << event.value("type", "unknown");
+            if (event.contains("status") && event.at("status").is_string()) {
+                std::cout << " status=" << event.at("status").get<std::string>();
+            }
+            if (event.contains("phase") && event.at("phase").is_string()) {
+                std::cout << " phase=" << event.at("phase").get<std::string>();
+            }
+            if (event.contains("next_action") && event.at("next_action").is_string()) {
+                std::cout << " next_action=" << event.at("next_action").get<std::string>();
+            }
+            if (event.contains("blocker") && event.at("blocker").is_string() && !event.at("blocker").get<std::string>().empty()) {
+                std::cout << " blocker=" << event.at("blocker").get<std::string>();
+            }
+            std::cout << '\n';
+        } catch (...) {
+            std::cout << "- " << line << '\n';
+        }
+    }
+    return 0;
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -493,6 +542,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "tasks") {
         return RunTasks(workspace, argc, argv);
+    }
+    if (subcommand == "events") {
+        return RunEvents(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';

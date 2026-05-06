@@ -2470,6 +2470,14 @@ void TestAutoDevCommands() {
         "autodev tasks should fail before runtime tasks are materialized");
     Expect(tasks_before_approval.output.find("AutoDev tasks not found") != std::string::npos,
         "autodev tasks should explain missing tasks.json before approval");
+    const auto events_result = RunAgentos(workspace, {"autodev", "events", "job_id=" + job_id});
+    Expect(events_result.exit_code == 0, "autodev events should read append-only job history");
+    Expect(events_result.output.find("AutoDev events") != std::string::npos,
+        "autodev events should print heading");
+    Expect(events_result.output.find("autodev.job.submitted") != std::string::npos,
+        "autodev events should include submit event");
+    Expect(events_result.output.find("autodev.spec.approval_blocked") != std::string::npos,
+        "autodev events should include approval blocked event");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

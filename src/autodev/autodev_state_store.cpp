@@ -1234,4 +1234,36 @@ std::optional<std::vector<AutoDevTask>> AutoDevStateStore::load_tasks(
     }
 }
 
+std::optional<std::vector<std::string>> AutoDevStateStore::load_event_lines(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = events_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev events not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    return lines;
+}
+
 }  // namespace agentos
