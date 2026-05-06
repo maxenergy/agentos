@@ -3842,6 +3842,30 @@ void TestAutoDevCommands() {
         "autodev acceptance-gate should append an acceptance completed event");
     Expect(executable_events.output.find("autodev.final_review.completed") != std::string::npos,
         "autodev final-review should append a final review completed event");
+    const auto diff_events_json = RunAgentos(workspace, {
+        "autodev",
+        "events",
+        "job_id=" + executable_job_id,
+        "format=json",
+        "type=autodev.diff_guard.completed"});
+    Expect(diff_events_json.exit_code == 0,
+        "autodev events format=json should support type filters");
+    Expect(diff_events_json.output.find("\"type\": \"autodev.diff_guard.completed\"") != std::string::npos,
+        "autodev events format=json should preserve event type");
+    Expect(diff_events_json.output.find("\"events\": [") != std::string::npos,
+        "autodev events format=json should include events array");
+    Expect(diff_events_json.output.find("\"type\": \"autodev.verification.completed\"") == std::string::npos,
+        "autodev events type filter should exclude other event types");
+    const auto future_events_json = RunAgentos(workspace, {
+        "autodev",
+        "events",
+        "job_id=" + executable_job_id,
+        "format=json",
+        "since=9999-01-01T00:00:00Z"});
+    Expect(future_events_json.exit_code == 0,
+        "autodev events format=json should support since filters");
+    Expect(future_events_json.output.find("\"total\": 0") != std::string::npos,
+        "autodev events since filter should return zero future events");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

@@ -585,7 +585,7 @@ void PrintUsage() {
         << "  agentos autodev cancel job_id=<job_id>\n"
         << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
-        << "  agentos autodev events job_id=<job_id>\n"
+        << "  agentos autodev events job_id=<job_id> [format=text|json] [type=<event_type>] [since=<iso8601>]\n"
         << "  agentos autodev run-job job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos autodev run-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n";
@@ -1084,33 +1084,82 @@ int RunEvents(const std::filesystem::path& workspace, const int argc, char* argv
         return 1;
     }
 
-    std::cout << "AutoDev events\n"
-              << "job_id: " << job_id_it->second << '\n'
-              << "total:  " << lines->size() << '\n';
+    const auto type_it = options.find("type");
+    const auto since_it = options.find("since");
+    const std::optional<std::string> type_filter =
+        type_it != options.end() && !type_it->second.empty()
+            ? std::optional<std::string>(type_it->second)
+            : std::nullopt;
+    const std::optional<std::string> since_filter =
+        since_it != options.end() && !since_it->second.empty()
+            ? std::optional<std::string>(since_it->second)
+            : std::nullopt;
+
+    std::vector<nlohmann::json> events;
     for (const auto& line : *lines) {
         try {
-            const auto event = nlohmann::json::parse(line);
-            std::cout << "- " << event.value("at", "") << " "
-                      << event.value("type", "unknown");
-            if (event.contains("status") && event.at("status").is_string()) {
-                std::cout << " status=" << event.at("status").get<std::string>();
+            auto event = nlohmann::json::parse(line);
+            if (type_filter.has_value() && event.value("type", std::string{}) != *type_filter) {
+                continue;
             }
-            if (event.contains("phase") && event.at("phase").is_string()) {
-                std::cout << " phase=" << event.at("phase").get<std::string>();
+            if (since_filter.has_value() && event.value("at", std::string{}) < *since_filter) {
+                continue;
             }
-            if (event.contains("next_action") && event.at("next_action").is_string()) {
-                std::cout << " next_action=" << event.at("next_action").get<std::string>();
-            }
-            if (event.contains("prompt_artifact") && event.at("prompt_artifact").is_string()) {
-                std::cout << " prompt_artifact=" << event.at("prompt_artifact").get<std::string>();
-            }
-            if (event.contains("blocker") && event.at("blocker").is_string() && !event.at("blocker").get<std::string>().empty()) {
-                std::cout << " blocker=" << event.at("blocker").get<std::string>();
-            }
-            std::cout << '\n';
+            events.push_back(std::move(event));
         } catch (...) {
-            std::cout << "- " << line << '\n';
+            if (type_filter.has_value() || since_filter.has_value()) {
+                continue;
+            }
+            events.push_back(nlohmann::json{
+                {"parse_error", true},
+                {"raw", line},
+            });
         }
+    }
+
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"job_id", job_id_it->second},
+            {"total", events.size()},
+            {"type", type_filter.value_or("")},
+            {"since", since_filter.value_or("")},
+            {"events", events},
+        });
+        return 0;
+    }
+
+    std::cout << "AutoDev events\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << events.size() << '\n';
+    if (type_filter.has_value()) {
+        std::cout << "type:   " << *type_filter << '\n';
+    }
+    if (since_filter.has_value()) {
+        std::cout << "since:  " << *since_filter << '\n';
+    }
+    for (const auto& event : events) {
+        if (event.value("parse_error", false)) {
+            std::cout << "- " << event.value("raw", std::string{}) << '\n';
+            continue;
+        }
+        std::cout << "- " << event.value("at", "") << " "
+                  << event.value("type", "unknown");
+        if (event.contains("status") && event.at("status").is_string()) {
+            std::cout << " status=" << event.at("status").get<std::string>();
+        }
+        if (event.contains("phase") && event.at("phase").is_string()) {
+            std::cout << " phase=" << event.at("phase").get<std::string>();
+        }
+        if (event.contains("next_action") && event.at("next_action").is_string()) {
+            std::cout << " next_action=" << event.at("next_action").get<std::string>();
+        }
+        if (event.contains("prompt_artifact") && event.at("prompt_artifact").is_string()) {
+            std::cout << " prompt_artifact=" << event.at("prompt_artifact").get<std::string>();
+        }
+        if (event.contains("blocker") && event.at("blocker").is_string() && !event.at("blocker").get<std::string>().empty()) {
+            std::cout << " blocker=" << event.at("blocker").get<std::string>();
+        }
+        std::cout << '\n';
     }
     return 0;
 }

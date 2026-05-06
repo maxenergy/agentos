@@ -15,7 +15,7 @@ Generated goal docs include `VERIFY.template.md`, `FINAL_REVIEW.template.md`, an
 | Path | Purpose | CLI |
 |---|---|---|
 | `job.json` | Current job state: status, phase, next action, worktree paths, spec hash, blocker, timestamps. | `agentos autodev status job_id=<job_id>` |
-| `events.ndjson` | Append-only audit/event history for the job. | `agentos autodev events job_id=<job_id>` |
+| `events.ndjson` | Append-only audit/event history for the job. | `agentos autodev events job_id=<job_id> [format=json] [type=<event_type>] [since=<iso8601>]` |
 | `tasks.json` | Materialized frozen tasks from the approved spec, including allowed/blocked files, acceptance counts, and retry counters. | `agentos autodev tasks job_id=<job_id>` |
 | `turns.json` | Execution turn records, including synthetic blocked turns for fail-closed execution paths. | `agentos autodev turns job_id=<job_id>` |
 | `verification.json` | Verification facts from AgentOS-run `verify_command` executions. | `agentos autodev verifications job_id=<job_id>` |
@@ -45,6 +45,7 @@ agentos autodev verifications job_id=<job_id> format=json
 agentos autodev diffs job_id=<job_id> format=json
 agentos autodev acceptances job_id=<job_id> format=json
 agentos autodev final-reviews job_id=<job_id> format=json
+agentos autodev events job_id=<job_id> format=json [type=<event_type>] [since=<iso8601>]
 ```
 
 `summary format=json` includes:
