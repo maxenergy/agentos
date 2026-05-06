@@ -91,6 +91,15 @@ struct AutoDevSnapshotResult {
     std::filesystem::path snapshot_artifact_path;
 };
 
+struct AutoDevRollbackResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    AutoDevTask task;
+    AutoDevRollback rollback;
+    std::filesystem::path rollbacks_path;
+};
+
 struct AutoDevDiffGuardResult {
     bool success = false;
     std::string error_message;
@@ -165,6 +174,7 @@ public:
         const AutoDevExecutionAdapterProfile& adapter_profile,
         const std::string& reason);
     AutoDevSnapshotResult record_task_snapshot(const std::string& job_id, const std::string& task_id);
+    AutoDevRollbackResult rollback_soft(const std::string& job_id, const std::string& task_id);
     AutoDevVerifyTaskResult verify_task(
         const std::string& job_id,
         const std::string& task_id,

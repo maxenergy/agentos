@@ -879,6 +879,29 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     Expect(!blocked_diff.diff_guard.outside_allowed_files.empty() &&
                blocked_diff.diff_guard.outside_allowed_files.front() == "package.json",
         "diff_guard should record changes outside allowed files");
+    const auto soft_rollback = store.rollback_soft(submit.job.job_id, "task-001");
+    Expect(soft_rollback.success,
+        "rollback_soft should restore tracked task files in the job worktree");
+    Expect(soft_rollback.rollback.rollback_id == "rollback-001",
+        "first soft rollback should use rollback-001");
+    Expect(soft_rollback.rollback.mode == "soft",
+        "rollback_soft should record soft rollback mode");
+    Expect(soft_rollback.rollback.status == "completed",
+        "rollback_soft should record completed status when restore succeeds");
+    Expect(soft_rollback.rollback.executed,
+        "rollback_soft should record that a safe restore was executed");
+    Expect(!soft_rollback.rollback.destructive,
+        "rollback_soft should record non-destructive rollback");
+    Expect(!soft_rollback.rollback.target_files.empty() &&
+               soft_rollback.rollback.target_files.front() == "README.md",
+        "rollback_soft should target only allowed tracked task files");
+    Expect(ReadFile(approved.job.job_worktree_path / "README.md") == "fixture\n",
+        "rollback_soft should restore tracked allowed file content in job worktree");
+    Expect(std::filesystem::exists(approved.job.job_worktree_path / "package.json"),
+        "rollback_soft should not clean untracked files");
+    const auto rollbacks_after_soft = store.load_rollbacks(submit.job.job_id, &rollbacks_error);
+    Expect(rollbacks_after_soft.has_value() && rollbacks_after_soft->size() == 1,
+        "load_rollbacks should read recorded soft rollback facts");
 
     Expect(std::filesystem::exists(store.turns_path(submit.job.job_id)),
         "recording execution blocked event should create turns.json");
@@ -926,6 +949,8 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record execution blocked event");
     Expect(events.find("\"type\":\"autodev.snapshot.recorded\"") != std::string::npos,
         "events.ndjson should record snapshot event");
+    Expect(events.find("\"type\":\"autodev.rollback.recorded\"") != std::string::npos,
+        "events.ndjson should record rollback event");
     Expect(events.find("\"turn_id\":\"turn-001\"") != std::string::npos,
         "execution blocked event should link to the synthetic turn record");
     Expect(events.find("\"prompt_artifact\"") != std::string::npos,

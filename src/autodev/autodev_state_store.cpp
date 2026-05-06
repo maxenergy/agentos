@@ -413,6 +413,28 @@ std::string NextSnapshotId(const nlohmann::json& snapshot_records) {
     return out.str();
 }
 
+std::string NextRollbackId(const nlohmann::json& rollback_records) {
+    int max_rollback = 0;
+    if (rollback_records.is_array()) {
+        static const std::regex pattern(R"(^rollback-([0-9]{3})$)");
+        for (const auto& rollback : rollback_records) {
+            if (!rollback.is_object() ||
+                !rollback.contains("rollback_id") ||
+                !rollback.at("rollback_id").is_string()) {
+                continue;
+            }
+            std::smatch match;
+            const auto rollback_id = rollback.at("rollback_id").get<std::string>();
+            if (std::regex_match(rollback_id, match, pattern)) {
+                max_rollback = std::max(max_rollback, std::stoi(match[1].str()));
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "rollback-" << std::setw(3) << std::setfill('0') << (max_rollback + 1);
+    return out.str();
+}
+
 std::string NextVerificationId(const nlohmann::json& verification_records) {
     int max_verification = 0;
     if (verification_records.is_array()) {
@@ -1697,6 +1719,132 @@ AutoDevSnapshotResult AutoDevStateStore::record_task_snapshot(
     result.snapshot = std::move(snapshot);
     result.snapshots_path = this->snapshots_path(job_id);
     result.snapshot_artifact_path = *result.snapshot.artifact_path;
+    return result;
+}
+
+AutoDevRollbackResult AutoDevStateStore::rollback_soft(
+    const std::string& job_id,
+    const std::string& task_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevRollbackResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevRollbackResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (task_id.empty()) {
+        return fail(std::move(job), "task_id is required");
+    }
+    if (job.isolation_status != "ready" || !std::filesystem::exists(job.job_worktree_path)) {
+        return fail(std::move(job), "workspace isolation is not ready");
+    }
+    if (!job.spec_revision.has_value() || !job.spec_hash.has_value()) {
+        return fail(std::move(job), "no approved frozen spec is recorded on the job");
+    }
+
+    auto maybe_tasks = load_tasks(job_id, &load_error);
+    if (!maybe_tasks.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    const auto task_it = std::find_if(maybe_tasks->begin(), maybe_tasks->end(), [&task_id](const AutoDevTask& task) {
+        return task.task_id == task_id;
+    });
+    if (task_it == maybe_tasks->end()) {
+        return fail(std::move(job), "AutoDev task not found: " + task_id);
+    }
+    const AutoDevTask task = *task_it;
+
+    nlohmann::json rollback_records = nlohmann::json::array();
+    if (std::filesystem::exists(rollbacks_path(job_id))) {
+        try {
+            rollback_records = nlohmann::json::parse(ReadFile(rollbacks_path(job_id)));
+            if (!rollback_records.is_array()) {
+                rollback_records = nlohmann::json::array();
+            }
+        } catch (...) {
+            rollback_records = nlohmann::json::array();
+        }
+    }
+
+    AutoDevRollback rollback;
+    rollback.rollback_id = NextRollbackId(rollback_records);
+    rollback.job_id = job.job_id;
+    rollback.task_id = task.task_id;
+    rollback.mode = "soft";
+    rollback.destructive = false;
+    rollback.recorded_at = IsoUtcNow();
+
+    const auto status = GitCommand(job.job_worktree_path, "status --porcelain --untracked-files=all");
+    if (status.exit_code != 0) {
+        return fail(std::move(job), "could not inspect job worktree status: " + Trim(status.output));
+    }
+    for (const auto& line : Lines(status.output)) {
+        if (line.rfind("??", 0) == 0) {
+            continue;
+        }
+        const auto path = GitStatusPath(line);
+        if (!path.empty() && PathMatchesAnyPolicyEntry(path, task.allowed_files)) {
+            rollback.target_files.push_back(path);
+        }
+    }
+    std::sort(rollback.target_files.begin(), rollback.target_files.end());
+    rollback.target_files.erase(std::unique(rollback.target_files.begin(), rollback.target_files.end()),
+        rollback.target_files.end());
+
+    if (rollback.target_files.empty()) {
+        rollback.status = "skipped";
+        rollback.executed = false;
+        rollback.reason = "no tracked task files needed soft rollback";
+    } else {
+        std::string restore_args = "restore --worktree --";
+        for (const auto& path : rollback.target_files) {
+            restore_args += " " + ShellQuote(path);
+        }
+        const auto restore = GitCommand(job.job_worktree_path, restore_args);
+        if (restore.exit_code != 0) {
+            rollback.status = "failed";
+            rollback.executed = false;
+            rollback.reason = "git restore failed: " + Trim(restore.output);
+        } else {
+            rollback.status = "completed";
+            rollback.executed = true;
+            rollback.reason = "restored tracked task files in job worktree";
+        }
+    }
+
+    rollback_records.push_back(ToJson(rollback));
+    WriteFileAtomically(rollbacks_path(job.job_id), rollback_records.dump(2) + "\n");
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.rollback.recorded"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"rollback_id", rollback.rollback_id},
+        {"mode", rollback.mode},
+        {"rollback_status", rollback.status},
+        {"destructive", rollback.destructive},
+        {"executed", rollback.executed},
+        {"target_files", rollback.target_files},
+        {"reason", rollback.reason},
+        {"at", rollback.recorded_at},
+    });
+
+    AutoDevRollbackResult result;
+    result.success = rollback.status != "failed";
+    result.error_message = rollback.status == "failed" ? rollback.reason : std::string{};
+    result.job = std::move(job);
+    result.task = std::move(task);
+    result.rollback = std::move(rollback);
+    result.rollbacks_path = this->rollbacks_path(job_id);
     return result;
 }
 

@@ -244,6 +244,7 @@ nlohmann::json ToJson(const AutoDevRollback& rollback) {
         {"mode", rollback.mode},
         {"status", rollback.status},
         {"reason", rollback.reason},
+        {"target_files", rollback.target_files},
         {"destructive", rollback.destructive},
         {"executed", rollback.executed},
         {"recorded_at", rollback.recorded_at},
@@ -258,6 +259,7 @@ AutoDevRollback AutoDevRollbackFromJson(const nlohmann::json& json) {
     rollback.mode = json.value("mode", std::string{});
     rollback.status = json.value("status", std::string{});
     rollback.reason = json.value("reason", std::string{});
+    rollback.target_files = ReadStringVector(json, "target_files");
     rollback.destructive = json.value("destructive", false);
     rollback.executed = json.value("executed", false);
     rollback.recorded_at = json.value("recorded_at", std::string{});

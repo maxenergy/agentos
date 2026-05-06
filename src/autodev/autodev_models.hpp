@@ -108,6 +108,7 @@ struct AutoDevRollback {
     std::string mode;
     std::string status;
     std::string reason;
+    std::vector<std::string> target_files;
     bool destructive = false;
     bool executed = false;
     std::string recorded_at;

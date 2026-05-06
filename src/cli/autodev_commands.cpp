@@ -48,6 +48,7 @@ void PrintUsage() {
         << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev snapshots job_id=<job_id>\n"
+        << "  agentos autodev rollback-soft job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev rollbacks job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
@@ -66,6 +67,8 @@ void PrintUsage() {
 bool ParseBool(const std::string& value) {
     return value == "true" || value == "1" || value == "yes";
 }
+
+void PrintStringList(const std::string& label, const std::vector<std::string>& values);
 
 int RunSubmit(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
@@ -556,6 +559,44 @@ int RunSnapshots(const std::filesystem::path& workspace, const int argc, char* a
     return 0;
 }
 
+int RunRollbackSoft(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    const auto task_id_it = options.find("task_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev rollback-soft failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev rollback-soft failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+    if (task_id_it == options.end() || task_id_it->second.empty()) {
+        std::cerr << "autodev rollback-soft failed: task_id is required\n";
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.rollback_soft(job_id_it->second, task_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev rollback-soft failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev soft rollback recorded\n"
+              << "job_id:      " << result.rollback.job_id << '\n'
+              << "task_id:     " << result.rollback.task_id << '\n'
+              << "rollback_id: " << result.rollback.rollback_id << '\n'
+              << "status:      " << result.rollback.status << '\n'
+              << "executed:    " << (result.rollback.executed ? "true" : "false") << '\n'
+              << "destructive: false\n"
+              << "rollbacks:   " << result.rollbacks_path.string() << '\n';
+    PrintStringList("target_files:", result.rollback.target_files);
+    std::cout << "reason:      " << result.rollback.reason << '\n'
+              << "\nSoft rollback only restores tracked task files in the job worktree. It does not clean untracked files or touch the target repo.\n";
+    return 0;
+}
+
 int RunRollbacks(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -589,6 +630,7 @@ int RunRollbacks(const std::filesystem::path& workspace, const int argc, char* a
                   << "  executed:    " << (rollback.executed ? "true" : "false") << '\n'
                   << "  recorded_at: " << rollback.recorded_at << '\n'
                   << "  reason:      " << rollback.reason << '\n';
+        PrintStringList("  target_files:", rollback.target_files);
     }
     std::cout << "\nRollback records are runtime facts. This command does not modify the worktree.\n";
     return 0;
@@ -1426,6 +1468,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "snapshots") {
         return RunSnapshots(workspace, argc, argv);
+    }
+    if (subcommand == "rollback-soft" || subcommand == "rollback_soft") {
+        return RunRollbackSoft(workspace, argc, argv);
     }
     if (subcommand == "rollbacks") {
         return RunRollbacks(workspace, argc, argv);

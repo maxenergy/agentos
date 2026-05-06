@@ -2853,6 +2853,36 @@ void TestAutoDevCommands() {
         "autodev diffs should include first diff record");
     Expect(diffs_result.output.find("diff_id: diff-002") != std::string::npos,
         "autodev diffs should include second diff record");
+    const auto rollback_soft = RunAgentos(workspace, {
+        "autodev",
+        "rollback-soft",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(rollback_soft.exit_code == 0,
+        "autodev rollback-soft should safely restore tracked task files in the job worktree");
+    Expect(rollback_soft.output.find("AutoDev soft rollback recorded") != std::string::npos,
+        "autodev rollback-soft should print success heading");
+    Expect(rollback_soft.output.find("rollback_id: rollback-001") != std::string::npos,
+        "autodev rollback-soft should print rollback id");
+    Expect(rollback_soft.output.find("status:      completed") != std::string::npos,
+        "autodev rollback-soft should report completed status");
+    Expect(rollback_soft.output.find("destructive: false") != std::string::npos,
+        "autodev rollback-soft should report non-destructive rollback");
+    Expect(rollback_soft.output.find("target_files: README.md") != std::string::npos,
+        "autodev rollback-soft should target the tracked allowed file");
+    Expect(ReadTextFile(std::filesystem::path(executable_planned_path) / "README.md").find("allowed cli change") == std::string::npos,
+        "autodev rollback-soft should restore tracked allowed file content");
+    Expect(std::filesystem::exists(std::filesystem::path(executable_planned_path) / "package.json"),
+        "autodev rollback-soft should not clean untracked blocked files");
+    const auto rollbacks_after_soft = RunAgentos(workspace, {"autodev", "rollbacks", "job_id=" + executable_job_id});
+    Expect(rollbacks_after_soft.exit_code == 0,
+        "autodev rollbacks should list soft rollback facts");
+    Expect(rollbacks_after_soft.output.find("rollback_id: rollback-001") != std::string::npos,
+        "autodev rollbacks should include rollback-001");
+    Expect(rollbacks_after_soft.output.find("mode:        soft") != std::string::npos,
+        "autodev rollbacks should include rollback mode");
+    Expect(rollbacks_after_soft.output.find("target_files: README.md") != std::string::npos,
+        "autodev rollbacks should include rollback target files");
 
     const auto failing_verify_submit = RunAgentos(workspace, {
         "autodev",
@@ -2990,6 +3020,8 @@ void TestAutoDevCommands() {
         "autodev execute-next-task should append an execution blocked audit event");
     Expect(executable_events.output.find("autodev.snapshot.recorded") != std::string::npos,
         "autodev execute-next-task should append a snapshot recorded event");
+    Expect(executable_events.output.find("autodev.rollback.recorded") != std::string::npos,
+        "autodev rollback-soft should append a rollback recorded event");
     Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
         "autodev verify-task should append a verification completed event");
     Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,
