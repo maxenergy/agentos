@@ -31,6 +31,8 @@ add_library(agentos_core
     src/cli/cli_specs_commands.cpp
     src/cli/diagnostics_commands.cpp
     src/cli/intent_classifier.cpp
+    src/cli/interactive_intent_registry.cpp
+    src/cli/interactive_route_policy.cpp
     src/cli/interactive_commands.cpp
     src/cli/main_agent_commands.cpp
     src/cli/serve_commands.cpp
@@ -125,6 +127,7 @@ add_library(agentos_core
     src/skills/builtin/host_info_skill.cpp
     src/skills/builtin/http_fetch_skill.cpp
     src/skills/builtin/learn_skill.cpp
+    src/skills/builtin/news_search_skill.cpp
     src/skills/builtin/research_skill.cpp
     src/skills/builtin/workflow_run_skill.cpp
     src/hosts/agents/local_planning_agent.cpp
@@ -195,6 +198,23 @@ add_executable(agentos_task_wait_policy_tests tests/task_wait_policy_tests.cpp)
 target_link_libraries(agentos_task_wait_policy_tests PRIVATE agentos_core)
 add_test(NAME agentos_task_wait_policy_tests COMMAND agentos_task_wait_policy_tests)
 
+add_executable(agentos_intent_classifier_tests tests/intent_classifier_tests.cpp)
+target_link_libraries(agentos_intent_classifier_tests PRIVATE agentos_core)
+add_test(NAME agentos_intent_classifier_tests COMMAND agentos_intent_classifier_tests)
+
+add_executable(agentos_routing_eval_tests tests/routing_eval_tests.cpp)
+target_compile_definitions(agentos_routing_eval_tests PRIVATE AGENTOS_ROUTING_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures")
+target_link_libraries(agentos_routing_eval_tests PRIVATE agentos_core)
+add_test(NAME agentos_routing_eval_tests COMMAND agentos_routing_eval_tests)
+
+add_executable(agentos_news_search_skill_tests tests/news_search_skill_tests.cpp)
+target_link_libraries(agentos_news_search_skill_tests PRIVATE agentos_core)
+add_test(NAME agentos_news_search_skill_tests COMMAND agentos_news_search_skill_tests)
+
+add_executable(agentos_research_development_skill_tests tests/research_development_skill_tests.cpp)
+target_link_libraries(agentos_research_development_skill_tests PRIVATE agentos_core)
+add_test(NAME agentos_research_development_skill_tests COMMAND agentos_research_development_skill_tests)
+
 add_executable(agentos_policy_trust_tests tests/policy_trust_tests.cpp)
 target_link_libraries(agentos_policy_trust_tests PRIVATE agentos_core)
 add_test(NAME agentos_policy_trust_tests COMMAND agentos_policy_trust_tests)
@@ -252,6 +272,10 @@ if(MSVC)
     target_compile_options(agentos_agent_provider_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_agent_dispatch_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_task_wait_policy_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_intent_classifier_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_routing_eval_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_news_search_skill_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_research_development_skill_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_policy_trust_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_scheduler_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_workflow_router_tests PRIVATE /W4 /permissive- /EHsc)
@@ -273,6 +297,10 @@ else()
     target_compile_options(agentos_agent_provider_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_agent_dispatch_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_task_wait_policy_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_intent_classifier_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_routing_eval_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_news_search_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_research_development_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_policy_trust_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_scheduler_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_workflow_router_tests PRIVATE -Wall -Wextra -Wpedantic)

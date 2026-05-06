@@ -2,6 +2,7 @@
 
 #include "core/execution/agent_event_runtime_store.hpp"
 #include "cli/intent_classifier.hpp"
+#include "cli/interactive_intent_registry.hpp"
 #include "storage/main_agent_store.hpp"
 #include "utils/signal_cancellation.hpp"
 
@@ -19,6 +20,7 @@
 #include <condition_variable>
 #include <cwchar>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -238,10 +240,42 @@ bool LooksLikeDetailedMemoryQuestion(const std::string& line) {
 }
 
 bool LooksLikeModelIdentityQuestion(const std::string& line) {
-    static const std::regex model_re(
-        R"((\b(what\s+(model|llm)\s+(are|is)\s+you|what\s+is\s+your\s+model|model\s+name|current\s+model|which\s+model)\b)|你.*(是什么|哪个|什么).*(模型|model)|当前.*(模型|model)|底层.*(模型|model)|使用.*(模型|model)|模型.*(名字|名称|是什么|哪个))",
-        std::regex_constants::icase);
-    return std::regex_search(line, model_re);
+    return LooksLikeModelIdentityIntent(line);
+}
+
+bool TryConfigureMainAgentFromNaturalLanguage(const std::string& line,
+                                              const std::filesystem::path& workspace) {
+    if (!LooksLikeMainAgentConfigIntent(line)) {
+        return false;
+    }
+
+    const auto ollama_model = ExtractOllamaModelName(line);
+    if (!ollama_model.has_value() || ollama_model->empty()) {
+        std::cout << "这是本地 main-agent 配置任务，不需要 Codex。\n"
+                  << "我还不能从这句话里可靠解析模型名。可以直接使用：\n"
+                  << "  main-agent set provider=openai-chat base_url=http://127.0.0.1:11434/v1 model=<ollama-model> api_key=EMPTY\n\n";
+        return true;
+    }
+
+    MainAgentConfig config;
+    config.provider_kind = "openai-chat";
+    config.base_url = "http://127.0.0.1:11434/v1";
+    config.model = *ollama_model;
+    config.api_key = "EMPTY";
+
+    const MainAgentStore store(workspace / "runtime" / "main_agent.tsv");
+    if (!store.save(config)) {
+        std::cerr << "main-agent: failed to write " << store.path().string() << "\n\n";
+        return true;
+    }
+
+    std::cout << "main-agent: saved\n"
+              << "provider_kind: " << config.provider_kind << '\n'
+              << "base_url:      " << config.base_url << '\n'
+              << "model:         " << config.model << '\n'
+              << "api_key:       (set, literal placeholder)\n"
+              << "config_path:   " << store.path().string() << "\n\n";
+    return true;
 }
 
 bool LooksLikeSkillListQuestion(const std::string& line) {
@@ -383,6 +417,75 @@ std::optional<std::string> ExtractXiaohongshuSearchQuery(const std::string& line
         query += " 热门";
     }
     return query;
+}
+
+struct NewsSearchRequest {
+    std::string query;
+    int limit = 5;
+    int days = 7;
+};
+
+std::optional<NewsSearchRequest> ExtractNewsSearchRequest(const std::string& line,
+                                                          const SkillRegistry& skill_registry) {
+    if (!skill_registry.find("news_search")) {
+        return std::nullopt;
+    }
+    static const std::regex news_re(
+        R"((新闻|news|google\s+news|谷歌).*(搜索|查找|看|top\s*\d+|top|最近|一周|今天|今日)|(搜索|查找|看).*(新闻|news|google|谷歌))",
+        std::regex_constants::icase);
+    if (!std::regex_search(line, news_re)) {
+        return std::nullopt;
+    }
+
+    NewsSearchRequest request;
+    if (std::smatch match; std::regex_search(line, match, std::regex(R"(top\s*(\d+)|前\s*(\d+))", std::regex_constants::icase))) {
+        const auto value = match[1].matched ? match[1].str() : match[2].str();
+        try {
+            request.limit = std::clamp(std::stoi(value), 1, 10);
+        } catch (const std::exception&) {
+            request.limit = 5;
+        }
+    }
+    if (line.find("今天") != std::string::npos || line.find("今日") != std::string::npos ||
+        line.find("today") != std::string::npos || line.find("Today") != std::string::npos) {
+        request.days = 1;
+    } else if (line.find("一周") != std::string::npos || line.find("7天") != std::string::npos ||
+               line.find("七天") != std::string::npos || line.find("week") != std::string::npos ||
+               line.find("Week") != std::string::npos) {
+        request.days = 7;
+    }
+
+    auto query = TextAfterLastSearchTrigger(line).value_or("");
+    if (query.empty()) {
+        query = StripPoliteTaskWords(line);
+    }
+    query = StripTrailingSentencePunctuation(query);
+    query = std::regex_replace(query,
+                               std::regex(R"(top\s*\d+|前\s*\d+)", std::regex_constants::icase),
+                               "");
+    static const std::array<std::string, 13> remove_words = {
+        "新闻", "news", "News", "google news", "Google News", "搜索", "查找",
+        "看", "一周", "今天", "今日", "top", "Top"
+    };
+    for (const auto& word : remove_words) {
+        std::size_t pos = std::string::npos;
+        while ((pos = query.find(word)) != std::string::npos) {
+            query.erase(pos, word.size());
+        }
+    }
+    query = StripTrailingSentencePunctuation(query);
+    const auto start = query.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        query = "AI";
+    } else {
+        const auto end = query.find_last_not_of(" \t\r\n");
+        query = query.substr(start, end - start + 1);
+    }
+    if (query.empty()) {
+        query = "AI";
+    }
+    request.query = query;
+    return request;
 }
 
 std::vector<std::pair<std::string, SkillStats>> TopSkillsByCalls(
@@ -1239,6 +1342,7 @@ TaskRequest BuildResearchTaskRequest(const std::string& prompt,
     task.idempotency_key = task.task_id;
     task.inputs["objective"] = prompt;
     task.inputs["interactive"] = "true";
+    task.inputs["root_task_id"] = task.task_id;
     task.allow_network = true;
     task.timeout_ms = 0;
     return task;
@@ -2139,18 +2243,50 @@ int RunInteractiveCommand(
             [&skill_registry]() { return skill_registry.find("development_request") ? "development_request" : ""; },
             [&skill_registry]() { return skill_registry.find("research_request") ? "research_request" : ""; },
             [&skill_registry](const std::string& text) {
-                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value();
+                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value() ||
+                    ExtractNewsSearchRequest(text, skill_registry).has_value();
             },
             [&skill_registry](const std::string& text) {
-                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value()
-                    ? std::string("xiaohongshu_search")
-                    : std::string{};
+                if (ExtractXiaohongshuSearchQuery(text, skill_registry).has_value()) {
+                    return std::string("xiaohongshu_search");
+                }
+                if (ExtractNewsSearchRequest(text, skill_registry).has_value()) {
+                    return std::string("news_search");
+                }
+                return std::string{};
             });
         WriteRouteDecision(workspace, route_decision);
         PrintRouteDecision(route_decision, RuntimeLanguage::English);
 
         switch (route_decision.route) {
         case InteractiveRouteKind::direct_skill:
+            if (const auto news_request = ExtractNewsSearchRequest(line, skill_registry); news_request.has_value()) {
+                std::cout << "(运行 skill news_search query=\"" << news_request->query
+                          << "\" limit=" << news_request->limit
+                          << " days=" << news_request->days << ")\n";
+                const auto result = RunDirectSkillFromNaturalLanguage(
+                    "news_search",
+                    StringMap{
+                        {"query", news_request->query},
+                        {"limit", std::to_string(news_request->limit)},
+                        {"days", std::to_string(news_request->days)},
+                    },
+                    line,
+                    loop,
+                    workspace);
+                if (!result.output_json.empty()) {
+                    try {
+                        const auto output = nlohmann::json::parse(result.output_json);
+                        if (output.contains("summary") && output["summary"].is_string()) {
+                            std::cout << output["summary"].get<std::string>();
+                        }
+                    } catch (const std::exception&) {
+                    }
+                }
+                PrintResult(result);
+                std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
+                continue;
+            }
             if (const auto xhs_query = ExtractXiaohongshuSearchQuery(line, skill_registry); xhs_query.has_value()) {
                 std::cout << "(运行 skill xiaohongshu_search query=\"" << *xhs_query << "\")\n";
                 const auto result = RunDirectSkillFromNaturalLanguage(
@@ -2165,6 +2301,9 @@ int RunInteractiveCommand(
             }
             break;
         case InteractiveRouteKind::local_intent:
+            if (TryConfigureMainAgentFromNaturalLanguage(line, workspace)) {
+                continue;
+            }
             if (LooksLikeModelIdentityQuestion(line)) {
                 PrintMainModelIdentity(agent_registry, workspace);
                 continue;

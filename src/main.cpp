@@ -47,6 +47,7 @@
 #include "skills/builtin/host_info_skill.hpp"
 #include "skills/builtin/http_fetch_skill.hpp"
 #include "skills/builtin/learn_skill.hpp"
+#include "skills/builtin/news_search_skill.hpp"
 #include "skills/builtin/research_skill.hpp"
 #include "skills/builtin/workflow_run_skill.hpp"
 #include "storage/main_agent_store.hpp"
@@ -838,6 +839,7 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<FileWriteSkill>());
     runtime.skill_registry.register_skill(std::make_shared<FilePatchSkill>());
     runtime.skill_registry.register_skill(std::make_shared<HttpFetchSkill>(runtime.cli_host));
+    runtime.skill_registry.register_skill(std::make_shared<NewsSearchSkill>(runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<HostInfoSkill>());
     runtime.skill_registry.register_skill(std::make_shared<LearnSkill>(
         runtime.skill_registry, runtime.cli_host, runtime.plugin_host,

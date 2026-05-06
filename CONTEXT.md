@@ -24,6 +24,22 @@ _Avoid_: spec file, tool config
 Descriptive metadata in a Capability Declaration that helps AgentOS decide when a capability is relevant.
 _Avoid_: routing spec, skill routes file
 
+**Interactive Intent**:
+A REPL-local user intent that AgentOS can satisfy deterministically without Agent Dispatch, such as inspecting or updating the main chat model, listing skills, checking jobs, or reading runtime memory.
+_Avoid_: chat command, small task, local route
+
+**Route Tier**:
+The runtime priority class used to choose between hard local handling, direct skill invocation, research, development, chat, and confirmation before any agent is invoked.
+_Avoid_: route score, keyword priority, model choice
+
+**Route Proposal**:
+A structured candidate interpretation of a user request, including intent, slots, risk signals, and suggested Route Tier. A Route Proposal may come from deterministic parsing or a model, but it is not permission to execute.
+_Avoid_: model decision, final route, classification result
+
+**Route Verdict**:
+The runtime-owned decision that accepts, rejects, or downgrades a Route Proposal after applying Route Tier rules, Capability Contracts, Policy Decisions, and slot completeness.
+_Avoid_: model output, router guess
+
 **Capability Contract**:
 The input, output, permissions, risk, and Route Hint expectations that a Capability Declaration exposes to AgentOS before it can be invoked.
 _Avoid_: schema, JSON schema, validator rules
@@ -73,6 +89,10 @@ _Avoid_: contract validation, declaration validation
 - A **Capability Declaration** can produce a Skill or Plugin registration.
 - A **Capability Declaration** may be code-defined for builtin skills or repo-local for learned CLI skills and plugins.
 - A **Capability Declaration** carries **Route Hints** through its manifest metadata.
+- An **Interactive Intent** is a hard local route candidate and wins over model-assisted routing when its slots are complete.
+- A **Route Proposal** is advisory until AgentOS turns it into a **Route Verdict**.
+- A **Route Verdict** owns the final Route Tier and may choose local handling, direct skill invocation, research, development, chat, or confirmation.
+- A **Route Tier** that can write workspace files, use the network, or run long agent tasks must pass the relevant Capability Contract and Policy Decision before execution.
 - A **Capability Declaration** exposes a **Capability Contract**.
 - JSON Schema describes the structured input and output portion of a **Capability Contract**.
 - **Capability Contract** validation decides whether a declaration is well-formed.

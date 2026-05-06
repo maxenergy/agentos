@@ -1,0 +1,9 @@
+{"name":"research first skill-library URL","input":"帮我研究这个项目，如何加入到我们的技能库：https://github.com/maxenergy/skills.git","expected_route":"research_agent","expected_target":"research_request","expected_mode":"async_job","must_not_route":"development_agent"}
+{"name":"explicit install skill-library URL","input":"把 https://github.com/maxenergy/skills.git 安装到 .agents/skills 技能库","expected_route":"development_agent","expected_target":"development_request","expected_mode":"async_job","must_not_route":"research_agent"}
+{"name":"artifact creation","input":"帮我写一个 3 页 PPT 大纲并保存为文件","expected_route":"development_agent","expected_target":"development_request","expected_mode":"async_job","must_not_route":"research_agent"}
+{"name":"command line tool build","input":"please build a small command line tool","expected_route":"development_agent","expected_target":"development_request","expected_mode":"async_job","must_not_route":"local_intent"}
+{"name":"ollama main model config","input":"请帮我配置首选模型使用本地ollama的gemma4:e2b模型。","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"development_agent","expected_ollama_model":"gemma4:e2b"}
+{"name":"current model question","input":"当前模型是什么？","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"chat_agent"}
+{"name":"skill list question","input":"你现在有什么技能？","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"development_agent"}
+{"name":"AI news search","input":"帮我搜索今天的 AI 新闻","expected_route":"direct_skill","expected_target":"news_search","expected_mode":"sync","must_not_route":"research_agent"}
+{"name":"Google weekly news top5","input":"帮我搜索谷歌看一周新闻top5","expected_route":"direct_skill","expected_target":"news_search","expected_mode":"sync","must_not_route":"research_agent"}

@@ -216,8 +216,11 @@ SkillResult ResearchSkill::execute(const SkillCall& call) {
         ? workspace_root_
         : std::filesystem::path(call.workspace_id);
 
+    const auto requested_root_task_id = call.get_arg("root_task_id").value_or("");
+    const auto root_task_id = requested_root_task_id.empty() ? MakeResearchTaskId() : requested_root_task_id;
+
     TaskRequest task{
-        .task_id = MakeResearchTaskId(),
+        .task_id = root_task_id,
         .task_type = "analysis",
         .objective = BuildResearchObjective(line, runtime_guide_),
         .workspace_path = workspace,
