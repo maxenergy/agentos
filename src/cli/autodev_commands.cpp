@@ -51,6 +51,7 @@ void PrintUsage() {
         << "  agentos autodev rollback-soft job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev rollback-hard job_id=<job_id> task_id=<task_id> approval=hard_rollback_approved\n"
         << "  agentos autodev rollbacks job_id=<job_id>\n"
+        << "  agentos autodev repairs job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
@@ -670,6 +671,42 @@ int RunRollbacks(const std::filesystem::path& workspace, const int argc, char* a
     return 0;
 }
 
+int RunRepairs(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev repairs failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev repairs failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto repairs = store.load_repairs(job_id_it->second, &error);
+    if (!repairs.has_value()) {
+        std::cerr << "autodev repairs failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev repairs\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << repairs->size() << '\n';
+    for (const auto& repair : *repairs) {
+        std::cout << '\n'
+                  << "- repair_id:   " << repair.repair_id << '\n'
+                  << "  task_id:     " << repair.task_id << '\n'
+                  << "  source:      " << repair.source_type << " " << repair.source_id << '\n'
+                  << "  status:      " << repair.status << '\n'
+                  << "  next_action: " << repair.next_action << '\n'
+                  << "  recorded_at: " << repair.recorded_at << '\n';
+        PrintStringList("  reasons:", repair.reasons);
+    }
+    return 0;
+}
+
 int RunVerifyTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -1157,6 +1194,7 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
     const auto diffs = store.load_diffs(job_id_it->second, nullptr).value_or(std::vector<AutoDevDiffGuard>{});
     const auto acceptances = store.load_acceptances(job_id_it->second, nullptr).value_or(std::vector<AutoDevAcceptanceGate>{});
     const auto final_reviews = store.load_final_reviews(job_id_it->second, nullptr).value_or(std::vector<AutoDevFinalReview>{});
+    const auto repairs = store.load_repairs(job_id_it->second, nullptr).value_or(std::vector<AutoDevRepairNeeded>{});
 
     const auto latest_verification = [&verifications](const std::string& task_id) -> std::optional<AutoDevVerification> {
         for (auto it = verifications.rbegin(); it != verifications.rend(); ++it) {
@@ -1201,7 +1239,8 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
               << " verifications=" << verifications.size()
               << " diffs=" << diffs.size()
               << " acceptances=" << acceptances.size()
-              << " final_reviews=" << final_reviews.size() << '\n';
+              << " final_reviews=" << final_reviews.size()
+              << " repairs=" << repairs.size() << '\n';
 
     std::cout << "\nTasks:\n";
     for (const auto& task : *tasks) {
@@ -1248,6 +1287,17 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
                   << "  passed:          " << (final_review.passed ? "true" : "false") << '\n'
                   << "  tasks:           " << final_review.tasks_passed << "/" << final_review.tasks_total << '\n';
         PrintStringList("  reasons:         ", final_review.reasons);
+    }
+    std::cout << "\nRepair:\n";
+    if (repairs.empty()) {
+        std::cout << "  repair_id: (none)\n";
+    } else {
+        const auto& repair = repairs.back();
+        std::cout << "  repair_id:   " << repair.repair_id << '\n'
+                  << "  task_id:     " << repair.task_id << '\n'
+                  << "  source:      " << repair.source_type << " " << repair.source_id << '\n'
+                  << "  next_action: " << repair.next_action << '\n';
+        PrintStringList("  reasons:", repair.reasons);
     }
     return 0;
 }
@@ -1511,6 +1561,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "rollbacks") {
         return RunRollbacks(workspace, argc, argv);
+    }
+    if (subcommand == "repairs") {
+        return RunRepairs(workspace, argc, argv);
     }
     if (subcommand == "verify-task" || subcommand == "verify_task") {
         return RunVerifyTask(workspace, argc, argv);

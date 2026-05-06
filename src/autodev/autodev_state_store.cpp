@@ -435,6 +435,28 @@ std::string NextRollbackId(const nlohmann::json& rollback_records) {
     return out.str();
 }
 
+std::string NextRepairId(const nlohmann::json& repair_records) {
+    int max_repair = 0;
+    if (repair_records.is_array()) {
+        static const std::regex pattern(R"(^repair-([0-9]{3})$)");
+        for (const auto& repair : repair_records) {
+            if (!repair.is_object() ||
+                !repair.contains("repair_id") ||
+                !repair.at("repair_id").is_string()) {
+                continue;
+            }
+            std::smatch match;
+            const auto repair_id = repair.at("repair_id").get<std::string>();
+            if (std::regex_match(repair_id, match, pattern)) {
+                max_repair = std::max(max_repair, std::stoi(match[1].str()));
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "repair-" << std::setw(3) << std::setfill('0') << (max_repair + 1);
+    return out.str();
+}
+
 std::string NextVerificationId(const nlohmann::json& verification_records) {
     int max_verification = 0;
     if (verification_records.is_array()) {
@@ -857,6 +879,10 @@ std::filesystem::path AutoDevStateStore::snapshots_dir(const std::string& job_id
 
 std::filesystem::path AutoDevStateStore::rollbacks_path(const std::string& job_id) const {
     return job_dir(job_id) / "rollbacks.json";
+}
+
+std::filesystem::path AutoDevStateStore::repairs_path(const std::string& job_id) const {
+    return job_dir(job_id) / "repairs.json";
 }
 
 std::filesystem::path AutoDevStateStore::verification_path(const std::string& job_id) const {
@@ -1623,6 +1649,53 @@ void AutoDevStateStore::record_execution_blocked(
     });
 }
 
+AutoDevRepairNeeded AutoDevStateStore::record_repair_needed(
+    const AutoDevJob& job,
+    const AutoDevTask& task,
+    const std::string& source_type,
+    const std::string& source_id,
+    const std::vector<std::string>& reasons) {
+    nlohmann::json repair_records = nlohmann::json::array();
+    if (std::filesystem::exists(repairs_path(job.job_id))) {
+        try {
+            repair_records = nlohmann::json::parse(ReadFile(repairs_path(job.job_id)));
+            if (!repair_records.is_array()) {
+                repair_records = nlohmann::json::array();
+            }
+        } catch (...) {
+            repair_records = nlohmann::json::array();
+        }
+    }
+
+    AutoDevRepairNeeded repair;
+    repair.repair_id = NextRepairId(repair_records);
+    repair.job_id = job.job_id;
+    repair.task_id = task.task_id;
+    repair.source_type = source_type;
+    repair.source_id = source_id;
+    repair.reasons = reasons.empty() ? std::vector<std::string>{"runtime gate failed"} : reasons;
+    repair.status = "needed";
+    repair.next_action = "repair_task";
+    repair.recorded_at = IsoUtcNow();
+    repair_records.push_back(ToJson(repair));
+    WriteFileAtomically(repairs_path(job.job_id), repair_records.dump(2) + "\n");
+
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.repair.needed"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"repair_id", repair.repair_id},
+        {"source_type", repair.source_type},
+        {"source_id", repair.source_id},
+        {"reasons", repair.reasons},
+        {"next_action", repair.next_action},
+        {"at", repair.recorded_at},
+    });
+    return repair;
+}
+
 AutoDevSnapshotResult AutoDevStateStore::record_task_snapshot(
     const std::string& job_id,
     const std::string& task_id) {
@@ -2058,6 +2131,11 @@ AutoDevVerifyTaskResult AutoDevStateStore::verify_task(
         {"verify_report_path", verify_report_path.string()},
         {"at", verification.finished_at},
     });
+    if (!verification.passed) {
+        record_repair_needed(job, task, "verification", verification.verification_id, {
+            "verification command failed with exit code " + std::to_string(verification.exit_code),
+        });
+    }
 
     AutoDevVerifyTaskResult result;
     result.success = true;
@@ -2176,6 +2254,16 @@ AutoDevDiffGuardResult AutoDevStateStore::diff_guard(const std::string& job_id, 
         {"outside_allowed_files", diff.outside_allowed_files},
         {"at", IsoUtcNow()},
     });
+    if (!diff.passed) {
+        std::vector<std::string> reasons;
+        if (!diff.blocked_file_violations.empty()) {
+            reasons.push_back("diff guard found blocked files");
+        }
+        if (!diff.outside_allowed_files.empty()) {
+            reasons.push_back("diff guard found files outside allowed scope");
+        }
+        record_repair_needed(job, task, "diff_guard", diff.diff_id, reasons);
+    }
 
     AutoDevDiffGuardResult result;
     result.success = true;
@@ -2327,6 +2415,9 @@ AutoDevAcceptanceGateResult AutoDevStateStore::acceptance_gate(
         {"reasons", acceptance.reasons},
         {"at", IsoUtcNow()},
     });
+    if (!acceptance.passed) {
+        record_repair_needed(job, *task_it, "acceptance_gate", acceptance.acceptance_id, acceptance.reasons);
+    }
 
     AutoDevAcceptanceGateResult result;
     result.success = true;
@@ -2768,6 +2859,50 @@ std::optional<std::vector<AutoDevRollback>> AutoDevStateStore::load_rollbacks(
     } catch (const std::exception& e) {
         if (error_message) {
             *error_message = std::string("failed to read AutoDev rollbacks: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
+std::optional<std::vector<AutoDevRepairNeeded>> AutoDevStateStore::load_repairs(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+    if (!std::filesystem::exists(job_json_path(job_id))) {
+        if (error_message) {
+            *error_message = "AutoDev job not found: " + job_id + "\nExpected path:\n" + job_json_path(job_id).string();
+        }
+        return std::nullopt;
+    }
+
+    const auto path = repairs_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return std::vector<AutoDevRepairNeeded>{};
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev repairs: repairs.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevRepairNeeded> repairs;
+        for (const auto& repair_json : json) {
+            repairs.push_back(AutoDevRepairNeededFromJson(repair_json));
+        }
+        return repairs;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev repairs: ") + e.what();
         }
         return std::nullopt;
     }

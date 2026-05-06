@@ -2732,7 +2732,7 @@ void TestAutoDevCommands() {
         "autodev summary should print heading");
     Expect(summary_result.output.find("status:        pr_ready") != std::string::npos,
         "autodev summary should include current job status");
-    Expect(summary_result.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
+    Expect(summary_result.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=0") != std::string::npos,
         "autodev summary should include runtime fact counts");
     Expect(summary_result.output.find("verification: verify-001 passed=true") != std::string::npos,
         "autodev summary should include latest verification fact per task");
@@ -2828,7 +2828,7 @@ void TestAutoDevCommands() {
         "autodev summary should show stale failed final review jobs as running");
     Expect(failed_summary.output.find("phase:         final_review") != std::string::npos,
         "autodev summary should show stale failed final review jobs in final_review phase");
-    Expect(failed_summary.output.find("facts:         snapshots=1 verifications=1 diffs=2 acceptances=2 final_reviews=2") != std::string::npos,
+    Expect(failed_summary.output.find("facts:         snapshots=1 verifications=1 diffs=2 acceptances=2 final_reviews=2 repairs=2") != std::string::npos,
         "autodev summary should count failed gate facts");
     Expect(failed_summary.output.find("diff_guard:   diff-002 passed=false") != std::string::npos,
         "autodev summary should show latest failed diff guard");
@@ -2844,6 +2844,21 @@ void TestAutoDevCommands() {
         "autodev summary should show latest final review failure state");
     Expect(failed_summary.output.find("current diff includes blocked files") != std::string::npos,
         "autodev summary should show latest final review reasons");
+    Expect(failed_summary.output.find("repair_id:   repair-002") != std::string::npos,
+        "autodev summary should show latest repair-needed fact");
+    Expect(failed_summary.output.find("next_action: repair_task") != std::string::npos,
+        "autodev summary should show next repair action");
+    const auto repairs_after_failed_gates = RunAgentos(workspace, {"autodev", "repairs", "job_id=" + executable_job_id});
+    Expect(repairs_after_failed_gates.exit_code == 0,
+        "autodev repairs should list repair-needed facts");
+    Expect(repairs_after_failed_gates.output.find("AutoDev repairs") != std::string::npos,
+        "autodev repairs should print heading");
+    Expect(repairs_after_failed_gates.output.find("repair_id:   repair-001") != std::string::npos,
+        "autodev repairs should include diff guard repair fact");
+    Expect(repairs_after_failed_gates.output.find("source:      diff_guard diff-002") != std::string::npos,
+        "autodev repairs should link diff guard repair source");
+    Expect(repairs_after_failed_gates.output.find("source:      acceptance_gate acceptance-002") != std::string::npos,
+        "autodev repairs should link acceptance repair source");
     const auto diffs_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id});
     Expect(diffs_result.exit_code == 0,
         "autodev diffs should list diff guard facts");
@@ -3020,7 +3035,7 @@ void TestAutoDevCommands() {
     const auto failing_verify_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + failing_verify_job_id});
     Expect(failing_verify_summary.exit_code == 0,
         "autodev summary should read failed verification facts");
-    Expect(failing_verify_summary.output.find("facts:         snapshots=0 verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
+    Expect(failing_verify_summary.output.find("facts:         snapshots=0 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=2") != std::string::npos,
         "autodev summary should count failed verification fixture facts");
     Expect(failing_verify_summary.output.find("verification: verify-001 passed=false") != std::string::npos,
         "autodev summary should show latest failed verification");
@@ -3034,6 +3049,17 @@ void TestAutoDevCommands() {
         "autodev summary should show failed unaccepted-task final review");
     Expect(failing_verify_summary.output.find("task is not passed: task-001") != std::string::npos,
         "autodev summary should show failed final review task reason");
+    Expect(failing_verify_summary.output.find("repair_id:   repair-002") != std::string::npos,
+        "autodev summary should show latest repair fact for failed verification fixture");
+    Expect(failing_verify_summary.output.find("source:      acceptance_gate acceptance-001") != std::string::npos,
+        "autodev summary should show repair source for failed verification fixture");
+    const auto failing_repairs = RunAgentos(workspace, {"autodev", "repairs", "job_id=" + failing_verify_job_id});
+    Expect(failing_repairs.exit_code == 0,
+        "autodev repairs should list failed verification repair facts");
+    Expect(failing_repairs.output.find("source:      verification verify-001") != std::string::npos,
+        "autodev repairs should include verification repair source");
+    Expect(failing_repairs.output.find("source:      acceptance_gate acceptance-001") != std::string::npos,
+        "autodev repairs should include acceptance repair source");
 
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
@@ -3046,6 +3072,8 @@ void TestAutoDevCommands() {
         "autodev rollback-soft should append a rollback recorded event");
     Expect(executable_events.output.find("autodev.rollback.denied") != std::string::npos,
         "autodev rollback-hard should append a denied rollback event");
+    Expect(executable_events.output.find("autodev.repair.needed") != std::string::npos,
+        "failed gates should append repair needed events");
     Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
         "autodev verify-task should append a verification completed event");
     Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,

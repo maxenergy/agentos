@@ -266,6 +266,34 @@ AutoDevRollback AutoDevRollbackFromJson(const nlohmann::json& json) {
     return rollback;
 }
 
+nlohmann::json ToJson(const AutoDevRepairNeeded& repair) {
+    return nlohmann::json{
+        {"repair_id", repair.repair_id},
+        {"job_id", repair.job_id},
+        {"task_id", repair.task_id},
+        {"source_type", repair.source_type},
+        {"source_id", repair.source_id},
+        {"reasons", repair.reasons},
+        {"status", repair.status},
+        {"next_action", repair.next_action},
+        {"recorded_at", repair.recorded_at},
+    };
+}
+
+AutoDevRepairNeeded AutoDevRepairNeededFromJson(const nlohmann::json& json) {
+    AutoDevRepairNeeded repair;
+    repair.repair_id = json.value("repair_id", std::string{});
+    repair.job_id = json.value("job_id", std::string{});
+    repair.task_id = json.value("task_id", std::string{});
+    repair.source_type = json.value("source_type", std::string{});
+    repair.source_id = json.value("source_id", std::string{});
+    repair.reasons = ReadStringVector(json, "reasons");
+    repair.status = json.value("status", "needed");
+    repair.next_action = json.value("next_action", "repair_task");
+    repair.recorded_at = json.value("recorded_at", std::string{});
+    return repair;
+}
+
 nlohmann::json ToJson(const AutoDevVerification& verification) {
     return nlohmann::json{
         {"verification_id", verification.verification_id},

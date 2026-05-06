@@ -149,6 +149,7 @@ public:
     [[nodiscard]] std::filesystem::path snapshots_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path snapshots_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path rollbacks_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path repairs_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path verification_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path diffs_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path acceptance_path(const std::string& job_id) const;
@@ -200,6 +201,9 @@ public:
     std::optional<std::vector<AutoDevRollback>> load_rollbacks(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevRepairNeeded>> load_repairs(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevVerification>> load_verifications(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
@@ -220,6 +224,12 @@ private:
     std::filesystem::path agentos_workspace_;
     void save_job(const AutoDevJob& job) const;
     void append_event(const std::string& job_id, const nlohmann::json& event) const;
+    AutoDevRepairNeeded record_repair_needed(
+        const AutoDevJob& job,
+        const AutoDevTask& task,
+        const std::string& source_type,
+        const std::string& source_id,
+        const std::vector<std::string>& reasons);
 };
 
 }  // namespace agentos

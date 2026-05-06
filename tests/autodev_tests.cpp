@@ -879,6 +879,14 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     Expect(!blocked_diff.diff_guard.outside_allowed_files.empty() &&
                blocked_diff.diff_guard.outside_allowed_files.front() == "package.json",
         "diff_guard should record changes outside allowed files");
+    std::string repairs_error;
+    const auto repairs = store.load_repairs(submit.job.job_id, &repairs_error);
+    Expect(repairs.has_value() && repairs->size() == 1,
+        "failed diff_guard should record repair-needed facts");
+    Expect(repairs.has_value() && repairs->front().source_type == "diff_guard",
+        "repair-needed fact should record diff guard source");
+    Expect(repairs.has_value() && repairs->front().next_action == "repair_task",
+        "repair-needed fact should record next repair action");
     const auto soft_rollback = store.rollback_soft(submit.job.job_id, "task-001");
     Expect(soft_rollback.success,
         "rollback_soft should restore tracked task files in the job worktree");
@@ -969,6 +977,8 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record rollback event");
     Expect(events.find("\"type\":\"autodev.rollback.denied\"") != std::string::npos,
         "events.ndjson should record denied hard rollback event");
+    Expect(events.find("\"type\":\"autodev.repair.needed\"") != std::string::npos,
+        "events.ndjson should record repair needed event");
     Expect(events.find("\"turn_id\":\"turn-001\"") != std::string::npos,
         "execution blocked event should link to the synthetic turn record");
     Expect(events.find("\"prompt_artifact\"") != std::string::npos,
