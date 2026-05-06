@@ -81,6 +81,16 @@ struct AutoDevVerifyTaskResult {
     std::filesystem::path verify_report_path;
 };
 
+struct AutoDevSnapshotResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    AutoDevTask task;
+    AutoDevSnapshot snapshot;
+    std::filesystem::path snapshots_path;
+    std::filesystem::path snapshot_artifact_path;
+};
+
 struct AutoDevDiffGuardResult {
     bool success = false;
     std::string error_message;
@@ -127,6 +137,8 @@ public:
     [[nodiscard]] std::filesystem::path events_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path tasks_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path turns_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path snapshots_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path snapshots_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path verification_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path diffs_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path acceptance_path(const std::string& job_id) const;
@@ -151,6 +163,7 @@ public:
         const AutoDevTask& task,
         const AutoDevExecutionAdapterProfile& adapter_profile,
         const std::string& reason);
+    AutoDevSnapshotResult record_task_snapshot(const std::string& job_id, const std::string& task_id);
     AutoDevVerifyTaskResult verify_task(
         const std::string& job_id,
         const std::string& task_id,
@@ -164,6 +177,9 @@ public:
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTurn>> load_turns(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevSnapshot>> load_snapshots(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevVerification>> load_verifications(

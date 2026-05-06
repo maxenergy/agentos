@@ -391,6 +391,28 @@ std::string NextTurnId(const nlohmann::json& turn_records) {
     return out.str();
 }
 
+std::string NextSnapshotId(const nlohmann::json& snapshot_records) {
+    int max_snapshot = 0;
+    if (snapshot_records.is_array()) {
+        static const std::regex pattern(R"(^snapshot-([0-9]{3})$)");
+        for (const auto& snapshot : snapshot_records) {
+            if (!snapshot.is_object() ||
+                !snapshot.contains("snapshot_id") ||
+                !snapshot.at("snapshot_id").is_string()) {
+                continue;
+            }
+            std::smatch match;
+            const auto snapshot_id = snapshot.at("snapshot_id").get<std::string>();
+            if (std::regex_match(snapshot_id, match, pattern)) {
+                max_snapshot = std::max(max_snapshot, std::stoi(match[1].str()));
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "snapshot-" << std::setw(3) << std::setfill('0') << (max_snapshot + 1);
+    return out.str();
+}
+
 std::string NextVerificationId(const nlohmann::json& verification_records) {
     int max_verification = 0;
     if (verification_records.is_array()) {
@@ -801,6 +823,14 @@ std::filesystem::path AutoDevStateStore::tasks_path(const std::string& job_id) c
 
 std::filesystem::path AutoDevStateStore::turns_path(const std::string& job_id) const {
     return job_dir(job_id) / "turns.json";
+}
+
+std::filesystem::path AutoDevStateStore::snapshots_path(const std::string& job_id) const {
+    return job_dir(job_id) / "snapshots.json";
+}
+
+std::filesystem::path AutoDevStateStore::snapshots_dir(const std::string& job_id) const {
+    return job_dir(job_id) / "snapshots";
 }
 
 std::filesystem::path AutoDevStateStore::verification_path(const std::string& job_id) const {
@@ -1567,6 +1597,105 @@ void AutoDevStateStore::record_execution_blocked(
     });
 }
 
+AutoDevSnapshotResult AutoDevStateStore::record_task_snapshot(
+    const std::string& job_id,
+    const std::string& task_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevSnapshotResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevSnapshotResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (task_id.empty()) {
+        return fail(std::move(job), "task_id is required");
+    }
+    if (job.isolation_status != "ready" || !std::filesystem::exists(job.job_worktree_path)) {
+        return fail(std::move(job), "workspace isolation is not ready");
+    }
+    if (!job.spec_revision.has_value() || !job.spec_hash.has_value()) {
+        return fail(std::move(job), "no approved frozen spec is recorded on the job");
+    }
+
+    auto maybe_tasks = load_tasks(job_id, &load_error);
+    if (!maybe_tasks.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    const auto task_it = std::find_if(maybe_tasks->begin(), maybe_tasks->end(), [&task_id](const AutoDevTask& task) {
+        return task.task_id == task_id;
+    });
+    if (task_it == maybe_tasks->end()) {
+        return fail(std::move(job), "AutoDev task not found: " + task_id);
+    }
+    const AutoDevTask task = *task_it;
+
+    nlohmann::json snapshots = nlohmann::json::array();
+    if (std::filesystem::exists(snapshots_path(job_id))) {
+        try {
+            snapshots = nlohmann::json::parse(ReadFile(snapshots_path(job_id)));
+            if (!snapshots.is_array()) {
+                snapshots = nlohmann::json::array();
+            }
+        } catch (...) {
+            snapshots = nlohmann::json::array();
+        }
+    }
+
+    const auto head = GitCommand(job.job_worktree_path, "rev-parse HEAD");
+    if (head.exit_code != 0) {
+        return fail(std::move(job), "could not inspect job worktree HEAD: " + Trim(head.output));
+    }
+    const auto status = GitCommand(job.job_worktree_path, "status --porcelain --untracked-files=all");
+    if (status.exit_code != 0) {
+        return fail(std::move(job), "could not inspect job worktree status: " + Trim(status.output));
+    }
+
+    AutoDevSnapshot snapshot;
+    snapshot.snapshot_id = NextSnapshotId(snapshots);
+    snapshot.job_id = job.job_id;
+    snapshot.task_id = task.task_id;
+    snapshot.spec_revision = task.spec_revision.empty() ? job.spec_revision.value_or("") : task.spec_revision;
+    snapshot.head_sha = Trim(head.output);
+    snapshot.git_status = Lines(status.output);
+    snapshot.captured_at = IsoUtcNow();
+    snapshot.artifact_path = snapshots_dir(job.job_id) / (snapshot.snapshot_id + ".json");
+
+    const auto snapshot_json = ToJson(snapshot);
+    WriteFileAtomically(*snapshot.artifact_path, snapshot_json.dump(2) + "\n");
+    snapshots.push_back(snapshot_json);
+    WriteFileAtomically(snapshots_path(job.job_id), snapshots.dump(2) + "\n");
+
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.snapshot.recorded"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"snapshot_id", snapshot.snapshot_id},
+        {"head_sha", snapshot.head_sha},
+        {"git_status", snapshot.git_status},
+        {"artifact_path", snapshot.artifact_path->string()},
+        {"at", snapshot.captured_at},
+    });
+
+    AutoDevSnapshotResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.task = std::move(task);
+    result.snapshot = std::move(snapshot);
+    result.snapshots_path = this->snapshots_path(job_id);
+    result.snapshot_artifact_path = *result.snapshot.artifact_path;
+    return result;
+}
+
 AutoDevVerifyTaskResult AutoDevStateStore::verify_task(
     const std::string& job_id,
     const std::string& task_id,
@@ -2306,6 +2435,47 @@ std::optional<std::vector<AutoDevTurn>> AutoDevStateStore::load_turns(
     } catch (const std::exception& e) {
         if (error_message) {
             *error_message = std::string("failed to read AutoDev turns: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
+std::optional<std::vector<AutoDevSnapshot>> AutoDevStateStore::load_snapshots(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = snapshots_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev snapshots not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev snapshots: snapshots.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevSnapshot> snapshots;
+        for (const auto& snapshot_json : json) {
+            snapshots.push_back(AutoDevSnapshotFromJson(snapshot_json));
+        }
+        return snapshots;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev snapshots: ") + e.what();
         }
         return std::nullopt;
     }

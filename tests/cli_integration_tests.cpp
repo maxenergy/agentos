@@ -2540,6 +2540,10 @@ void TestAutoDevCommands() {
         "autodev execute-next-task should print execution preflight details");
     Expect(execute_next.output.find("task_id:          task-001") != std::string::npos,
         "autodev execute-next-task should select the first pending runtime task");
+    Expect(execute_next.output.find("Pre-task snapshot:") != std::string::npos,
+        "autodev execute-next-task should record a pre-task snapshot");
+    Expect(execute_next.output.find("snapshot_id:      snapshot-001") != std::string::npos,
+        "autodev execute-next-task should print the snapshot id");
     Expect(execute_next.output.find("adapter_kind:                codex_cli") != std::string::npos,
         "autodev execute-next-task should expose the transitional adapter kind");
     Expect(execute_next.output.find("continuity_mode:             best_effort_context") != std::string::npos,
@@ -2570,6 +2574,17 @@ void TestAutoDevCommands() {
         "execute-next-task should write prompt artifact under AgentOS runtime store");
     Expect(std::filesystem::exists(executable_job_dir / "responses" / "turn-001.md"),
         "execute-next-task should write response artifact under AgentOS runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "snapshots.json"),
+        "execute-next-task should write snapshots.json under AgentOS runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "snapshots" / "snapshot-001.json"),
+        "execute-next-task should write a per-snapshot artifact under AgentOS runtime store");
+    const auto snapshots_result = RunAgentos(workspace, {"autodev", "snapshots", "job_id=" + executable_job_id});
+    Expect(snapshots_result.exit_code == 0,
+        "autodev snapshots should list recorded snapshot facts");
+    Expect(snapshots_result.output.find("AutoDev snapshots") != std::string::npos,
+        "autodev snapshots should print heading");
+    Expect(snapshots_result.output.find("snapshot_id: snapshot-001") != std::string::npos,
+        "autodev snapshots should include snapshot-001");
     const auto verify_task = RunAgentos(workspace, {
         "autodev",
         "verify-task",
@@ -2708,7 +2723,7 @@ void TestAutoDevCommands() {
         "autodev summary should print heading");
     Expect(summary_result.output.find("status:        pr_ready") != std::string::npos,
         "autodev summary should include current job status");
-    Expect(summary_result.output.find("facts:         verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
+    Expect(summary_result.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
         "autodev summary should include runtime fact counts");
     Expect(summary_result.output.find("verification: verify-001 passed=true") != std::string::npos,
         "autodev summary should include latest verification fact per task");
@@ -2804,7 +2819,7 @@ void TestAutoDevCommands() {
         "autodev summary should show stale failed final review jobs as running");
     Expect(failed_summary.output.find("phase:         final_review") != std::string::npos,
         "autodev summary should show stale failed final review jobs in final_review phase");
-    Expect(failed_summary.output.find("facts:         verifications=1 diffs=2 acceptances=2 final_reviews=2") != std::string::npos,
+    Expect(failed_summary.output.find("facts:         snapshots=1 verifications=1 diffs=2 acceptances=2 final_reviews=2") != std::string::npos,
         "autodev summary should count failed gate facts");
     Expect(failed_summary.output.find("diff_guard:   diff-002 passed=false") != std::string::npos,
         "autodev summary should show latest failed diff guard");
@@ -2944,7 +2959,7 @@ void TestAutoDevCommands() {
     const auto failing_verify_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + failing_verify_job_id});
     Expect(failing_verify_summary.exit_code == 0,
         "autodev summary should read failed verification facts");
-    Expect(failing_verify_summary.output.find("facts:         verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
+    Expect(failing_verify_summary.output.find("facts:         snapshots=0 verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
         "autodev summary should count failed verification fixture facts");
     Expect(failing_verify_summary.output.find("verification: verify-001 passed=false") != std::string::npos,
         "autodev summary should show latest failed verification");
@@ -2964,6 +2979,8 @@ void TestAutoDevCommands() {
         "autodev events should read execution preflight audit event");
     Expect(executable_events.output.find("autodev.execution.blocked") != std::string::npos,
         "autodev execute-next-task should append an execution blocked audit event");
+    Expect(executable_events.output.find("autodev.snapshot.recorded") != std::string::npos,
+        "autodev execute-next-task should append a snapshot recorded event");
     Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
         "autodev verify-task should append a verification completed event");
     Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,

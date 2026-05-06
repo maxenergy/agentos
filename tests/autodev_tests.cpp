@@ -704,6 +704,23 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "execution blocked event fixture should have one materialized task");
 
     const auto profile = agentos::CodexCliAutoDevAdapterProfile();
+    const auto snapshot = store.record_task_snapshot(submit.job.job_id, "task-001");
+    Expect(snapshot.success,
+        "record_task_snapshot should record a pre-task snapshot fact");
+    Expect(snapshot.snapshot.snapshot_id == "snapshot-001",
+        "first task snapshot should use snapshot-001");
+    Expect(snapshot.snapshot.task_id == "task-001",
+        "task snapshot should record task id");
+    Expect(!snapshot.snapshot.head_sha.empty(),
+        "task snapshot should record job worktree HEAD");
+    Expect(std::filesystem::exists(store.snapshots_path(submit.job.job_id)),
+        "record_task_snapshot should write snapshots.json under runtime store");
+    Expect(std::filesystem::exists(snapshot.snapshot_artifact_path),
+        "record_task_snapshot should write a per-snapshot artifact");
+    std::string snapshots_error;
+    const auto snapshots = store.load_snapshots(submit.job.job_id, &snapshots_error);
+    Expect(snapshots.has_value() && snapshots->size() == 1,
+        "load_snapshots should read recorded snapshot facts");
     store.record_execution_blocked(approved.job, tasks->front(), profile, "adapter not implemented");
     const auto verified = store.verify_task(submit.job.job_id, "task-001", "turn-001");
     Expect(verified.success, "verify_task should run the materialized task verify_command");
@@ -903,6 +920,8 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     const auto events = ReadFile(store.events_path(submit.job.job_id));
     Expect(events.find("\"type\":\"autodev.execution.blocked\"") != std::string::npos,
         "events.ndjson should record execution blocked event");
+    Expect(events.find("\"type\":\"autodev.snapshot.recorded\"") != std::string::npos,
+        "events.ndjson should record snapshot event");
     Expect(events.find("\"turn_id\":\"turn-001\"") != std::string::npos,
         "execution blocked event should link to the synthetic turn record");
     Expect(events.find("\"prompt_artifact\"") != std::string::npos,

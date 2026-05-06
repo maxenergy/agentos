@@ -210,6 +210,32 @@ AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json) {
     return turn;
 }
 
+nlohmann::json ToJson(const AutoDevSnapshot& snapshot) {
+    return nlohmann::json{
+        {"snapshot_id", snapshot.snapshot_id},
+        {"job_id", snapshot.job_id},
+        {"task_id", snapshot.task_id},
+        {"spec_revision", snapshot.spec_revision},
+        {"head_sha", snapshot.head_sha},
+        {"git_status", snapshot.git_status},
+        {"captured_at", snapshot.captured_at},
+        {"artifact_path", OptionalPath(snapshot.artifact_path)},
+    };
+}
+
+AutoDevSnapshot AutoDevSnapshotFromJson(const nlohmann::json& json) {
+    AutoDevSnapshot snapshot;
+    snapshot.snapshot_id = json.value("snapshot_id", std::string{});
+    snapshot.job_id = json.value("job_id", std::string{});
+    snapshot.task_id = json.value("task_id", std::string{});
+    snapshot.spec_revision = json.value("spec_revision", std::string{});
+    snapshot.head_sha = json.value("head_sha", std::string{});
+    snapshot.git_status = ReadStringVector(json, "git_status");
+    snapshot.captured_at = json.value("captured_at", std::string{});
+    snapshot.artifact_path = ReadOptionalPath(json, "artifact_path");
+    return snapshot;
+}
+
 nlohmann::json ToJson(const AutoDevVerification& verification) {
     return nlohmann::json{
         {"verification_id", verification.verification_id},

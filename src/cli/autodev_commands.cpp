@@ -46,6 +46,8 @@ void PrintUsage() {
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
         << "  agentos autodev turns job_id=<job_id>\n"
+        << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev snapshots job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
@@ -475,6 +477,79 @@ int RunTurns(const std::filesystem::path& workspace, const int argc, char* argv[
         }
         if (turn.response_artifact.has_value()) {
             std::cout << "  response_artifact: " << turn.response_artifact->string() << '\n';
+        }
+    }
+    return 0;
+}
+
+int RunSnapshotTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    const auto task_id_it = options.find("task_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev snapshot-task failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev snapshot-task failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+    if (task_id_it == options.end() || task_id_it->second.empty()) {
+        std::cerr << "autodev snapshot-task failed: task_id is required\n";
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.record_task_snapshot(job_id_it->second, task_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev snapshot-task failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev task snapshot recorded\n"
+              << "job_id:       " << result.snapshot.job_id << '\n'
+              << "task_id:      " << result.snapshot.task_id << '\n'
+              << "snapshot_id:  " << result.snapshot.snapshot_id << '\n'
+              << "head_sha:     " << result.snapshot.head_sha << '\n'
+              << "status_lines: " << result.snapshot.git_status.size() << '\n'
+              << "snapshots:    " << result.snapshots_path.string() << '\n'
+              << "artifact:     " << result.snapshot_artifact_path.string() << '\n'
+              << "\nSnapshot records runtime facts only. It does not roll back files.\n";
+    return 0;
+}
+
+int RunSnapshots(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev snapshots failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev snapshots failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto snapshots = store.load_snapshots(job_id_it->second, &error);
+    if (!snapshots.has_value()) {
+        std::cerr << "autodev snapshots failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev snapshots\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << snapshots->size() << '\n';
+    for (const auto& snapshot : *snapshots) {
+        std::cout << '\n'
+                  << "- snapshot_id: " << snapshot.snapshot_id << '\n'
+                  << "  task_id:     " << snapshot.task_id << '\n'
+                  << "  head_sha:    " << snapshot.head_sha << '\n'
+                  << "  status_lines:" << ' ' << snapshot.git_status.size() << '\n'
+                  << "  captured_at: " << snapshot.captured_at << '\n';
+        if (snapshot.artifact_path.has_value()) {
+            std::cout << "  artifact:    " << snapshot.artifact_path->string() << '\n';
         }
     }
     return 0;
@@ -962,6 +1037,7 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
         return 1;
     }
 
+    const auto snapshots = store.load_snapshots(job_id_it->second, nullptr).value_or(std::vector<AutoDevSnapshot>{});
     const auto verifications = store.load_verifications(job_id_it->second, nullptr).value_or(std::vector<AutoDevVerification>{});
     const auto diffs = store.load_diffs(job_id_it->second, nullptr).value_or(std::vector<AutoDevDiffGuard>{});
     const auto acceptances = store.load_acceptances(job_id_it->second, nullptr).value_or(std::vector<AutoDevAcceptanceGate>{});
@@ -1006,7 +1082,8 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
               << "next_action:   " << job->next_action << '\n'
               << "spec_revision: " << job->spec_revision.value_or("(none)") << '\n'
               << "tasks:         " << passed_tasks << "/" << tasks->size() << '\n'
-              << "facts:         verifications=" << verifications.size()
+              << "facts:         snapshots=" << snapshots.size()
+              << " verifications=" << verifications.size()
               << " diffs=" << diffs.size()
               << " acceptances=" << acceptances.size()
               << " final_reviews=" << final_reviews.size() << '\n';
@@ -1113,6 +1190,11 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
         return 1;
     }
 
+    const auto snapshot = store.record_task_snapshot(job_id_it->second, pending_task->task_id);
+    if (!snapshot.success) {
+        std::cerr << "autodev execute-next-task failed: " << snapshot.error_message << '\n';
+        return 1;
+    }
     const CodexCliAutoDevAdapter adapter;
     const auto profile = adapter.profile();
     constexpr const char* blocked_reason = "Codex CLI AutoDev execution is not implemented in this build";
@@ -1133,6 +1215,13 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
     if (pending_task->verify_command.has_value()) {
         std::cout << "  verify_command:   " << *pending_task->verify_command << '\n';
     }
+
+    std::cout << '\n'
+              << "Pre-task snapshot:\n"
+              << "  snapshot_id:      " << snapshot.snapshot.snapshot_id << '\n'
+              << "  head_sha:         " << snapshot.snapshot.head_sha << '\n'
+              << "  status_lines:     " << snapshot.snapshot.git_status.size() << '\n'
+              << "  artifact:         " << snapshot.snapshot_artifact_path.string() << '\n';
 
     std::cout << '\n'
               << "Execution adapter:\n"
@@ -1292,6 +1381,12 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "turns") {
         return RunTurns(workspace, argc, argv);
+    }
+    if (subcommand == "snapshot-task" || subcommand == "snapshot_task") {
+        return RunSnapshotTask(workspace, argc, argv);
+    }
+    if (subcommand == "snapshots") {
+        return RunSnapshots(workspace, argc, argv);
     }
     if (subcommand == "verify-task" || subcommand == "verify_task") {
         return RunVerifyTask(workspace, argc, argv);

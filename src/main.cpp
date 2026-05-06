@@ -657,6 +657,8 @@ void PrintUsage() {
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
         << "  agentos autodev turns job_id=<job_id>\n"
+        << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev snapshots job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
