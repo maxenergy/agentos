@@ -2734,6 +2734,30 @@ void TestAutoDevCommands() {
         "autodev diff-guard should report failed diff guard");
     Expect(diff_guard_fail.output.find("package.json") != std::string::npos,
         "autodev diff-guard should print violating file");
+    const auto acceptance_gate_fail = RunAgentos(workspace, {
+        "autodev",
+        "acceptance-gate",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(acceptance_gate_fail.exit_code != 0,
+        "autodev acceptance-gate should fail when latest diff guard failed");
+    Expect(acceptance_gate_fail.output.find("passed:        false") != std::string::npos,
+        "autodev acceptance-gate should report failed acceptance");
+    Expect(acceptance_gate_fail.output.find("latest diff guard did not pass") != std::string::npos,
+        "autodev acceptance-gate should explain failed diff guard dependency");
+    const auto failed_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id});
+    Expect(failed_summary.exit_code == 0,
+        "autodev summary should still read facts after failed gates");
+    Expect(failed_summary.output.find("facts:         verifications=1 diffs=2 acceptances=2 final_reviews=1") != std::string::npos,
+        "autodev summary should count failed gate facts");
+    Expect(failed_summary.output.find("diff_guard:   diff-002 passed=false") != std::string::npos,
+        "autodev summary should show latest failed diff guard");
+    Expect(failed_summary.output.find("acceptance:   acceptance-002 passed=false") != std::string::npos,
+        "autodev summary should show latest failed acceptance");
+    Expect(failed_summary.output.find("diff_blocked_file_violations: package.json") != std::string::npos,
+        "autodev summary should show blocked file violations from latest diff");
+    Expect(failed_summary.output.find("acceptance_reasons: latest diff guard did not pass") != std::string::npos,
+        "autodev summary should show latest acceptance failure reasons");
     const auto diffs_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id});
     Expect(diffs_result.exit_code == 0,
         "autodev diffs should list diff guard facts");

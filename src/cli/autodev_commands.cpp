@@ -898,6 +898,13 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
             std::cout << " passed=" << (acceptance->passed ? "true" : "false");
         }
         std::cout << '\n';
+        if (diff.has_value() && (!diff->blocked_file_violations.empty() || !diff->outside_allowed_files.empty())) {
+            PrintStringList("  diff_blocked_file_violations:", diff->blocked_file_violations);
+            PrintStringList("  diff_outside_allowed_files:  ", diff->outside_allowed_files);
+        }
+        if (acceptance.has_value() && !acceptance->reasons.empty()) {
+            PrintStringList("  acceptance_reasons:", acceptance->reasons);
+        }
     }
 
     std::cout << "\nFinal review:\n";
