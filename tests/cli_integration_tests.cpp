@@ -2698,6 +2698,12 @@ void TestAutoDevCommands() {
         "autodev status should show final_review as the next action");
     Expect(accepted_status.output.find("passed: 1") != std::string::npos,
         "autodev status should count accepted task as passed");
+    Expect(accepted_status.output.find("Progress:") != std::string::npos,
+        "autodev status should display progress");
+    Expect(accepted_status.output.find("overall:      90%") != std::string::npos,
+        "autodev status should compute final review phase progress");
+    Expect(accepted_status.output.find("acceptance:   1/1") != std::string::npos,
+        "autodev status should show acceptance progress");
     const auto final_review = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + executable_job_id});
     Expect(final_review.exit_code == 0,
         "autodev final-review should pass when accepted task facts and current diff are in scope");
@@ -2739,6 +2745,12 @@ void TestAutoDevCommands() {
         "autodev summary should include current job status");
     Expect(summary_result.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=0") != std::string::npos,
         "autodev summary should include runtime fact counts");
+    Expect(summary_result.output.find("overall:      100%") != std::string::npos,
+        "autodev summary should show pr_ready progress as complete");
+    Expect(summary_result.output.find("tasks:        1/1") != std::string::npos,
+        "autodev summary should show task progress");
+    Expect(summary_result.output.find("acceptance:   1/1") != std::string::npos,
+        "autodev summary should show acceptance progress");
     Expect(summary_result.output.find("verification: verify-001 passed=true") != std::string::npos,
         "autodev summary should include latest verification fact per task");
     Expect(summary_result.output.find("diff_guard:   diff-001 passed=true") != std::string::npos,
@@ -3080,6 +3092,10 @@ void TestAutoDevCommands() {
         "autodev summary should read failed verification facts");
     Expect(failing_verify_summary.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=2") != std::string::npos,
         "autodev summary should count failed verification fixture facts");
+    Expect(failing_verify_summary.output.find("overall:      30%") != std::string::npos,
+        "autodev summary should show codex_execution phase-weight progress");
+    Expect(failing_verify_summary.output.find("acceptance:   0/1") != std::string::npos,
+        "autodev summary should show failed acceptance progress");
     Expect(failing_verify_summary.output.find("verification: verify-001 passed=false") != std::string::npos,
         "autodev summary should show latest failed verification");
     Expect(failing_verify_summary.output.find("verification_exit_code: 1") != std::string::npos,

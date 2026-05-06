@@ -10,6 +10,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -51,6 +52,70 @@ int ParseIntOption(
     } catch (...) {
         return default_value;
     }
+}
+
+struct AutoDevProgressView {
+    int phase_weight = 0;
+    int overall_percent = 0;
+    std::size_t tasks_passed = 0;
+    std::size_t tasks_total = 0;
+    int acceptance_passed = 0;
+    int acceptance_total = 0;
+};
+
+int PhaseWeight(const AutoDevJob& job) {
+    if (job.status == "done" || job.phase == "done" || job.status == "pr_ready" || job.phase == "pr_ready") {
+        return 100;
+    }
+    if (job.phase == "final_review") {
+        return 90;
+    }
+    if (job.phase == "codex_execution" || job.phase == "repairing") {
+        return 30;
+    }
+    if (job.phase == "spec_validation") {
+        return 25;
+    }
+    if (job.phase == "goal_docs") {
+        return 20;
+    }
+    if (job.phase == "skill_pack_loading") {
+        return 10;
+    }
+    return 0;
+}
+
+AutoDevProgressView ComputeProgress(const AutoDevJob& job, const std::vector<AutoDevTask>& tasks) {
+    AutoDevProgressView progress;
+    progress.phase_weight = PhaseWeight(job);
+    progress.tasks_total = tasks.size();
+    for (const auto& task : tasks) {
+        if (task.status == "passed") {
+            ++progress.tasks_passed;
+        }
+        progress.acceptance_passed += task.acceptance_passed;
+        progress.acceptance_total += task.acceptance_total;
+    }
+    if (progress.phase_weight == 100) {
+        progress.overall_percent = 100;
+        return progress;
+    }
+    if (progress.tasks_total > 0 &&
+        (job.phase == "codex_execution" || job.phase == "repairing" || job.phase == "final_review")) {
+        const auto task_percent = static_cast<int>((60 * progress.tasks_passed) / progress.tasks_total);
+        progress.overall_percent = std::max(progress.phase_weight, 30 + task_percent);
+        progress.overall_percent = std::min(progress.overall_percent, job.phase == "final_review" ? 90 : 89);
+        return progress;
+    }
+    progress.overall_percent = progress.phase_weight;
+    return progress;
+}
+
+void PrintProgress(const std::string& indent, const AutoDevProgressView& progress) {
+    std::cout << indent << "overall:      " << progress.overall_percent << "%\n"
+              << indent << "phase_weight: " << progress.phase_weight << "%\n"
+              << indent << "tasks:        " << progress.tasks_passed << "/" << progress.tasks_total << '\n'
+              << indent << "acceptance:   " << progress.acceptance_passed << "/" << progress.acceptance_total << '\n';
 }
 
 void PrintUsage() {
@@ -1301,6 +1366,7 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
             ++passed_tasks;
         }
     }
+    const auto progress = ComputeProgress(*job, *tasks);
 
     std::cout << "AutoDev summary\n"
               << "job_id:        " << job->job_id << '\n'
@@ -1315,6 +1381,9 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
               << " acceptances=" << acceptances.size()
               << " final_reviews=" << final_reviews.size()
               << " repairs=" << repairs.size() << '\n';
+
+    std::cout << "\nProgress:\n";
+    PrintProgress("  ", progress);
 
     std::cout << "\nTasks:\n";
     for (const auto& task : *tasks) {
@@ -1608,22 +1677,24 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
     }
     if (std::filesystem::exists(store.tasks_path(job->job_id))) {
         try {
-            std::ifstream input(store.tasks_path(job->job_id), std::ios::binary);
-            nlohmann::json tasks;
-            input >> tasks;
-            const auto total = tasks.is_array() ? tasks.size() : 0U;
+            const auto tasks = store.load_tasks(job->job_id, &error);
+            if (!tasks.has_value()) {
+                throw std::runtime_error(error);
+            }
             std::size_t passed = 0;
-            if (tasks.is_array()) {
-                for (const auto& task : tasks) {
-                    if (task.value("status", "") == "passed") {
-                        ++passed;
-                    }
+            for (const auto& task : *tasks) {
+                if (task.status == "passed") {
+                    ++passed;
                 }
             }
+            const auto progress = ComputeProgress(*job, *tasks);
             std::cout << '\n'
                       << "Tasks:\n"
-                      << "  total:  " << total << '\n'
-                      << "  passed: " << passed << '\n';
+                      << "  total:  " << tasks->size() << '\n'
+                      << "  passed: " << passed << '\n'
+                      << '\n'
+                      << "Progress:\n";
+            PrintProgress("  ", progress);
         } catch (...) {
             std::cout << '\n'
                       << "Tasks:\n"
