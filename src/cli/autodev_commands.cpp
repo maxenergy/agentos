@@ -6,15 +6,22 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 
 #include <nlohmann/json.hpp>
+
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 namespace agentos {
 
@@ -116,6 +123,105 @@ void PrintProgress(const std::string& indent, const AutoDevProgressView& progres
               << indent << "phase_weight: " << progress.phase_weight << "%\n"
               << indent << "tasks:        " << progress.tasks_passed << "/" << progress.tasks_total << '\n'
               << indent << "acceptance:   " << progress.acceptance_passed << "/" << progress.acceptance_total << '\n';
+}
+
+std::string ShellQuote(const std::string& value) {
+#ifdef _WIN32
+    std::string quoted = "\"";
+    for (const char ch : value) {
+        if (ch == '"') {
+            quoted += "\\\"";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('"');
+    return quoted;
+#else
+    std::string quoted = "'";
+    for (const char ch : value) {
+        if (ch == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('\'');
+    return quoted;
+#endif
+}
+
+struct ShellCommandResult {
+    int exit_code = -1;
+    std::string output;
+    int duration_ms = 0;
+};
+
+ShellCommandResult RunShellCommand(const std::filesystem::path& cwd, const std::string& command) {
+    const auto started = std::chrono::steady_clock::now();
+    std::ostringstream shell;
+#ifdef _WIN32
+    shell << "cd /d " << ShellQuote(cwd.string()) << " && " << command << " 2>&1";
+    FILE* pipe = _popen(shell.str().c_str(), "r");
+#else
+    shell << "cd " << ShellQuote(cwd.string()) << " && " << command << " 2>&1";
+    FILE* pipe = popen(shell.str().c_str(), "r");
+#endif
+    if (!pipe) {
+        return {.exit_code = -1, .output = "failed to start command", .duration_ms = 0};
+    }
+    std::string output;
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        output += buffer;
+    }
+#ifdef _WIN32
+    const int status = _pclose(pipe);
+    const int exit_code = status;
+#else
+    const int status = pclose(pipe);
+    int exit_code = status;
+    if (WIFEXITED(status)) {
+        exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        exit_code = 128 + WTERMSIG(status);
+    }
+#endif
+    const auto completed = std::chrono::steady_clock::now();
+    const auto duration_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(completed - started).count());
+    return {.exit_code = exit_code, .output = std::move(output), .duration_ms = duration_ms};
+}
+
+std::string BuildCodexCliPrompt(const AutoDevJob& job, const AutoDevTask& task) {
+    std::ostringstream out;
+    out << "You are executing an AgentOS AutoDev task.\n\n"
+        << "Job ID: " << job.job_id << "\n"
+        << "Spec revision: " << job.spec_revision.value_or("") << "\n"
+        << "Spec hash: " << job.spec_hash.value_or("") << "\n"
+        << "Worktree: " << job.job_worktree_path.string() << "\n\n"
+        << "Task ID: " << task.task_id << "\n"
+        << "Title: " << task.title << "\n";
+    if (!task.allowed_files.empty()) {
+        out << "Allowed files:\n";
+        for (const auto& file : task.allowed_files) {
+            out << "- " << file << "\n";
+        }
+    }
+    if (!task.blocked_files.empty()) {
+        out << "Blocked files:\n";
+        for (const auto& file : task.blocked_files) {
+            out << "- " << file << "\n";
+        }
+    }
+    if (task.verify_command.has_value()) {
+        out << "Verify command: " << *task.verify_command << "\n";
+    }
+    out << "\nInstructions:\n"
+        << "- Modify only files needed for this task and stay within allowed_files.\n"
+        << "- Do not edit AgentOS runtime files to change status.\n"
+        << "- Leave task acceptance to AgentOS verification, diff guard, and acceptance gate.\n";
+    return out.str();
 }
 
 bool WantsJson(const std::map<std::string, std::string>& options) {
@@ -251,7 +357,7 @@ void PrintUsage() {
         << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
-        << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server]\n";
+        << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>]\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -787,6 +893,16 @@ int RunTurns(const std::filesystem::path& workspace, const int argc, char* argv[
         }
         if (turn.response_artifact.has_value()) {
             std::cout << "  response_artifact: " << turn.response_artifact->string() << '\n';
+        }
+        if (!turn.changed_files.empty()) {
+            std::cout << "  changed_files:     ";
+            for (std::size_t i = 0; i < turn.changed_files.size(); ++i) {
+                if (i != 0) {
+                    std::cout << ", ";
+                }
+                std::cout << turn.changed_files[i];
+            }
+            std::cout << '\n';
         }
     }
     return 0;
@@ -1814,11 +1930,20 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
     AutoDevExecutionAdapterProfile profile;
     bool adapter_healthy = false;
     std::string blocked_reason;
+    std::string codex_cli_command;
     if (adapter_kind == "codex_cli") {
         const CodexCliAutoDevAdapter adapter;
         profile = adapter.profile();
         adapter_healthy = adapter.healthy();
-        blocked_reason = "Codex CLI AutoDev execution is not implemented in this build";
+        if (const auto command_it = options.find("codex_cli_command");
+            command_it != options.end() && !command_it->second.empty()) {
+            codex_cli_command = command_it->second;
+        } else if (const char* env_command = std::getenv("AGENTOS_AUTODEV_CODEX_CLI_COMMAND");
+                   env_command != nullptr && std::string(env_command).size() > 0) {
+            codex_cli_command = env_command;
+        } else {
+            codex_cli_command = "codex exec --skip-git-repo-check --sandbox workspace-write -";
+        }
     } else if (adapter_kind == "codex_app_server") {
         const CodexAppServerAutoDevAdapter adapter;
         profile = adapter.profile();
@@ -1834,6 +1959,48 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
     if (!snapshot.success) {
         std::cerr << "autodev execute-next-task failed: " << snapshot.error_message << '\n';
         return 1;
+    }
+    if (adapter_kind == "codex_cli") {
+        const auto input_dir = store.job_dir(job_id_it->second) / "prompts";
+        std::filesystem::create_directories(input_dir);
+        const auto input_path = input_dir / ("codex-cli-input-" + pending_task->task_id + ".md");
+        {
+            std::ofstream prompt(input_path, std::ios::binary | std::ios::trunc);
+            prompt << BuildCodexCliPrompt(*job, *pending_task);
+        }
+        const auto command = codex_cli_command + " < " + ShellQuote(input_path.string());
+        const auto execution = RunShellCommand(job->job_worktree_path, command);
+        const auto turn = store.record_execution_turn(
+            job_id_it->second,
+            pending_task->task_id,
+            profile,
+            codex_cli_command,
+            execution.exit_code,
+            execution.duration_ms,
+            execution.output);
+        if (!turn.success) {
+            std::cerr << "autodev execute-next-task failed: " << turn.error_message << '\n';
+            return 1;
+        }
+        std::cout << "AutoDev execution completed\n"
+                  << "job_id:             " << turn.job.job_id << '\n'
+                  << "status:             " << turn.job.status << '\n'
+                  << "phase:              " << turn.job.phase << '\n'
+                  << "next_action:        " << turn.job.next_action << '\n'
+                  << "task_id:            " << turn.task.task_id << '\n'
+                  << "turn_id:            " << turn.turn.turn_id << '\n'
+                  << "turn_status:        " << turn.turn.status << '\n'
+                  << "exit_code:          " << execution.exit_code << '\n'
+                  << "duration_ms:        " << execution.duration_ms << '\n'
+                  << "prompt_artifact:    " << turn.turn.prompt_artifact->string() << '\n'
+                  << "response_artifact:  " << turn.turn.response_artifact->string() << '\n'
+                  << "changed_files:      " << turn.turn.changed_files.size() << '\n'
+                  << "snapshot_id:        " << snapshot.snapshot.snapshot_id << '\n'
+                  << "adapter_kind:       " << profile.adapter_kind << '\n'
+                  << "adapter_name:       " << profile.adapter_name << '\n'
+                  << "healthy:            " << (adapter_healthy ? "true" : "false") << '\n'
+                  << "\nTask status and job completion remain controlled by AgentOS runtime facts.\n";
+        return execution.exit_code == 0 ? 0 : 1;
     }
     store.record_execution_blocked(*job, *pending_task, profile, blocked_reason);
     std::cout << "AutoDev execution preflight\n"

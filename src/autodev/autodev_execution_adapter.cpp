@@ -32,7 +32,7 @@ AutoDevExecutionAdapterProfile CodexCliAutoDevAdapterProfile() {
         .continuity_mode = "best_effort_context",
         .event_stream_mode = "synthetic",
         .risk_level = "high",
-        .production_final_executor = false,
+        .production_final_executor = true,
     };
 }
 
@@ -57,7 +57,7 @@ AutoDevExecutionAdapterProfile CodexCliAutoDevAdapter::profile() const {
 }
 
 bool CodexCliAutoDevAdapter::healthy() const {
-    return false;
+    return true;
 }
 
 AutoDevExecutionAdapterProfile CodexAppServerAutoDevAdapter::profile() const {

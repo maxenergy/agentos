@@ -703,6 +703,34 @@ std::string BlockedExecutionResponseArtifact(
     return out.str();
 }
 
+std::string ExecutionResponseArtifact(
+    const AutoDevTurn& turn,
+    const std::string& command,
+    const std::string& output) {
+    std::ostringstream out;
+    out << "# AutoDev Execution Turn Response\n\n"
+        << "Execution was started by AgentOS and recorded as a runtime turn fact.\n\n"
+        << "## Turn\n\n"
+        << "- turn_id: `" << turn.turn_id << "`\n"
+        << "- task_id: `" << turn.task_id << "`\n"
+        << "- status: `" << turn.status << "`\n"
+        << "- adapter_kind: `" << turn.adapter_kind << "`\n"
+        << "- continuity_mode: `" << turn.continuity_mode << "`\n"
+        << "- event_stream_mode: `" << turn.event_stream_mode << "`\n"
+        << "- exit_code: `" << turn.error_code.value_or("0") << "`\n"
+        << "- duration_ms: `" << turn.duration_ms << "`\n\n"
+        << "## Command\n\n"
+        << "```text\n"
+        << command << "\n"
+        << "```\n\n"
+        << "## Output\n\n"
+        << "```text\n"
+        << output
+        << (output.empty() || output.back() == '\n' ? "" : "\n")
+        << "```\n";
+    return out.str();
+}
+
 std::string RepairPromptArtifact(
     const AutoDevJob& job,
     const AutoDevTask& task,
@@ -1782,6 +1810,129 @@ void AutoDevStateStore::record_execution_blocked(
         {"next_action", job.next_action},
         {"at", now},
     });
+}
+
+AutoDevExecutionTurnResult AutoDevStateStore::record_execution_turn(
+    const std::string& job_id,
+    const std::string& task_id,
+    const AutoDevExecutionAdapterProfile& adapter_profile,
+    const std::string& command,
+    const int exit_code,
+    const int duration_ms,
+    const std::string& output) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevExecutionTurnResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevExecutionTurnResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    auto maybe_tasks = load_tasks(job_id, &load_error);
+    if (!maybe_tasks.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    const auto task_it = std::find_if(maybe_tasks->begin(), maybe_tasks->end(), [&task_id](const AutoDevTask& task) {
+        return task.task_id == task_id;
+    });
+    if (task_it == maybe_tasks->end()) {
+        return fail(std::move(job), "AutoDev task not found: " + task_id);
+    }
+    const AutoDevTask task = *task_it;
+
+    nlohmann::json turns = nlohmann::json::array();
+    if (std::filesystem::exists(turns_path(job.job_id))) {
+        try {
+            turns = nlohmann::json::parse(ReadFile(turns_path(job.job_id)));
+            if (!turns.is_array()) {
+                turns = nlohmann::json::array();
+            }
+        } catch (...) {
+            turns = nlohmann::json::array();
+        }
+    }
+
+    const auto status = GitCommand(job.job_worktree_path, "status --porcelain --untracked-files=all");
+    if (status.exit_code != 0) {
+        return fail(std::move(job), "could not inspect job worktree status: " + Trim(status.output));
+    }
+
+    AutoDevTurn turn;
+    turn.turn_id = NextTurnId(turns);
+    turn.job_id = job.job_id;
+    turn.task_id = task.task_id;
+    turn.adapter_kind = adapter_profile.adapter_kind;
+    turn.adapter_name = adapter_profile.adapter_name;
+    turn.continuity_mode = adapter_profile.continuity_mode;
+    turn.event_stream_mode = adapter_profile.event_stream_mode;
+    turn.session_id = "cli-" + turn.turn_id;
+    turn.status = exit_code == 0 ? "completed" : "failed";
+    turn.started_at = IsoUtcNow();
+    turn.completed_at = turn.started_at;
+    turn.duration_ms = duration_ms;
+    turn.summary = exit_code == 0
+        ? "Codex CLI execution completed"
+        : "Codex CLI execution failed";
+    if (exit_code != 0) {
+        turn.error_code = "exit_code_" + std::to_string(exit_code);
+        turn.error_message = TruncateForSummary(output, 1000);
+    }
+    turn.prompt_artifact = job_dir(job.job_id) / "prompts" / (turn.turn_id + ".md");
+    turn.response_artifact = job_dir(job.job_id) / "responses" / (turn.turn_id + ".md");
+    for (const auto& line : Lines(status.output)) {
+        const auto path = GitStatusPath(line);
+        if (!path.empty()) {
+            turn.changed_files.push_back(path);
+        }
+    }
+    std::sort(turn.changed_files.begin(), turn.changed_files.end());
+    turn.changed_files.erase(std::unique(turn.changed_files.begin(), turn.changed_files.end()), turn.changed_files.end());
+
+    WriteFileAtomically(*turn.prompt_artifact, BlockedExecutionPromptArtifact(job, task, adapter_profile));
+    WriteFileAtomically(*turn.response_artifact, ExecutionResponseArtifact(turn, command, output));
+    turns.push_back(ToJson(turn));
+    WriteFileAtomically(turns_path(job.job_id), turns.dump(2) + "\n");
+
+    job.current_activity = "none";
+    job.next_action = exit_code == 0 ? "verify_task" : "inspect_turn";
+    job.blocker = exit_code == 0 ? std::nullopt : std::optional<std::string>("latest execution turn failed");
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.execution.completed"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"current_activity", job.current_activity},
+        {"task_id", task.task_id},
+        {"task_status", task.status},
+        {"turn_id", turn.turn_id},
+        {"turn_status", turn.status},
+        {"exit_code", exit_code},
+        {"duration_ms", turn.duration_ms},
+        {"changed_files", turn.changed_files},
+        {"prompt_artifact", turn.prompt_artifact->string()},
+        {"response_artifact", turn.response_artifact->string()},
+        {"adapter_profile", ToJson(adapter_profile)},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
+    });
+
+    AutoDevExecutionTurnResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.task = std::move(task);
+    result.turn = std::move(turn);
+    result.turns_path = this->turns_path(job_id);
+    return result;
 }
 
 AutoDevRepairNeeded AutoDevStateStore::record_repair_needed(

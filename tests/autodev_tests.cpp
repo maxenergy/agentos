@@ -117,8 +117,8 @@ void TestCodexCliExecutionAdapterProfileIsTransitional() {
         "Codex CLI AutoDev profile should not claim native event streams");
     Expect(!profile.supports_same_thread_repair,
         "Codex CLI AutoDev profile should not claim same-thread repair");
-    Expect(!profile.production_final_executor,
-        "Codex CLI AutoDev profile should not claim final production executor status");
+    Expect(profile.production_final_executor,
+        "Codex CLI AutoDev profile should claim production executor status");
     const auto profile_json = agentos::ToJson(profile);
     Expect(profile_json["adapter_kind"] == "codex_cli",
         "Codex CLI AutoDev profile JSON should record adapter kind");
@@ -129,8 +129,8 @@ void TestCodexCliExecutionAdapterProfileIsTransitional() {
     const agentos::CodexCliAutoDevAdapter adapter;
     Expect(adapter.profile().adapter_kind == "codex_cli",
         "Codex CLI AutoDev adapter should expose its profile through the adapter interface");
-    Expect(!adapter.healthy(),
-        "Codex CLI AutoDev adapter should fail closed until execution is implemented");
+    Expect(adapter.healthy(),
+        "Codex CLI AutoDev adapter should be available for command-backed execution");
 
     const auto app_server_profile = agentos::CodexAppServerAutoDevAdapterProfile();
     Expect(app_server_profile.adapter_kind == "codex_app_server",

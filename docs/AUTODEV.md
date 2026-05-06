@@ -78,12 +78,19 @@ docs/schemas/AUTODEV_SPEC.schema.json
 
 The command does not approve specs, mark tasks passed, run Codex execution, or mark jobs done. Jobs in `awaiting_approval` still require an explicit hash-bound `approve-spec` command.
 
+## Execution Adapter
+
+`agentos autodev execute-next-task job_id=<job_id> execution_adapter=codex_cli` records a pre-task snapshot, builds a task prompt, runs the configured Codex CLI command in the job worktree, and records a turn fact with prompt artifact, response artifact, exit code, duration, and changed files. The command defaults to `codex exec --skip-git-repo-check --sandbox workspace-write -`; callers can override it with `codex_cli_command=<command>` or `AGENTOS_AUTODEV_CODEX_CLI_COMMAND`.
+
+Execution turn records do not mark tasks passed. Task state remains controlled by `verify-task`, `diff-guard`, and `acceptance-gate`.
+
 ## Authority Boundary
 
 Codex may read and modify files under the job worktree, including `docs/goal/*`. Codex cannot mark a task passed or a job done by editing worktree files.
 
 Only AgentOS runtime gates mutate authoritative state:
 
+- `execute-next-task` may run a configured execution adapter and record turn facts; it does not mark tasks passed.
 - `verify-task` records verification facts only.
 - `diff-guard` records diff facts only.
 - `acceptance-gate` may mark a task passed when latest verification and diff facts pass.

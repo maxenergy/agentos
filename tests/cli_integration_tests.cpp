@@ -398,6 +398,34 @@ void WriteCurlTokenFixture(const std::filesystem::path& bin_dir) {
 #endif
 }
 
+std::filesystem::path WriteAutoDevCodexCliFixture(const std::filesystem::path& bin_dir) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "autodev_codex_fixture.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "type CON > NUL\n"
+        << "echo codex fixture update>> README.md\n"
+        << "echo fixture codex completed\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "autodev_codex_fixture";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "cat >/dev/null\n"
+        << "printf '%s\\n' 'codex fixture update' >> README.md\n"
+        << "printf '%s\\n' 'fixture codex completed'\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+    return fixture_path;
+}
+
 #ifndef _WIN32
 void WriteSleepingCodexFixture(const std::filesystem::path& bin_dir) {
     std::filesystem::create_directories(bin_dir);
@@ -2643,39 +2671,44 @@ void TestAutoDevCommands() {
         "autodev tasks should list materialized executable task");
     Expect(executable_tasks_result.output.find("retry:           0/3") != std::string::npos,
         "autodev tasks should show default retry counters");
-    const auto execute_next = RunAgentos(workspace, {"autodev", "execute-next-task", "job_id=" + executable_job_id});
-    Expect(execute_next.exit_code != 0,
-        "autodev execute-next-task should fail closed until a real execution adapter is implemented");
-    Expect(execute_next.output.find("AutoDev execution preflight") != std::string::npos,
-        "autodev execute-next-task should print execution preflight details");
-    Expect(execute_next.output.find("task_id:          task-001") != std::string::npos,
+    const auto codex_fixture = WriteAutoDevCodexCliFixture(workspace / "bin");
+    const auto execute_next = RunAgentos(workspace, {
+        "autodev",
+        "execute-next-task",
+        "job_id=" + executable_job_id,
+        "codex_cli_command=" + codex_fixture.string()});
+    Expect(execute_next.exit_code == 0,
+        "autodev execute-next-task should run the configured Codex CLI command");
+    Expect(execute_next.output.find("AutoDev execution completed") != std::string::npos,
+        "autodev execute-next-task should print execution completion details");
+    Expect(execute_next.output.find("task_id:            task-001") != std::string::npos,
         "autodev execute-next-task should select the first pending runtime task");
-    Expect(execute_next.output.find("Pre-task snapshot:") != std::string::npos,
-        "autodev execute-next-task should record a pre-task snapshot");
-    Expect(execute_next.output.find("snapshot_id:      snapshot-001") != std::string::npos,
+    Expect(execute_next.output.find("turn_id:            turn-001") != std::string::npos,
+        "autodev execute-next-task should record the first execution turn");
+    Expect(execute_next.output.find("turn_status:        completed") != std::string::npos,
+        "autodev execute-next-task should record completed turn status");
+    Expect(execute_next.output.find("exit_code:          0") != std::string::npos,
+        "autodev execute-next-task should record the Codex CLI exit code");
+    Expect(execute_next.output.find("snapshot_id:        snapshot-001") != std::string::npos,
         "autodev execute-next-task should print the snapshot id");
-    Expect(execute_next.output.find("adapter_kind:                codex_cli") != std::string::npos,
-        "autodev execute-next-task should expose the transitional adapter kind");
-    Expect(execute_next.output.find("continuity_mode:             best_effort_context") != std::string::npos,
-        "autodev execute-next-task should expose best-effort continuity");
-    Expect(execute_next.output.find("event_stream_mode:           synthetic") != std::string::npos,
-        "autodev execute-next-task should expose synthetic events");
-    Expect(execute_next.output.find("Execution was not started") != std::string::npos,
-        "autodev execute-next-task should clearly state that Codex was not started");
+    Expect(execute_next.output.find("adapter_kind:       codex_cli") != std::string::npos,
+        "autodev execute-next-task should expose the Codex CLI adapter kind");
     const auto executable_tasks = ReadTextFile(executable_job_dir / "tasks.json");
     Expect(executable_tasks.find("\"status\": \"pending\"") != std::string::npos,
-        "failed-closed execute-next-task should leave runtime task status pending");
+        "execute-next-task should leave runtime task status pending until acceptance gate runs");
     const auto turns_result = RunAgentos(workspace, {"autodev", "turns", "job_id=" + executable_job_id});
     Expect(turns_result.exit_code == 0,
-        "autodev turns should list synthetic turn records");
+        "autodev turns should list execution turn records");
     Expect(turns_result.output.find("AutoDev turns") != std::string::npos,
         "autodev turns should print heading");
     Expect(turns_result.output.find("turn_id:           turn-001") != std::string::npos,
         "autodev turns should list the first synthetic turn id");
-    Expect(turns_result.output.find("status:            blocked") != std::string::npos,
-        "autodev turns should show blocked synthetic turn status");
+    Expect(turns_result.output.find("status:            completed") != std::string::npos,
+        "autodev turns should show completed execution turn status");
     Expect(turns_result.output.find("adapter_kind:      codex_cli") != std::string::npos,
         "autodev turns should show adapter kind");
+    Expect(turns_result.output.find("changed_files:     README.md") != std::string::npos,
+        "autodev turns should show files changed by the Codex CLI fixture");
     Expect(turns_result.output.find("prompt_artifact:") != std::string::npos,
         "autodev turns should show prompt artifact path");
     Expect(turns_result.output.find("response_artifact:") != std::string::npos,
@@ -3360,8 +3393,8 @@ void TestAutoDevCommands() {
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
         "autodev events should read execution preflight audit event");
-    Expect(executable_events.output.find("autodev.execution.blocked") != std::string::npos,
-        "autodev execute-next-task should append an execution blocked audit event");
+    Expect(executable_events.output.find("autodev.execution.completed") != std::string::npos,
+        "autodev execute-next-task should append an execution completed audit event");
     Expect(executable_events.output.find("autodev.snapshot.recorded") != std::string::npos,
         "autodev execute-next-task should append a snapshot recorded event");
     Expect(executable_events.output.find("autodev.rollback.recorded") != std::string::npos,

@@ -100,6 +100,15 @@ struct AutoDevRollbackResult {
     std::filesystem::path rollbacks_path;
 };
 
+struct AutoDevExecutionTurnResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    AutoDevTask task;
+    AutoDevTurn turn;
+    std::filesystem::path turns_path;
+};
+
 struct AutoDevDiffGuardResult {
     bool success = false;
     std::string error_message;
@@ -188,6 +197,14 @@ public:
         const AutoDevTask& task,
         const AutoDevExecutionAdapterProfile& adapter_profile,
         const std::string& reason);
+    AutoDevExecutionTurnResult record_execution_turn(
+        const std::string& job_id,
+        const std::string& task_id,
+        const AutoDevExecutionAdapterProfile& adapter_profile,
+        const std::string& command,
+        int exit_code,
+        int duration_ms,
+        const std::string& output);
     AutoDevSnapshotResult record_task_snapshot(const std::string& job_id, const std::string& task_id);
     AutoDevRollbackResult rollback_soft(const std::string& job_id, const std::string& task_id);
     AutoDevRollbackResult rollback_hard(
