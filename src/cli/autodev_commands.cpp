@@ -905,6 +905,9 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
         if (acceptance.has_value() && !acceptance->reasons.empty()) {
             PrintStringList("  acceptance_reasons:", acceptance->reasons);
         }
+        if (verification.has_value() && !verification->passed) {
+            std::cout << "  verification_exit_code: " << verification->exit_code << '\n';
+        }
     }
 
     std::cout << "\nFinal review:\n";

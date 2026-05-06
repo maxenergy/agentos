@@ -2767,6 +2767,98 @@ void TestAutoDevCommands() {
         "autodev diffs should include first diff record");
     Expect(diffs_result.output.find("diff_id: diff-002") != std::string::npos,
         "autodev diffs should include second diff record");
+
+    const auto failing_verify_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Expose failed verification in summary",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(failing_verify_submit.exit_code == 0,
+        "autodev submit should support a failing verification fixture job");
+    const auto failing_verify_job_id = ExtractLineValue(failing_verify_submit.output, "job_id:");
+    const auto failing_verify_worktree = ExtractLineValue(failing_verify_submit.output, "job_worktree_path:");
+    const auto failing_verify_path = failing_verify_worktree.substr(0, failing_verify_worktree.find(" "));
+
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + failing_verify_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare failing verification fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + failing_verify_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load failing verification fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + failing_verify_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate failing verification fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(failing_verify_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Expose failed verification in summary\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Fail verification deliberately\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"cmake -E false\",\n"
+            << "      \"acceptance\": [\"Verification failure is visible\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto failing_verify_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + failing_verify_job_id});
+    Expect(failing_verify_validate.exit_code == 0,
+        "autodev validate-spec should validate failing verification fixture spec");
+    const auto failing_verify_hash = ExtractLineValue(failing_verify_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + failing_verify_job_id,
+        "spec_hash=" + failing_verify_hash}).exit_code == 0,
+        "autodev approve-spec should approve failing verification fixture spec");
+    const auto failing_verify = RunAgentos(workspace, {
+        "autodev",
+        "verify-task",
+        "job_id=" + failing_verify_job_id,
+        "task_id=task-001"});
+    Expect(failing_verify.exit_code != 0,
+        "autodev verify-task should return nonzero when verify_command fails");
+    Expect(failing_verify.output.find("passed:          false") != std::string::npos,
+        "autodev verify-task should report failed verification");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "diff-guard",
+        "job_id=" + failing_verify_job_id,
+        "task_id=task-001"}).exit_code == 0,
+        "autodev diff-guard should pass when failing verification fixture has no code diff violations");
+    const auto failing_acceptance = RunAgentos(workspace, {
+        "autodev",
+        "acceptance-gate",
+        "job_id=" + failing_verify_job_id,
+        "task_id=task-001"});
+    Expect(failing_acceptance.exit_code != 0,
+        "autodev acceptance-gate should fail when latest verification failed");
+    Expect(failing_acceptance.output.find("latest verification did not pass") != std::string::npos,
+        "autodev acceptance-gate should explain failed verification dependency");
+    const auto failing_verify_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + failing_verify_job_id});
+    Expect(failing_verify_summary.exit_code == 0,
+        "autodev summary should read failed verification facts");
+    Expect(failing_verify_summary.output.find("facts:         verifications=1 diffs=1 acceptances=1 final_reviews=0") != std::string::npos,
+        "autodev summary should count failed verification fixture facts");
+    Expect(failing_verify_summary.output.find("verification: verify-001 passed=false") != std::string::npos,
+        "autodev summary should show latest failed verification");
+    Expect(failing_verify_summary.output.find("verification_exit_code: 1") != std::string::npos,
+        "autodev summary should show failed verification exit code");
+    Expect(failing_verify_summary.output.find("acceptance:   acceptance-001 passed=false") != std::string::npos,
+        "autodev summary should show acceptance failed after verification failure");
+    Expect(failing_verify_summary.output.find("acceptance_reasons: latest verification did not pass") != std::string::npos,
+        "autodev summary should show verification failure acceptance reason");
+
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
         "autodev events should read execution preflight audit event");
