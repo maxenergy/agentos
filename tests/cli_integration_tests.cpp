@@ -2701,6 +2701,23 @@ void TestAutoDevCommands() {
         "autodev final-reviews should include final-review-001");
     Expect(final_reviews.output.find("passed:          true") != std::string::npos,
         "autodev final-reviews should show passed final review");
+    const auto summary_result = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id});
+    Expect(summary_result.exit_code == 0,
+        "autodev summary should read job and runtime facts");
+    Expect(summary_result.output.find("AutoDev summary") != std::string::npos,
+        "autodev summary should print heading");
+    Expect(summary_result.output.find("status:        pr_ready") != std::string::npos,
+        "autodev summary should include current job status");
+    Expect(summary_result.output.find("facts:         verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
+        "autodev summary should include runtime fact counts");
+    Expect(summary_result.output.find("verification: verify-001 passed=true") != std::string::npos,
+        "autodev summary should include latest verification fact per task");
+    Expect(summary_result.output.find("diff_guard:   diff-001 passed=true") != std::string::npos,
+        "autodev summary should include latest diff guard fact per task");
+    Expect(summary_result.output.find("acceptance:   acceptance-001 passed=true") != std::string::npos,
+        "autodev summary should include latest acceptance fact per task");
+    Expect(summary_result.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev summary should include latest final review fact");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);

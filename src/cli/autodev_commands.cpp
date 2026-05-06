@@ -8,6 +8,7 @@
 #include <iostream>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -37,6 +38,7 @@ void PrintUsage() {
         << "Usage:\n"
         << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false]\n"
         << "  agentos autodev status job_id=<job_id>\n"
+        << "  agentos autodev summary job_id=<job_id>\n"
         << "  agentos autodev prepare-workspace job_id=<job_id>\n"
         << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
         << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
@@ -798,6 +800,119 @@ int RunFinalReviews(const std::filesystem::path& workspace, const int argc, char
     return 0;
 }
 
+int RunSummary(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev summary failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev summary failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto job = store.load_job(job_id_it->second, &error);
+    if (!job.has_value()) {
+        std::cerr << "autodev summary failed: " << error << '\n';
+        return 1;
+    }
+    const auto tasks = store.load_tasks(job_id_it->second, &error);
+    if (!tasks.has_value()) {
+        std::cerr << "autodev summary failed: " << error << '\n';
+        return 1;
+    }
+
+    const auto verifications = store.load_verifications(job_id_it->second, nullptr).value_or(std::vector<AutoDevVerification>{});
+    const auto diffs = store.load_diffs(job_id_it->second, nullptr).value_or(std::vector<AutoDevDiffGuard>{});
+    const auto acceptances = store.load_acceptances(job_id_it->second, nullptr).value_or(std::vector<AutoDevAcceptanceGate>{});
+    const auto final_reviews = store.load_final_reviews(job_id_it->second, nullptr).value_or(std::vector<AutoDevFinalReview>{});
+
+    const auto latest_verification = [&verifications](const std::string& task_id) -> std::optional<AutoDevVerification> {
+        for (auto it = verifications.rbegin(); it != verifications.rend(); ++it) {
+            if (it->task_id == task_id) {
+                return *it;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto latest_diff = [&diffs](const std::string& task_id) -> std::optional<AutoDevDiffGuard> {
+        for (auto it = diffs.rbegin(); it != diffs.rend(); ++it) {
+            if (it->task_id == task_id) {
+                return *it;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto latest_acceptance = [&acceptances](const std::string& task_id) -> std::optional<AutoDevAcceptanceGate> {
+        for (auto it = acceptances.rbegin(); it != acceptances.rend(); ++it) {
+            if (it->task_id == task_id) {
+                return *it;
+            }
+        }
+        return std::nullopt;
+    };
+
+    std::size_t passed_tasks = 0;
+    for (const auto& task : *tasks) {
+        if (task.status == "passed") {
+            ++passed_tasks;
+        }
+    }
+
+    std::cout << "AutoDev summary\n"
+              << "job_id:        " << job->job_id << '\n'
+              << "status:        " << job->status << '\n'
+              << "phase:         " << job->phase << '\n'
+              << "next_action:   " << job->next_action << '\n'
+              << "spec_revision: " << job->spec_revision.value_or("(none)") << '\n'
+              << "tasks:         " << passed_tasks << "/" << tasks->size() << '\n'
+              << "facts:         verifications=" << verifications.size()
+              << " diffs=" << diffs.size()
+              << " acceptances=" << acceptances.size()
+              << " final_reviews=" << final_reviews.size() << '\n';
+
+    std::cout << "\nTasks:\n";
+    for (const auto& task : *tasks) {
+        const auto verification = latest_verification(task.task_id);
+        const auto diff = latest_diff(task.task_id);
+        const auto acceptance = latest_acceptance(task.task_id);
+        std::cout << "- " << task.task_id << " " << task.status << " - " << task.title << '\n'
+                  << "  verification: "
+                  << (verification.has_value() ? verification->verification_id : "(none)");
+        if (verification.has_value()) {
+            std::cout << " passed=" << (verification->passed ? "true" : "false");
+        }
+        std::cout << '\n'
+                  << "  diff_guard:   "
+                  << (diff.has_value() ? diff->diff_id : "(none)");
+        if (diff.has_value()) {
+            std::cout << " passed=" << (diff->passed ? "true" : "false");
+        }
+        std::cout << '\n'
+                  << "  acceptance:   "
+                  << (acceptance.has_value() ? acceptance->acceptance_id : "(none)");
+        if (acceptance.has_value()) {
+            std::cout << " passed=" << (acceptance->passed ? "true" : "false");
+        }
+        std::cout << '\n';
+    }
+
+    std::cout << "\nFinal review:\n";
+    if (final_reviews.empty()) {
+        std::cout << "  final_review_id: (none)\n";
+    } else {
+        const auto& final_review = final_reviews.back();
+        std::cout << "  final_review_id: " << final_review.final_review_id << '\n'
+                  << "  passed:          " << (final_review.passed ? "true" : "false") << '\n'
+                  << "  tasks:           " << final_review.tasks_passed << "/" << final_review.tasks_total << '\n';
+        PrintStringList("  reasons:         ", final_review.reasons);
+    }
+    return 0;
+}
+
 int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -1006,6 +1121,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "status") {
         return RunStatus(workspace, argc, argv);
+    }
+    if (subcommand == "summary") {
+        return RunSummary(workspace, argc, argv);
     }
     if (subcommand == "prepare-workspace" || subcommand == "prepare_workspace") {
         return RunPrepareWorkspace(workspace, argc, argv);
