@@ -2745,10 +2745,32 @@ void TestAutoDevCommands() {
         "autodev acceptance-gate should report failed acceptance");
     Expect(acceptance_gate_fail.output.find("latest diff guard did not pass") != std::string::npos,
         "autodev acceptance-gate should explain failed diff guard dependency");
+    const auto final_review_fail = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + executable_job_id});
+    Expect(final_review_fail.exit_code != 0,
+        "autodev final-review should fail when current worktree diff violates task policy");
+    Expect(final_review_fail.output.find("final_review_id: final-review-002") != std::string::npos,
+        "autodev final-review should append a failed final review record after blocked diff");
+    Expect(final_review_fail.output.find("passed:          false") != std::string::npos,
+        "autodev final-review should report failed final review after blocked diff");
+    Expect(final_review_fail.output.find("package.json") != std::string::npos,
+        "autodev final-review should print the blocked file violation");
+    Expect(final_review_fail.output.find("current diff includes blocked files") != std::string::npos,
+        "autodev final-review should explain blocked file violations");
+    Expect(final_review_fail.output.find("current diff includes files outside allowed scope") != std::string::npos,
+        "autodev final-review should explain outside allowed file violations");
+    const auto final_reviews_after_fail = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + executable_job_id});
+    Expect(final_reviews_after_fail.exit_code == 0,
+        "autodev final-reviews should list failed final review facts");
+    Expect(final_reviews_after_fail.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-reviews should retain the earlier passed final review");
+    Expect(final_reviews_after_fail.output.find("final_review_id: final-review-002") != std::string::npos,
+        "autodev final-reviews should include failed final-review-002");
+    Expect(final_reviews_after_fail.output.find("current diff includes blocked files") != std::string::npos,
+        "autodev final-reviews should show failed final review reasons");
     const auto failed_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id});
     Expect(failed_summary.exit_code == 0,
         "autodev summary should still read facts after failed gates");
-    Expect(failed_summary.output.find("facts:         verifications=1 diffs=2 acceptances=2 final_reviews=1") != std::string::npos,
+    Expect(failed_summary.output.find("facts:         verifications=1 diffs=2 acceptances=2 final_reviews=2") != std::string::npos,
         "autodev summary should count failed gate facts");
     Expect(failed_summary.output.find("diff_guard:   diff-002 passed=false") != std::string::npos,
         "autodev summary should show latest failed diff guard");
@@ -2758,6 +2780,12 @@ void TestAutoDevCommands() {
         "autodev summary should show blocked file violations from latest diff");
     Expect(failed_summary.output.find("acceptance_reasons: latest diff guard did not pass") != std::string::npos,
         "autodev summary should show latest acceptance failure reasons");
+    Expect(failed_summary.output.find("final_review_id: final-review-002") != std::string::npos,
+        "autodev summary should show latest failed final review");
+    Expect(failed_summary.output.find("  passed:          false") != std::string::npos,
+        "autodev summary should show latest final review failure state");
+    Expect(failed_summary.output.find("current diff includes blocked files") != std::string::npos,
+        "autodev summary should show latest final review reasons");
     const auto diffs_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id});
     Expect(diffs_result.exit_code == 0,
         "autodev diffs should list diff guard facts");
@@ -2845,10 +2873,39 @@ void TestAutoDevCommands() {
         "autodev acceptance-gate should fail when latest verification failed");
     Expect(failing_acceptance.output.find("latest verification did not pass") != std::string::npos,
         "autodev acceptance-gate should explain failed verification dependency");
+    const auto failing_final_review = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + failing_verify_job_id});
+    Expect(failing_final_review.exit_code != 0,
+        "autodev final-review should fail when the task was not accepted");
+    Expect(failing_final_review.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-review should write a failed final review record for unaccepted task");
+    Expect(failing_final_review.output.find("passed:          false") != std::string::npos,
+        "autodev final-review should report failed final review for unaccepted task");
+    Expect(failing_final_review.output.find("job_status:      running") != std::string::npos,
+        "autodev final-review should not advance unaccepted jobs to pr_ready");
+    Expect(failing_final_review.output.find("job_phase:       codex_execution") != std::string::npos,
+        "autodev final-review should keep unaccepted jobs in codex_execution");
+    Expect(failing_final_review.output.find("task is not passed: task-001") != std::string::npos,
+        "autodev final-review should explain unpassed task status");
+    Expect(failing_final_review.output.find("task has no passed acceptance fact: task-001") != std::string::npos,
+        "autodev final-review should explain missing passed acceptance fact");
+    const auto failing_final_reviews = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + failing_verify_job_id});
+    Expect(failing_final_reviews.exit_code == 0,
+        "autodev final-reviews should list failed unaccepted-task final review");
+    Expect(failing_final_reviews.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-reviews should include failed unaccepted-task final review");
+    Expect(failing_final_reviews.output.find("task is not passed: task-001") != std::string::npos,
+        "autodev final-reviews should show unaccepted-task final review reasons");
+    const auto failing_final_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + failing_verify_job_id});
+    Expect(failing_final_status.exit_code == 0,
+        "autodev status should read unaccepted job after failed final review");
+    Expect(failing_final_status.output.find("Status: running") != std::string::npos,
+        "failed final review for unaccepted task should leave job running");
+    Expect(failing_final_status.output.find("Phase: codex_execution") != std::string::npos,
+        "failed final review for unaccepted task should not advance phase to pr_ready");
     const auto failing_verify_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + failing_verify_job_id});
     Expect(failing_verify_summary.exit_code == 0,
         "autodev summary should read failed verification facts");
-    Expect(failing_verify_summary.output.find("facts:         verifications=1 diffs=1 acceptances=1 final_reviews=0") != std::string::npos,
+    Expect(failing_verify_summary.output.find("facts:         verifications=1 diffs=1 acceptances=1 final_reviews=1") != std::string::npos,
         "autodev summary should count failed verification fixture facts");
     Expect(failing_verify_summary.output.find("verification: verify-001 passed=false") != std::string::npos,
         "autodev summary should show latest failed verification");
@@ -2858,6 +2915,10 @@ void TestAutoDevCommands() {
         "autodev summary should show acceptance failed after verification failure");
     Expect(failing_verify_summary.output.find("acceptance_reasons: latest verification did not pass") != std::string::npos,
         "autodev summary should show verification failure acceptance reason");
+    Expect(failing_verify_summary.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev summary should show failed unaccepted-task final review");
+    Expect(failing_verify_summary.output.find("task is not passed: task-001") != std::string::npos,
+        "autodev summary should show failed final review task reason");
 
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
