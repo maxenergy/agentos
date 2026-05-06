@@ -2104,6 +2104,15 @@ AutoDevFinalReviewResult AutoDevStateStore::final_review(const std::string& job_
         job.blocker = std::nullopt;
         job.updated_at = IsoUtcNow();
         save_job(job);
+    } else if (job.status == "pr_ready" || job.phase == "pr_ready") {
+        job.status = "running";
+        job.phase = "final_review";
+        job.current_activity = "final_review";
+        job.approval_gate = "none";
+        job.next_action = "final_review";
+        job.blocker = "latest final review failed";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
     }
 
     append_event(job.job_id, nlohmann::json{

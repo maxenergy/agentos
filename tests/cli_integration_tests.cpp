@@ -2752,6 +2752,10 @@ void TestAutoDevCommands() {
         "autodev final-review should append a failed final review record after blocked diff");
     Expect(final_review_fail.output.find("passed:          false") != std::string::npos,
         "autodev final-review should report failed final review after blocked diff");
+    Expect(final_review_fail.output.find("job_status:      running") != std::string::npos,
+        "failed final review after stale pr_ready should move the job back to running");
+    Expect(final_review_fail.output.find("job_phase:       final_review") != std::string::npos,
+        "failed final review after stale pr_ready should move the job back to final_review");
     Expect(final_review_fail.output.find("package.json") != std::string::npos,
         "autodev final-review should print the blocked file violation");
     Expect(final_review_fail.output.find("current diff includes blocked files") != std::string::npos,
@@ -2767,9 +2771,22 @@ void TestAutoDevCommands() {
         "autodev final-reviews should include failed final-review-002");
     Expect(final_reviews_after_fail.output.find("current diff includes blocked files") != std::string::npos,
         "autodev final-reviews should show failed final review reasons");
+    const auto stale_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + executable_job_id});
+    Expect(stale_status.exit_code == 0,
+        "autodev status should read job after failed stale final review");
+    Expect(stale_status.output.find("Status: running") != std::string::npos,
+        "autodev status should not leave stale failed final review jobs at pr_ready");
+    Expect(stale_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev status should show final_review after stale pr_ready is invalidated");
+    Expect(stale_status.output.find("agentos autodev final_review job_id=" + executable_job_id) != std::string::npos,
+        "autodev status should point stale failed final review jobs back to final_review");
     const auto failed_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id});
     Expect(failed_summary.exit_code == 0,
         "autodev summary should still read facts after failed gates");
+    Expect(failed_summary.output.find("status:        running") != std::string::npos,
+        "autodev summary should show stale failed final review jobs as running");
+    Expect(failed_summary.output.find("phase:         final_review") != std::string::npos,
+        "autodev summary should show stale failed final review jobs in final_review phase");
     Expect(failed_summary.output.find("facts:         verifications=1 diffs=2 acceptances=2 final_reviews=2") != std::string::npos,
         "autodev summary should count failed gate facts");
     Expect(failed_summary.output.find("diff_guard:   diff-002 passed=false") != std::string::npos,
