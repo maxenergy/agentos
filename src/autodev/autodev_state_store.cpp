@@ -1839,11 +1839,21 @@ AutoDevAcceptanceGateResult AutoDevStateStore::acceptance_gate(
         task_it->status = "passed";
         task_it->current_activity = "none";
         task_it->acceptance_passed = task_it->acceptance_total;
+        const auto all_tasks_passed = std::all_of(maybe_tasks->begin(), maybe_tasks->end(), [](const AutoDevTask& task) {
+            return task.status == "passed";
+        });
+        job.status = "running";
+        job.phase = all_tasks_passed ? "final_review" : "codex_execution";
+        job.current_activity = "none";
+        job.next_action = all_tasks_passed ? "final_review" : "execute_next_task";
+        job.blocker = std::nullopt;
+        job.updated_at = IsoUtcNow();
         nlohmann::json task_records = nlohmann::json::array();
         for (const auto& task : *maybe_tasks) {
             task_records.push_back(ToJson(task));
         }
         WriteFileAtomically(tasks_path(job.job_id), task_records.dump(2) + "\n");
+        save_job(job);
     }
 
     acceptance_records.push_back(ToJson(acceptance));

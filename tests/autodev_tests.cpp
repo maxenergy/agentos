@@ -875,6 +875,10 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     const auto persisted_job = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
     Expect(persisted_job["status"] == "running",
         "acceptance_gate should not mark the job done");
+    Expect(persisted_job["phase"] == "final_review",
+        "acceptance_gate should advance an all-passed job to final_review");
+    Expect(persisted_job["next_action"] == "final_review",
+        "acceptance_gate should make final_review the next action after all tasks pass");
 }
 
 }  // namespace

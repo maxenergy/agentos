@@ -2654,6 +2654,10 @@ void TestAutoDevCommands() {
         "autodev status should read job after acceptance gate");
     Expect(accepted_status.output.find("Status: running") != std::string::npos,
         "autodev acceptance-gate should not mark the job done");
+    Expect(accepted_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev acceptance-gate should advance all-passed jobs to final_review");
+    Expect(accepted_status.output.find("agentos autodev final_review job_id=" + executable_job_id) != std::string::npos,
+        "autodev status should show final_review as the next action");
     Expect(accepted_status.output.find("passed: 1") != std::string::npos,
         "autodev status should count accepted task as passed");
     {
