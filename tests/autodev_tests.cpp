@@ -1118,14 +1118,14 @@ void TestMultiTaskAcceptanceKeepsJobRunningUntilAllTasksPass() {
             {"task_id", "task-001"},
             {"title", "First task"},
             {"allowed_files", nlohmann::json::array({"README.md"})},
-            {"blocked_files", nlohmann::json::array({"package.json"})},
+            {"blocked_files", nlohmann::json::array({"secret.txt"})},
             {"verify_command", "true"},
             {"acceptance", nlohmann::json::array({"first accepted"})},
         },
         {
             {"task_id", "task-002"},
             {"title", "Second task"},
-            {"allowed_files", nlohmann::json::array({"README.md"})},
+            {"allowed_files", nlohmann::json::array({"README.md", "secret.txt"})},
             {"blocked_files", nlohmann::json::array({"package.json"})},
             {"verify_command", "true"},
             {"acceptance", nlohmann::json::array({"second accepted"})},
@@ -1159,6 +1159,10 @@ void TestMultiTaskAcceptanceKeepsJobRunningUntilAllTasksPass() {
     Expect(first_acceptance.job.next_action == "execute_next_task",
         "first accepted task should point to the next task");
 
+    {
+        std::ofstream secret(approved.job.job_worktree_path / "secret.txt", std::ios::binary);
+        secret << "task two is allowed to touch this, but task one blocks it\n";
+    }
     Expect(store.verify_task(submit.job.job_id, "task-002").success,
         "second task verification should pass");
     Expect(store.diff_guard(submit.job.job_id, "task-002").success,
@@ -1172,6 +1176,19 @@ void TestMultiTaskAcceptanceKeepsJobRunningUntilAllTasksPass() {
         "all accepted tasks should advance the job to final_review");
     Expect(second_acceptance.job.next_action == "final_review",
         "all accepted tasks should make final_review the next action");
+
+    const auto final_review = store.final_review(submit.job.job_id);
+    Expect(final_review.success,
+        "multi-task final review should record a final review fact");
+    Expect(!final_review.final_review.passed,
+        "final review should fail when any task's blocked_files matches the current diff");
+    Expect(!final_review.final_review.blocked_file_violations.empty() &&
+               final_review.final_review.blocked_file_violations.front() == "secret.txt",
+        "final review should preserve blocked precedence over another task's allowed_files");
+    Expect(final_review.job.status == "running",
+        "failed multi-task final review should not advance the job to pr_ready");
+    Expect(final_review.job.phase == "final_review",
+        "failed multi-task final review should leave the job in final_review");
 }
 
 }  // namespace
