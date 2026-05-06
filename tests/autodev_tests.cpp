@@ -726,6 +726,19 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     Expect(verified.verification.output_log_path.has_value() &&
                std::filesystem::exists(*verified.verification.output_log_path),
         "verify_task should write command output log under runtime store");
+    Expect(std::filesystem::exists(verified.verify_report_path),
+        "verify_task should write VERIFY.md summary under job worktree");
+    Expect(verified.verify_report_path == approved.job.job_worktree_path / "docs" / "goal" / "VERIFY.md",
+        "verify_task should write VERIFY.md in job worktree goal docs");
+    const auto verify_report = ReadFile(verified.verify_report_path);
+    Expect(verify_report.find("Verification Report") != std::string::npos,
+        "VERIFY.md should contain verification report heading");
+    Expect(verify_report.find("It is NOT the source of truth for task completion") != std::string::npos,
+        "VERIFY.md should state that it is not source of truth");
+    Expect(verify_report.find("AcceptanceGate does not use this Markdown file") != std::string::npos,
+        "VERIFY.md should state AcceptanceGate does not use markdown for judgment");
+    Expect(verify_report.find("verify-001") != std::string::npos,
+        "VERIFY.md should include verification id");
     std::string verifications_error;
     const auto verifications = store.load_verifications(submit.job.job_id, &verifications_error);
     Expect(verifications.has_value() && verifications->size() == 1,
@@ -785,6 +798,8 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record verification started event");
     Expect(events.find("\"type\":\"autodev.verification.completed\"") != std::string::npos,
         "events.ndjson should record verification completed event");
+    Expect(events.find("\"verify_report_path\"") != std::string::npos,
+        "verification completed event should link VERIFY.md report path");
     Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,
         "execution blocked event should record adapter kind");
     Expect(events.find("\"event_stream_mode\":\"synthetic\"") != std::string::npos,

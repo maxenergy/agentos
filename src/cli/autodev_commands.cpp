@@ -511,6 +511,7 @@ int RunVerifyTask(const std::filesystem::path& workspace, const int argc, char* 
     if (result.verification.output_log_path.has_value()) {
         std::cout << "output_log:      " << result.verification.output_log_path->string() << '\n';
     }
+    std::cout << "verify_report:   " << result.verify_report_path.string() << '\n';
     std::cout << "\nVerification facts were recorded. AcceptanceGate was not run and task status was not changed.\n";
     return result.verification.passed ? 0 : 1;
 }

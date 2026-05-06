@@ -2586,10 +2586,20 @@ void TestAutoDevCommands() {
         "autodev verify-task should report passed=true for true command");
     Expect(verify_task.output.find("AcceptanceGate was not run") != std::string::npos,
         "autodev verify-task should state that AcceptanceGate was not run");
+    Expect(verify_task.output.find("verify_report:") != std::string::npos,
+        "autodev verify-task should print VERIFY.md path");
     Expect(std::filesystem::exists(executable_job_dir / "verification.json"),
         "autodev verify-task should write verification.json under runtime store");
     Expect(std::filesystem::exists(executable_job_dir / "logs" / "verify-001.output.txt"),
         "autodev verify-task should write command output log under runtime store");
+    const auto verify_report_path = std::filesystem::path(executable_planned_path) / "docs" / "goal" / "VERIFY.md";
+    Expect(std::filesystem::exists(verify_report_path),
+        "autodev verify-task should write VERIFY.md summary under job worktree");
+    const auto verify_report = ReadTextFile(verify_report_path);
+    Expect(verify_report.find("It is NOT the source of truth for task completion") != std::string::npos,
+        "VERIFY.md should state summary-only authority boundary");
+    Expect(verify_report.find("verify-001") != std::string::npos,
+        "VERIFY.md should include verification id");
     const auto verifications_result = RunAgentos(workspace, {"autodev", "verifications", "job_id=" + executable_job_id});
     Expect(verifications_result.exit_code == 0,
         "autodev verifications should list recorded verification facts");

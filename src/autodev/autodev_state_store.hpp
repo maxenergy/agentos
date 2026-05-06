@@ -78,6 +78,7 @@ struct AutoDevVerifyTaskResult {
     AutoDevTask task;
     AutoDevVerification verification;
     std::filesystem::path verification_path;
+    std::filesystem::path verify_report_path;
 };
 
 class AutoDevStateStore {
