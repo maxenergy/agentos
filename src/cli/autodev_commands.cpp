@@ -458,6 +458,12 @@ int RunTurns(const std::filesystem::path& workspace, const int argc, char* argv[
         if (turn.error_message.has_value()) {
             std::cout << "  error_message:     " << *turn.error_message << '\n';
         }
+        if (turn.prompt_artifact.has_value()) {
+            std::cout << "  prompt_artifact:   " << turn.prompt_artifact->string() << '\n';
+        }
+        if (turn.response_artifact.has_value()) {
+            std::cout << "  response_artifact: " << turn.response_artifact->string() << '\n';
+        }
     }
     return 0;
 }

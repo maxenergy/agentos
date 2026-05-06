@@ -2562,6 +2562,14 @@ void TestAutoDevCommands() {
         "autodev turns should show blocked synthetic turn status");
     Expect(turns_result.output.find("adapter_kind:      codex_cli") != std::string::npos,
         "autodev turns should show adapter kind");
+    Expect(turns_result.output.find("prompt_artifact:") != std::string::npos,
+        "autodev turns should show prompt artifact path");
+    Expect(turns_result.output.find("response_artifact:") != std::string::npos,
+        "autodev turns should show response artifact path");
+    Expect(std::filesystem::exists(executable_job_dir / "prompts" / "turn-001.md"),
+        "execute-next-task should write prompt artifact under AgentOS runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "responses" / "turn-001.md"),
+        "execute-next-task should write response artifact under AgentOS runtime store");
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
         "autodev events should read execution preflight audit event");

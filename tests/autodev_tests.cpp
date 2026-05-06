@@ -724,12 +724,38 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "blocked synthetic turn should record event stream mode");
     Expect(turns.has_value() && turns->front().error_code == "execution_adapter_unavailable",
         "blocked synthetic turn should record an execution adapter unavailable error");
+    Expect(turns.has_value() && turns->front().prompt_artifact.has_value() &&
+               std::filesystem::exists(*turns->front().prompt_artifact),
+        "blocked synthetic turn should write a runtime prompt artifact");
+    Expect(turns.has_value() && turns->front().response_artifact.has_value() &&
+               std::filesystem::exists(*turns->front().response_artifact),
+        "blocked synthetic turn should write a runtime response artifact");
+    if (turns.has_value() && turns->front().prompt_artifact.has_value()) {
+        const auto prompt = ReadFile(*turns->front().prompt_artifact);
+        Expect(prompt.find("AutoDev Execution Turn Prompt") != std::string::npos,
+            "prompt artifact should identify the execution prompt");
+        Expect(prompt.find("Execution blocked audit task") != std::string::npos,
+            "prompt artifact should include task title");
+        Expect(prompt.find("AcceptanceGate") != std::string::npos,
+            "prompt artifact should preserve AcceptanceGate authority instructions");
+    }
+    if (turns.has_value() && turns->front().response_artifact.has_value()) {
+        const auto response = ReadFile(*turns->front().response_artifact);
+        Expect(response.find("Execution was not started") != std::string::npos,
+            "response artifact should state that execution was not started");
+        Expect(response.find("adapter not implemented") != std::string::npos,
+            "response artifact should record the blocked reason");
+    }
 
     const auto events = ReadFile(store.events_path(submit.job.job_id));
     Expect(events.find("\"type\":\"autodev.execution.blocked\"") != std::string::npos,
         "events.ndjson should record execution blocked event");
     Expect(events.find("\"turn_id\":\"turn-001\"") != std::string::npos,
         "execution blocked event should link to the synthetic turn record");
+    Expect(events.find("\"prompt_artifact\"") != std::string::npos,
+        "execution blocked event should link to prompt artifact");
+    Expect(events.find("\"response_artifact\"") != std::string::npos,
+        "execution blocked event should link to response artifact");
     Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,
         "execution blocked event should record adapter kind");
     Expect(events.find("\"event_stream_mode\":\"synthetic\"") != std::string::npos,
