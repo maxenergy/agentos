@@ -5,6 +5,7 @@
 #include "auth/secure_token_store.hpp"
 #include "auth/session_store.hpp"
 #include "cli/agents_commands.hpp"
+#include "cli/autodev_commands.hpp"
 #include "cli/auth_commands.hpp"
 #include "cli/cli_specs_commands.hpp"
 #include "cli/diagnostics_commands.hpp"
@@ -646,6 +647,8 @@ void PrintUsage() {
         << "  agentos interactive\n"
         << "  agentos serve [port=18080] [host=127.0.0.1]\n"
         << "  agentos agents\n"
+        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place]\n"
+        << "  agentos autodev status job_id=<job_id>\n"
         << "  agentos cli-specs validate\n"
         << "  agentos diagnostics [format=text|json]\n"
         << "  agentos plugins\n"
@@ -912,6 +915,10 @@ int main(int argc, char* argv[]) {
 
     if (argc >= 2 && std::string(argv[1]) == "agents") {
         return RunAgentsCommand(runtime.agent_registry);
+    }
+
+    if (argc >= 2 && std::string(argv[1]) == "autodev") {
+        return RunAutoDevCommand(workspace, argc, argv);
     }
 
     if (argc >= 2 && std::string(argv[1]) == "cli-specs") {

@@ -289,6 +289,25 @@ std::string ExtractTokenValue(const std::string& text, const std::string& key) {
     return text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start);
 }
 
+std::string TrimAscii(std::string value) {
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+std::string ExtractLineValue(const std::string& text, const std::string& key) {
+    const auto start = text.find(key);
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto value_start = start + key.size();
+    const auto value_end = text.find_first_of("\r\n", value_start);
+    return TrimAscii(text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start));
+}
+
 std::optional<std::string> ReadEnvForTest(const std::string& name) {
 #ifdef _WIN32
     char* raw_value = nullptr;
@@ -2260,6 +2279,94 @@ void TestInteractiveFreeFormDispatch() {
     SetEnvForTest("PATH", old_path);
 }
 
+void TestAutoDevCommands() {
+    const auto workspace = FreshWorkspace("autodev_cli");
+    const auto target = workspace / "target_app";
+    std::filesystem::create_directories(target);
+    const auto skill_pack = workspace / "skills";
+    std::filesystem::create_directories(skill_pack);
+
+    const auto submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Fix login 500",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(submit.exit_code == 0, "autodev submit should succeed");
+    Expect(submit.output.find("AutoDev job submitted") != std::string::npos,
+        "autodev submit should print success heading");
+    Expect(submit.output.find("isolation_status:   pending") != std::string::npos,
+        "autodev submit should report pending isolation");
+    Expect(submit.output.find("next_action:        prepare_workspace") != std::string::npos,
+        "autodev submit should report prepare_workspace next action");
+    Expect(submit.output.find("Workspace is not ready yet") != std::string::npos,
+        "autodev submit should make workspace readiness explicit");
+
+    const auto job_id = ExtractLineValue(submit.output, "job_id:");
+    Expect(job_id.rfind("autodev-", 0) == 0, "autodev submit should print generated job id");
+    const auto job_dir = workspace / "runtime" / "autodev" / "jobs" / job_id;
+    Expect(std::filesystem::exists(job_dir / "job.json"),
+        "autodev submit should create job.json in AgentOS runtime");
+    Expect(std::filesystem::exists(job_dir / "events.ndjson"),
+        "autodev submit should create events.ndjson in AgentOS runtime");
+
+    const auto job_json = ReadTextFile(job_dir / "job.json");
+    Expect(job_json.find("\"status\": \"submitted\"") != std::string::npos,
+        "job.json should record submitted status");
+    Expect(job_json.find("\"phase\": \"workspace_preparing\"") != std::string::npos,
+        "job.json should record workspace_preparing phase");
+    Expect(job_json.find("\"isolation_status\": \"pending\"") != std::string::npos,
+        "job.json should record pending isolation");
+    Expect(job_json.find("\"next_action\": \"prepare_workspace\"") != std::string::npos,
+        "job.json should record prepare_workspace next action");
+    Expect(job_json.find("\"status\": \"declared\"") != std::string::npos,
+        "job.json should record declared skill pack when skill_pack_path is provided");
+    Expect(job_json.find(skill_pack.string()) != std::string::npos,
+        "job.json should record skill_pack_path");
+
+    const auto events = ReadTextFile(job_dir / "events.ndjson");
+    Expect(events.find("\"type\":\"autodev.job.submitted\"") != std::string::npos,
+        "events.ndjson should record submit event");
+    Expect(events.find("\"planned_worktree_path\"") != std::string::npos,
+        "events.ndjson should record planned worktree path");
+
+    const auto planned_worktree = ExtractLineValue(submit.output, "job_worktree_path:");
+    const auto planned_path = planned_worktree.substr(0, planned_worktree.find(" "));
+    Expect(!planned_path.empty(), "autodev submit should print planned worktree path");
+    Expect(!std::filesystem::exists(planned_path),
+        "autodev submit should not create planned worktree path");
+    Expect(!std::filesystem::exists(target / "runtime" / "autodev"),
+        "autodev submit should not write runtime facts into target repo");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "autodev submit should not write docs/goal into target repo");
+
+    const auto status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(status.exit_code == 0, "autodev status should read submitted job");
+    Expect(status.output.find("Job: " + job_id) != std::string::npos,
+        "autodev status should print job id");
+    Expect(status.output.find("Status: submitted") != std::string::npos,
+        "autodev status should print current status");
+    Expect(status.output.find("status:            pending") != std::string::npos,
+        "autodev status should print pending isolation");
+    Expect(status.output.find("agentos autodev prepare_workspace job_id=" + job_id) != std::string::npos ||
+               status.output.find("agentos autodev prepare-workspace job_id=" + job_id) != std::string::npos,
+        "autodev status should print prepare workspace next action");
+
+    const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
+    Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");
+    Expect(invalid_status.output.find("invalid job_id") != std::string::npos,
+        "autodev status should explain invalid job id");
+
+    const auto missing_target = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + (workspace / "missing").string(),
+        "objective=Fix bug"});
+    Expect(missing_target.exit_code != 0, "autodev submit should fail for missing target_repo_path");
+    Expect(missing_target.output.find("target_repo_path does not exist") != std::string::npos,
+        "autodev submit should explain missing target_repo_path");
+}
+
 void TestDiagnosticsCommand() {
     const auto workspace = FreshWorkspace("diagnostics");
 
@@ -2315,6 +2422,7 @@ int main() {
     TestPluginNameConflictsWithExternalCliSpec();
     TestPluginsCommand();
     TestMemoryAndStorageCommands();
+    TestAutoDevCommands();
     TestTrustCommands();
     TestScheduleCommands();
     TestSubagentsCommand();

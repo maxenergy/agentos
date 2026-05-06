@@ -25,7 +25,11 @@ FetchContent_Declare(
 FetchContent_Populate(httplib)
 
 add_library(agentos_core
+    src/autodev/autodev_job_id.cpp
+    src/autodev/autodev_models.cpp
+    src/autodev/autodev_state_store.cpp
     src/cli/agents_commands.cpp
+    src/cli/autodev_commands.cpp
     src/cli/auth_commands.cpp
     src/cli/auth_interactive.cpp
     src/cli/cli_specs_commands.cpp
@@ -211,6 +215,10 @@ add_executable(agentos_news_search_skill_tests tests/news_search_skill_tests.cpp
 target_link_libraries(agentos_news_search_skill_tests PRIVATE agentos_core)
 add_test(NAME agentos_news_search_skill_tests COMMAND agentos_news_search_skill_tests)
 
+add_executable(agentos_autodev_tests tests/autodev_tests.cpp)
+target_link_libraries(agentos_autodev_tests PRIVATE agentos_core)
+add_test(NAME agentos_autodev_tests COMMAND agentos_autodev_tests)
+
 add_executable(agentos_research_development_skill_tests tests/research_development_skill_tests.cpp)
 target_link_libraries(agentos_research_development_skill_tests PRIVATE agentos_core)
 add_test(NAME agentos_research_development_skill_tests COMMAND agentos_research_development_skill_tests)
@@ -275,6 +283,7 @@ if(MSVC)
     target_compile_options(agentos_intent_classifier_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_routing_eval_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_news_search_skill_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_autodev_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_research_development_skill_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_policy_trust_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_scheduler_tests PRIVATE /W4 /permissive- /EHsc)
@@ -300,6 +309,7 @@ else()
     target_compile_options(agentos_intent_classifier_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_routing_eval_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_news_search_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_autodev_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_research_development_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_policy_trust_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_scheduler_tests PRIVATE -Wall -Wextra -Wpedantic)
