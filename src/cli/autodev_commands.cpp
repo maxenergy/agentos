@@ -55,6 +55,7 @@ void PrintUsage() {
         << "  agentos autodev final-review job_id=<job_id>\n"
         << "  agentos autodev final-reviews job_id=<job_id>\n"
         << "  agentos autodev complete-job job_id=<job_id>\n"
+        << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -830,6 +831,112 @@ int RunCompleteJob(const std::filesystem::path& workspace, const int argc, char*
     return 0;
 }
 
+int RunPrSummary(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev pr-summary failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev pr-summary failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto job = store.load_job(job_id_it->second, &error);
+    if (!job.has_value()) {
+        std::cerr << "autodev pr-summary failed: " << error << '\n';
+        return 1;
+    }
+    if (job->status != "pr_ready" && job->status != "done") {
+        std::cerr << "autodev pr-summary failed: job is not pr_ready\n";
+        return 1;
+    }
+    const auto tasks = store.load_tasks(job_id_it->second, &error);
+    if (!tasks.has_value()) {
+        std::cerr << "autodev pr-summary failed: " << error << '\n';
+        return 1;
+    }
+    const auto verifications = store.load_verifications(job_id_it->second, nullptr).value_or(std::vector<AutoDevVerification>{});
+    const auto diffs = store.load_diffs(job_id_it->second, nullptr).value_or(std::vector<AutoDevDiffGuard>{});
+    const auto acceptances = store.load_acceptances(job_id_it->second, nullptr).value_or(std::vector<AutoDevAcceptanceGate>{});
+    const auto final_reviews = store.load_final_reviews(job_id_it->second, nullptr).value_or(std::vector<AutoDevFinalReview>{});
+    if (final_reviews.empty() || !final_reviews.back().passed) {
+        std::cerr << "autodev pr-summary failed: latest final review did not pass\n";
+        return 1;
+    }
+    const auto& final_review = final_reviews.back();
+
+    const auto latest_verification = [&verifications](const std::string& task_id) -> std::optional<AutoDevVerification> {
+        for (auto it = verifications.rbegin(); it != verifications.rend(); ++it) {
+            if (it->task_id == task_id) {
+                return *it;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto latest_diff = [&diffs](const std::string& task_id) -> std::optional<AutoDevDiffGuard> {
+        for (auto it = diffs.rbegin(); it != diffs.rend(); ++it) {
+            if (it->task_id == task_id) {
+                return *it;
+            }
+        }
+        return std::nullopt;
+    };
+    const auto latest_acceptance = [&acceptances](const std::string& task_id) -> std::optional<AutoDevAcceptanceGate> {
+        for (auto it = acceptances.rbegin(); it != acceptances.rend(); ++it) {
+            if (it->task_id == task_id) {
+                return *it;
+            }
+        }
+        return std::nullopt;
+    };
+
+    std::cout << "AutoDev PR summary\n"
+              << "job_id: " << job->job_id << '\n'
+              << "status: " << job->status << '\n'
+              << "phase:  " << job->phase << '\n'
+              << '\n'
+              << "Summary:\n"
+              << "- objective: " << job->objective << '\n'
+              << "- final_review: " << final_review.final_review_id << " passed=true tasks="
+              << final_review.tasks_passed << "/" << final_review.tasks_total << '\n';
+    PrintStringList("- changed_files:", final_review.changed_files);
+
+    std::cout << "\nTasks:\n";
+    for (const auto& task : *tasks) {
+        const auto verification = latest_verification(task.task_id);
+        const auto diff = latest_diff(task.task_id);
+        const auto acceptance = latest_acceptance(task.task_id);
+        std::cout << "- " << task.task_id << ": " << task.title << '\n'
+                  << "  status: " << task.status << '\n'
+                  << "  verification: "
+                  << (verification.has_value() ? verification->verification_id : "(none)")
+                  << " passed=" << (verification.has_value() && verification->passed ? "true" : "false") << '\n'
+                  << "  diff_guard: "
+                  << (diff.has_value() ? diff->diff_id : "(none)")
+                  << " passed=" << (diff.has_value() && diff->passed ? "true" : "false") << '\n'
+                  << "  acceptance: "
+                  << (acceptance.has_value() ? acceptance->acceptance_id : "(none)")
+                  << " passed=" << (acceptance.has_value() && acceptance->passed ? "true" : "false") << '\n';
+    }
+
+    std::cout << "\nCommands run:\n";
+    if (verifications.empty()) {
+        std::cout << "- none\n";
+    } else {
+        for (const auto& verification : verifications) {
+            std::cout << "- " << verification.verification_id
+                      << " task=" << verification.task_id
+                      << " exit_code=" << verification.exit_code
+                      << " command=" << verification.command << '\n';
+        }
+    }
+    return 0;
+}
+
 int RunSummary(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -1213,6 +1320,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     if (subcommand == "complete-job" || subcommand == "complete_job" ||
         subcommand == "mark-done" || subcommand == "mark_done") {
         return RunCompleteJob(workspace, argc, argv);
+    }
+    if (subcommand == "pr-summary" || subcommand == "pr_summary") {
+        return RunPrSummary(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);

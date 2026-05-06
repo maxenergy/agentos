@@ -2718,6 +2718,23 @@ void TestAutoDevCommands() {
         "autodev summary should include latest acceptance fact per task");
     Expect(summary_result.output.find("final_review_id: final-review-001") != std::string::npos,
         "autodev summary should include latest final review fact");
+    const auto pr_summary = RunAgentos(workspace, {"autodev", "pr-summary", "job_id=" + executable_job_id});
+    Expect(pr_summary.exit_code == 0,
+        "autodev pr-summary should succeed after final review makes the job pr_ready");
+    Expect(pr_summary.output.find("AutoDev PR summary") != std::string::npos,
+        "autodev pr-summary should print a handoff heading");
+    Expect(pr_summary.output.find("- changed_files: README.md") != std::string::npos,
+        "autodev pr-summary should include final review changed files");
+    Expect(pr_summary.output.find("verification: verify-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include verification facts");
+    Expect(pr_summary.output.find("diff_guard: diff-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include diff guard facts");
+    Expect(pr_summary.output.find("acceptance: acceptance-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include acceptance facts");
+    Expect(pr_summary.output.find("final_review: final-review-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include final review facts");
+    Expect(pr_summary.output.find("command=true") != std::string::npos,
+        "autodev pr-summary should include verification commands run");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);
