@@ -677,6 +677,7 @@ void PrintUsage() {
         << "  agentos autodev pause job_id=<job_id>\n"
         << "  agentos autodev resume job_id=<job_id>\n"
         << "  agentos autodev cancel job_id=<job_id>\n"
+        << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server]\n"

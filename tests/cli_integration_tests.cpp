@@ -2415,7 +2415,7 @@ void TestAutoDevCommands() {
     Expect(generate_docs.exit_code == 0, "autodev generate-goal-docs should succeed after workspace and skill pack are ready");
     Expect(generate_docs.output.find("AutoDev goal docs generated") != std::string::npos,
         "autodev generate-goal-docs should print success heading");
-    Expect(generate_docs.output.find("files_written: 13") != std::string::npos,
+    Expect(generate_docs.output.find("files_written: 16") != std::string::npos,
         "autodev generate-goal-docs should report skeleton file count");
     Expect(std::filesystem::exists(std::filesystem::path(planned_path) / "docs" / "goal" / "GOAL.md"),
         "autodev generate-goal-docs should write GOAL.md under job worktree");
@@ -3010,6 +3010,7 @@ void TestAutoDevCommands() {
     const auto failing_verify_job_id = ExtractLineValue(failing_verify_submit.output, "job_id:");
     const auto failing_verify_worktree = ExtractLineValue(failing_verify_submit.output, "job_worktree_path:");
     const auto failing_verify_path = failing_verify_worktree.substr(0, failing_verify_worktree.find(" "));
+    const auto failing_verify_job_dir = workspace / "runtime" / "autodev" / "jobs" / failing_verify_job_id;
 
     Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + failing_verify_job_id}).exit_code == 0,
         "autodev prepare-workspace should prepare failing verification fixture job");
@@ -3196,6 +3197,19 @@ void TestAutoDevCommands() {
         "autodev cancel should report cancelled phase");
     Expect(cancel_failed_job.output.find("next_action: none") != std::string::npos,
         "autodev cancel should clear next action");
+    const auto cleanup_cancelled_job = RunAgentos(workspace, {"autodev", "cleanup-worktree", "job_id=" + failing_verify_job_id});
+    Expect(cleanup_cancelled_job.exit_code == 0,
+        "autodev cleanup-worktree should clean cancelled job worktree");
+    Expect(cleanup_cancelled_job.output.find("AutoDev worktree cleaned") != std::string::npos,
+        "autodev cleanup-worktree should print heading");
+    Expect(cleanup_cancelled_job.output.find("isolation_status:   cleaned") != std::string::npos,
+        "autodev cleanup-worktree should mark isolation cleaned");
+    Expect(cleanup_cancelled_job.output.find("removed:            true") != std::string::npos,
+        "autodev cleanup-worktree should remove existing worktree");
+    Expect(!std::filesystem::exists(failing_verify_path),
+        "autodev cleanup-worktree should remove the job worktree path");
+    Expect(std::filesystem::exists(failing_verify_job_dir / "job.json"),
+        "autodev cleanup-worktree should preserve runtime facts");
     const auto cancelled_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + failing_verify_job_id});
     Expect(cancelled_status.exit_code == 0,
         "autodev status should read cancelled job");
@@ -3214,7 +3228,7 @@ void TestAutoDevCommands() {
         "autodev status --watch should print watch heading");
     Expect(watch_cancelled_status.output.find("status:      cancelled") != std::string::npos,
         "autodev status --watch should show current status");
-    Expect(watch_cancelled_status.output.find("latest:      autodev.job.cancelled") != std::string::npos,
+    Expect(watch_cancelled_status.output.find("latest:      autodev.worktree.cleaned") != std::string::npos,
         "autodev status --watch should show the latest event");
     const auto watch_alias = RunAgentos(workspace, {
         "autodev",
@@ -3235,6 +3249,8 @@ void TestAutoDevCommands() {
         "autodev resume should append a resumed event");
     Expect(cancelled_events.output.find("autodev.job.cancelled") != std::string::npos,
         "autodev cancel should append a cancelled event");
+    Expect(cancelled_events.output.find("autodev.worktree.cleaned") != std::string::npos,
+        "autodev cleanup-worktree should append a cleanup event");
 
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,

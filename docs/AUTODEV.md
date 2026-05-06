@@ -83,4 +83,5 @@ Only AgentOS runtime gates mutate authoritative state:
 - `acceptance-gate` may mark a task passed when latest verification and diff facts pass.
 - `final-review` may advance a job to `pr_ready`.
 - `complete-job` / `mark-done` may advance a `pr_ready` job with latest passed final review to `done`.
+- `cleanup-worktree` may remove a job worktree only after the job is `done` or `cancelled`; runtime facts remain in the AgentOS store.
 - `pause`, `resume`, and `cancel` currently mutate job state and append events only; they do not interrupt or terminate a Codex process.

@@ -2989,6 +2989,64 @@ AutoDevJobControlResult AutoDevStateStore::cancel_job(const std::string& job_id)
     return result;
 }
 
+AutoDevCleanupWorktreeResult AutoDevStateStore::cleanup_worktree(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevCleanupWorktreeResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevCleanupWorktreeResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (job.status != "done" && job.status != "cancelled") {
+        return fail(std::move(job), "worktree cleanup requires job status done or cancelled");
+    }
+    if (job.worktree_cleanup_policy != "keep_until_done") {
+        return fail(std::move(job), "unsupported worktree_cleanup_policy: " + job.worktree_cleanup_policy);
+    }
+
+    AutoDevCleanupWorktreeResult result;
+    result.cleaned_path = job.job_worktree_path;
+    if (std::filesystem::exists(job.job_worktree_path)) {
+        if (job.isolation_mode == "git_worktree") {
+            const auto remove = GitCommand(job.target_repo_path,
+                "worktree remove --force " + ShellQuote(job.job_worktree_path.string()));
+            if (remove.exit_code != 0) {
+                return fail(std::move(job), "git worktree remove failed: " + Trim(remove.output));
+            }
+        } else {
+            std::filesystem::remove_all(job.job_worktree_path);
+        }
+        result.removed = true;
+    }
+
+    job.isolation_status = "cleaned";
+    job.current_activity = "none";
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.worktree.cleaned"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"job_worktree_path", result.cleaned_path.string()},
+        {"removed", result.removed},
+        {"runtime_facts_preserved", true},
+        {"at", job.updated_at},
+    });
+
+    result.success = true;
+    result.job = std::move(job);
+    return result;
+}
+
 std::optional<AutoDevJob> AutoDevStateStore::load_job(
     const std::string& job_id,
     std::string* error_message) const {

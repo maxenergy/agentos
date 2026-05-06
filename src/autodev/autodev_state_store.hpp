@@ -140,6 +140,14 @@ struct AutoDevJobControlResult {
     AutoDevJob job;
 };
 
+struct AutoDevCleanupWorktreeResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    std::filesystem::path cleaned_path;
+    bool removed = false;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -197,6 +205,7 @@ public:
     AutoDevJobControlResult pause_job(const std::string& job_id);
     AutoDevJobControlResult resume_job(const std::string& job_id);
     AutoDevJobControlResult cancel_job(const std::string& job_id);
+    AutoDevCleanupWorktreeResult cleanup_worktree(const std::string& job_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
         const std::string& job_id,
