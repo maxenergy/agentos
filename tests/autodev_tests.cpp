@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <cstdlib>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -30,6 +31,41 @@ std::filesystem::path FreshWorkspace(const std::string& name) {
 std::string ReadFile(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+int RunShell(const std::string& command) {
+    return std::system(command.c_str());
+}
+
+std::string QuoteShellArg(const std::string& value) {
+    std::string quoted = "'";
+    for (const char ch : value) {
+        if (ch == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('\'');
+    return quoted;
+}
+
+void InitGitRepo(const std::filesystem::path& repo) {
+    std::filesystem::create_directories(repo);
+    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " init >/dev/null 2>&1") == 0,
+        "test fixture should initialize git repo");
+    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " config user.email test@example.com") == 0,
+        "test fixture should configure git email");
+    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " config user.name Test") == 0,
+        "test fixture should configure git user");
+    {
+        std::ofstream readme(repo / "README.md", std::ios::binary);
+        readme << "fixture\n";
+    }
+    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " add README.md") == 0,
+        "test fixture should stage initial file");
+    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " commit -m initial >/dev/null 2>&1") == 0,
+        "test fixture should commit initial file");
 }
 
 void TestJobIdValidation() {
@@ -138,6 +174,73 @@ void TestLoadRejectsInvalidJobId() {
         "load_job should report invalid job id");
 }
 
+void TestPrepareWorkspaceCreatesGitWorktree() {
+    const auto workspace = FreshWorkspace("prepare_workspace");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Prepare workspace",
+        .skill_pack_path = std::nullopt,
+    });
+    Expect(submit.success, "submit before prepare_workspace should succeed");
+
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace should succeed for clean git repo");
+    Expect(prepared.job.isolation_status == "ready", "prepare_workspace should mark isolation ready");
+    Expect(prepared.job.phase == "system_understanding", "prepare_workspace should advance phase");
+    Expect(prepared.job.current_activity == "none", "prepare_workspace should clear current activity");
+    Expect(prepared.job.created_from_head_sha.has_value() && !prepared.job.created_from_head_sha->empty(),
+        "prepare_workspace should record source HEAD sha");
+    Expect(prepared.job.worktree_created_at.has_value(), "prepare_workspace should record worktree creation time");
+    Expect(std::filesystem::exists(prepared.job.job_worktree_path / ".git"),
+        "prepare_workspace should create git worktree at job_worktree_path");
+    Expect(!std::filesystem::exists(target / "runtime" / "autodev"),
+        "prepare_workspace should not write runtime facts into target repo");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "prepare_workspace should not generate docs/goal in target repo");
+
+    const auto job_json = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
+    Expect(job_json["isolation_status"] == "ready", "job.json should persist ready isolation");
+    Expect(job_json["phase"] == "system_understanding", "job.json should persist next phase");
+
+    const auto events = ReadFile(store.events_path(submit.job.job_id));
+    Expect(events.find("\"type\":\"autodev.workspace.prepared\"") != std::string::npos,
+        "events.ndjson should record workspace prepared event");
+}
+
+void TestPrepareWorkspaceBlocksDirtyTarget() {
+    const auto workspace = FreshWorkspace("prepare_dirty_target");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    {
+        std::ofstream dirty(target / "dirty.txt", std::ios::binary);
+        dirty << "dirty\n";
+    }
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Prepare dirty workspace",
+        .skill_pack_path = std::nullopt,
+    });
+    Expect(submit.success, "submit for dirty target should still succeed");
+
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(!prepared.success, "prepare_workspace should block dirty target by default");
+    Expect(prepared.job.status == "blocked", "dirty prepare should mark job blocked");
+    Expect(prepared.job.isolation_status == "blocked", "dirty prepare should block isolation");
+    Expect(prepared.job.blocker.has_value() &&
+               prepared.job.blocker->find("uncommitted changes") != std::string::npos,
+        "dirty prepare should explain dirty target blocker");
+    Expect(!std::filesystem::exists(prepared.job.job_worktree_path),
+        "dirty prepare should not create worktree");
+}
+
 }  // namespace
 
 int main() {
@@ -146,6 +249,8 @@ int main() {
     TestSubmitWithoutSkillPackStaysNotLoaded();
     TestSubmitMissingTargetFailsWithoutJob();
     TestLoadRejectsInvalidJobId();
+    TestPrepareWorkspaceCreatesGitWorktree();
+    TestPrepareWorkspaceBlocksDirtyTarget();
 
     if (failures != 0) {
         std::cerr << failures << " AutoDev test assertion(s) failed\n";

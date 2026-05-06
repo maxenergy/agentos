@@ -41,6 +41,7 @@ struct AutoDevJob {
     std::string worktree_cleanup_policy = "keep_until_done";
 
     std::string next_action = "prepare_workspace";
+    std::optional<std::string> blocker;
     AutoDevSkillPackBinding skill_pack;
 
     std::string created_at;

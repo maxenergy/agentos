@@ -30,8 +30,13 @@ std::map<std::string, std::string> ParseOptionsFromArgs(const int argc, char* ar
 void PrintUsage() {
     std::cerr
         << "Usage:\n"
-        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place]\n"
-        << "  agentos autodev status job_id=<job_id>\n";
+        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false]\n"
+        << "  agentos autodev status job_id=<job_id>\n"
+        << "  agentos autodev prepare-workspace job_id=<job_id>\n";
+}
+
+bool ParseBool(const std::string& value) {
+    return value == "true" || value == "1" || value == "yes";
 }
 
 int RunSubmit(const std::filesystem::path& workspace, const int argc, char* argv[]) {
@@ -50,6 +55,9 @@ int RunSubmit(const std::filesystem::path& workspace, const int argc, char* argv
     if (const auto it = options.find("isolation_mode"); it != options.end()) {
         request.isolation_mode = it->second;
     }
+    if (const auto it = options.find("allow_dirty_target"); it != options.end()) {
+        request.allow_dirty_target = ParseBool(it->second);
+    }
 
     AutoDevStateStore store(workspace);
     const auto result = store.submit(request);
@@ -67,12 +75,52 @@ int RunSubmit(const std::filesystem::path& workspace, const int argc, char* argv
               << "job_worktree_path:  " << result.job.job_worktree_path.string() << " (planned)\n"
               << "isolation_mode:     " << result.job.isolation_mode << '\n'
               << "isolation_status:   " << result.job.isolation_status << '\n'
+              << "allow_dirty_target: " << (result.job.allow_dirty_target ? "true" : "false") << '\n'
               << "next_action:        " << result.job.next_action << '\n'
               << "skill_pack_status:  " << result.job.skill_pack.status << '\n'
               << "job_dir:            " << result.job_dir.string() << '\n'
               << "job_json:           " << store.job_json_path(result.job.job_id).string() << '\n'
               << "events:             " << store.events_path(result.job.job_id).string() << '\n'
               << "\nWorkspace is not ready yet. No target files have been modified.\n";
+    return 0;
+}
+
+int RunPrepareWorkspace(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev prepare-workspace failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev prepare-workspace failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.prepare_workspace(job_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev prepare-workspace failed: " << result.error_message << '\n';
+        if (!result.job.job_id.empty()) {
+            std::cerr << "status:           " << result.job.status << '\n'
+                      << "phase:            " << result.job.phase << '\n'
+                      << "isolation_status: " << result.job.isolation_status << '\n'
+                      << "next_action:      " << result.job.next_action << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "AutoDev workspace prepared\n"
+              << "job_id:                " << result.job.job_id << '\n'
+              << "status:                " << result.job.status << '\n'
+              << "phase:                 " << result.job.phase << '\n'
+              << "isolation_status:      " << result.job.isolation_status << '\n'
+              << "target_repo_path:      " << result.job.target_repo_path.string() << '\n'
+              << "job_worktree_path:     " << result.job.job_worktree_path.string() << '\n'
+              << "created_from_head_sha: " << result.job.created_from_head_sha.value_or("") << '\n'
+              << "worktree_created_at:   " << result.job.worktree_created_at.value_or("") << '\n'
+              << "next_action:           " << result.job.next_action << '\n'
+              << "\nTarget repo was not modified; work will continue in the job worktree.\n";
     return 0;
 }
 
@@ -105,12 +153,15 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
               << "Paths:\n"
               << "  agentos_workspace: " << job->agentos_workspace.string() << '\n'
               << "  target_repo_path:  " << job->target_repo_path.string() << '\n'
-              << "  job_worktree_path: " << job->job_worktree_path.string() << " (planned)\n"
+              << "  job_worktree_path: " << job->job_worktree_path.string()
+              << (job->isolation_status == "ready" ? "" : " (planned)") << '\n'
               << '\n'
               << "Isolation:\n"
               << "  mode:              " << job->isolation_mode << '\n'
               << "  status:            " << job->isolation_status << '\n'
               << "  allow_dirty_target:" << (job->allow_dirty_target ? " true" : " false") << '\n'
+              << "  head_sha:          " << job->created_from_head_sha.value_or("(none)") << '\n'
+              << "  worktree_created:  " << job->worktree_created_at.value_or("(none)") << '\n'
               << '\n'
               << "Skill Pack:\n"
               << "  status: " << job->skill_pack.status << '\n';
@@ -119,9 +170,15 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
     }
     std::cout << '\n'
               << "Next action:\n"
-              << "  agentos autodev " << job->next_action << " job_id=" << job->job_id << '\n'
-              << '\n'
-              << "Workspace is not ready yet. No target files have been modified.\n";
+              << "  agentos autodev "
+              << (job->next_action == "prepare_workspace" ? "prepare-workspace" : job->next_action)
+              << " job_id=" << job->job_id << '\n'
+              << '\n';
+    if (job->isolation_status == "ready") {
+        std::cout << "Workspace is ready. Future AutoDev writes must use the job worktree.\n";
+    } else {
+        std::cout << "Workspace is not ready yet. No target files have been modified.\n";
+    }
     return 0;
 }
 
@@ -138,6 +195,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "status") {
         return RunStatus(workspace, argc, argv);
+    }
+    if (subcommand == "prepare-workspace" || subcommand == "prepare_workspace") {
+        return RunPrepareWorkspace(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';

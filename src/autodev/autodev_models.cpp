@@ -63,6 +63,7 @@ nlohmann::json ToJson(const AutoDevJob& job) {
         {"worktree_created_at", OptionalString(job.worktree_created_at)},
         {"worktree_cleanup_policy", job.worktree_cleanup_policy},
         {"next_action", job.next_action},
+        {"blocker", OptionalString(job.blocker)},
         {"skill_pack", ToJson(job.skill_pack)},
         {"created_at", job.created_at},
         {"updated_at", job.updated_at},
@@ -86,6 +87,7 @@ AutoDevJob AutoDevJobFromJson(const nlohmann::json& json) {
     job.worktree_created_at = ReadOptionalString(json, "worktree_created_at");
     job.worktree_cleanup_policy = json.value("worktree_cleanup_policy", "keep_until_done");
     job.next_action = json.value("next_action", "prepare_workspace");
+    job.blocker = ReadOptionalString(json, "blocker");
     if (json.contains("skill_pack") && json.at("skill_pack").is_object()) {
         const auto& skill_pack = json.at("skill_pack");
         job.skill_pack.name = ReadOptionalString(skill_pack, "name");

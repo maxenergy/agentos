@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+#include <nlohmann/json_fwd.hpp>
+
 namespace agentos {
 
 struct AutoDevSubmitRequest {
@@ -15,6 +17,7 @@ struct AutoDevSubmitRequest {
     std::string objective;
     std::optional<std::filesystem::path> skill_pack_path;
     std::string isolation_mode = "git_worktree";
+    bool allow_dirty_target = false;
 };
 
 struct AutoDevSubmitResult {
@@ -22,6 +25,12 @@ struct AutoDevSubmitResult {
     std::string error_message;
     AutoDevJob job;
     std::filesystem::path job_dir;
+};
+
+struct AutoDevPrepareWorkspaceResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
 };
 
 class AutoDevStateStore {
@@ -36,10 +45,13 @@ public:
     [[nodiscard]] std::filesystem::path events_path(const std::string& job_id) const;
 
     AutoDevSubmitResult submit(const AutoDevSubmitRequest& request);
+    AutoDevPrepareWorkspaceResult prepare_workspace(const std::string& job_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
 
 private:
     std::filesystem::path agentos_workspace_;
+    void save_job(const AutoDevJob& job) const;
+    void append_event(const std::string& job_id, const nlohmann::json& event) const;
 };
 
 }  // namespace agentos

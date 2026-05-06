@@ -649,6 +649,7 @@ void PrintUsage() {
         << "  agentos agents\n"
         << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place]\n"
         << "  agentos autodev status job_id=<job_id>\n"
+        << "  agentos autodev prepare-workspace job_id=<job_id>\n"
         << "  agentos cli-specs validate\n"
         << "  agentos diagnostics [format=text|json]\n"
         << "  agentos plugins\n"

@@ -4,12 +4,18 @@
 #include "utils/atomic_file.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <string>
 
 #include <nlohmann/json.hpp>
+
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 namespace agentos {
 
@@ -53,6 +59,106 @@ nlohmann::json SubmitEvent(const AutoDevJob& job) {
         {"planned_worktree_path", job.job_worktree_path.string()},
         {"next_action", job.next_action},
         {"at", job.created_at},
+    };
+}
+
+std::string ShellQuote(const std::string& value) {
+#ifdef _WIN32
+    std::string quoted = "\"";
+    for (const char ch : value) {
+        if (ch == '"') {
+            quoted += "\\\"";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('"');
+    return quoted;
+#else
+    std::string quoted = "'";
+    for (const char ch : value) {
+        if (ch == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('\'');
+    return quoted;
+#endif
+}
+
+struct CommandResult {
+    int exit_code = -1;
+    std::string output;
+};
+
+CommandResult RunCommand(const std::string& command) {
+#ifdef _WIN32
+    FILE* pipe = _popen((command + " 2>&1").c_str(), "r");
+#else
+    FILE* pipe = popen((command + " 2>&1").c_str(), "r");
+#endif
+    if (!pipe) {
+        return {.exit_code = -1, .output = "failed to start command"};
+    }
+    std::string output;
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        output += buffer;
+    }
+#ifdef _WIN32
+    const int status = _pclose(pipe);
+    return {.exit_code = status, .output = std::move(output)};
+#else
+    const int status = pclose(pipe);
+    if (WIFEXITED(status)) {
+        return {.exit_code = WEXITSTATUS(status), .output = std::move(output)};
+    }
+    return {.exit_code = status, .output = std::move(output)};
+#endif
+}
+
+CommandResult GitCommand(const std::filesystem::path& repo, const std::string& args) {
+    return RunCommand("git -C " + ShellQuote(repo.string()) + " " + args);
+}
+
+std::string Trim(std::string value) {
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+nlohmann::json WorkspacePreparedEvent(const AutoDevJob& job) {
+    return nlohmann::json{
+        {"type", "autodev.workspace.prepared"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"isolation_mode", job.isolation_mode},
+        {"isolation_status", job.isolation_status},
+        {"target_repo_path", job.target_repo_path.string()},
+        {"job_worktree_path", job.job_worktree_path.string()},
+        {"created_from_head_sha", job.created_from_head_sha.value_or("")},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
+    };
+}
+
+nlohmann::json WorkspaceBlockedEvent(const AutoDevJob& job) {
+    return nlohmann::json{
+        {"type", "autodev.workspace.blocked"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"isolation_mode", job.isolation_mode},
+        {"isolation_status", job.isolation_status},
+        {"blocker", job.blocker.value_or("")},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
     };
 }
 
@@ -134,6 +240,7 @@ AutoDevSubmitResult AutoDevStateStore::submit(const AutoDevSubmitRequest& reques
     job.job_worktree_path = PlannedWorktreePath(target_path, job.job_id);
     job.isolation_mode = request.isolation_mode;
     job.isolation_status = "pending";
+    job.allow_dirty_target = request.allow_dirty_target;
     job.created_at = timestamp;
     job.updated_at = timestamp;
 
@@ -145,13 +252,180 @@ AutoDevSubmitResult AutoDevStateStore::submit(const AutoDevSubmitRequest& reques
 
     const auto dir = job_dir(job.job_id);
     std::filesystem::create_directories(dir);
-    WriteFileAtomically(job_json_path(job.job_id), ToJson(job).dump(2) + "\n");
-    AppendLineToFile(events_path(job.job_id), SubmitEvent(job).dump());
+    save_job(job);
+    append_event(job.job_id, SubmitEvent(job));
 
     AutoDevSubmitResult result;
     result.success = true;
     result.job = std::move(job);
     result.job_dir = dir;
+    return result;
+}
+
+void AutoDevStateStore::save_job(const AutoDevJob& job) const {
+    WriteFileAtomically(job_json_path(job.job_id), ToJson(job).dump(2) + "\n");
+}
+
+void AutoDevStateStore::append_event(const std::string& job_id, const nlohmann::json& event) const {
+    AppendLineToFile(events_path(job_id), event.dump());
+}
+
+AutoDevPrepareWorkspaceResult AutoDevStateStore::prepare_workspace(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevPrepareWorkspaceResult result;
+        result.error_message = load_error;
+        return result;
+    }
+
+    AutoDevJob job = std::move(*maybe_job);
+    if (job.isolation_status == "ready") {
+        AutoDevPrepareWorkspaceResult result;
+        result.success = true;
+        result.job = std::move(job);
+        return result;
+    }
+    if (job.isolation_mode != "git_worktree") {
+        job.status = "blocked";
+        job.phase = "workspace_preparing";
+        job.current_activity = "none";
+        job.isolation_status = "blocked";
+        job.blocker = "prepare_workspace only supports git_worktree isolation in this slice";
+        job.next_action = "fix_workspace_or_use_git_worktree";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, WorkspaceBlockedEvent(job));
+
+        AutoDevPrepareWorkspaceResult result;
+        result.error_message = *job.blocker;
+        result.job = std::move(job);
+        return result;
+    }
+
+    job.status = "running";
+    job.phase = "workspace_preparing";
+    job.current_activity = "creating_worktree";
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.workspace.preparing"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"current_activity", job.current_activity},
+        {"at", job.updated_at},
+    });
+
+    const auto git_root = GitCommand(job.target_repo_path, "rev-parse --show-toplevel");
+    if (git_root.exit_code != 0) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.isolation_status = "blocked";
+        job.blocker = "target_repo_path is not a git repository";
+        job.next_action = "fix_workspace_or_use_in_place";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, WorkspaceBlockedEvent(job));
+
+        AutoDevPrepareWorkspaceResult result;
+        result.error_message = *job.blocker;
+        result.job = std::move(job);
+        return result;
+    }
+
+    const auto dirty = GitCommand(job.target_repo_path, "status --porcelain");
+    if (dirty.exit_code != 0 || (!Trim(dirty.output).empty() && !job.allow_dirty_target)) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.isolation_status = "blocked";
+        job.blocker = dirty.exit_code != 0
+            ? "could not inspect target git status"
+            : "target_repo_path has uncommitted changes";
+        job.next_action = "commit_or_allow_dirty_target";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, WorkspaceBlockedEvent(job));
+
+        AutoDevPrepareWorkspaceResult result;
+        result.error_message = *job.blocker;
+        result.job = std::move(job);
+        return result;
+    }
+
+    const auto head = GitCommand(job.target_repo_path, "rev-parse HEAD");
+    if (head.exit_code != 0) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.isolation_status = "blocked";
+        job.blocker = "could not resolve target HEAD";
+        job.next_action = "fix_workspace_or_use_in_place";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, WorkspaceBlockedEvent(job));
+
+        AutoDevPrepareWorkspaceResult result;
+        result.error_message = *job.blocker;
+        result.job = std::move(job);
+        return result;
+    }
+
+    auto worktree_path = job.job_worktree_path;
+    for (int attempt = 1; std::filesystem::exists(worktree_path) && attempt < 32; ++attempt) {
+        worktree_path = job.job_worktree_path;
+        worktree_path += "-" + std::to_string(attempt);
+    }
+    if (std::filesystem::exists(worktree_path)) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.isolation_status = "blocked";
+        job.blocker = "could not choose a free job_worktree_path";
+        job.next_action = "fix_workspace_path";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, WorkspaceBlockedEvent(job));
+
+        AutoDevPrepareWorkspaceResult result;
+        result.error_message = *job.blocker;
+        result.job = std::move(job);
+        return result;
+    }
+    job.job_worktree_path = worktree_path;
+
+    const auto add = GitCommand(
+        job.target_repo_path,
+        "worktree add --detach " + ShellQuote(job.job_worktree_path.string()) + " HEAD");
+    if (add.exit_code != 0) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.isolation_status = "blocked";
+        job.blocker = "Git worktree could not be created: " + Trim(add.output);
+        job.next_action = "fix_workspace_or_use_in_place";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, WorkspaceBlockedEvent(job));
+
+        AutoDevPrepareWorkspaceResult result;
+        result.error_message = *job.blocker;
+        result.job = std::move(job);
+        return result;
+    }
+
+    job.status = "running";
+    job.phase = "system_understanding";
+    job.current_activity = "none";
+    job.isolation_status = "ready";
+    job.created_from_head_sha = Trim(head.output);
+    job.worktree_created_at = IsoUtcNow();
+    job.next_action = job.skill_pack.status == "declared" ? "load_skill_pack" : "declare_skill_pack";
+    job.blocker = std::nullopt;
+    job.updated_at = *job.worktree_created_at;
+    save_job(job);
+    append_event(job.job_id, WorkspacePreparedEvent(job));
+
+    AutoDevPrepareWorkspaceResult result;
+    result.success = true;
+    result.job = std::move(job);
     return result;
 }
 
