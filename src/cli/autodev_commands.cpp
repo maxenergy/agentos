@@ -118,6 +118,35 @@ void PrintProgress(const std::string& indent, const AutoDevProgressView& progres
               << indent << "acceptance:   " << progress.acceptance_passed << "/" << progress.acceptance_total << '\n';
 }
 
+bool WantsJson(const std::map<std::string, std::string>& options) {
+    const auto it = options.find("format");
+    return it != options.end() && it->second == "json";
+}
+
+template <typename T>
+nlohmann::json RecordsJson(const std::vector<T>& records) {
+    nlohmann::json json = nlohmann::json::array();
+    for (const auto& record : records) {
+        json.push_back(ToJson(record));
+    }
+    return json;
+}
+
+nlohmann::json ProgressJson(const AutoDevProgressView& progress) {
+    return nlohmann::json{
+        {"overall_percent", progress.overall_percent},
+        {"phase_weight", progress.phase_weight},
+        {"tasks_passed", progress.tasks_passed},
+        {"tasks_total", progress.tasks_total},
+        {"acceptance_passed", progress.acceptance_passed},
+        {"acceptance_total", progress.acceptance_total},
+    };
+}
+
+void PrintJson(const nlohmann::json& json) {
+    std::cout << json.dump(2) << '\n';
+}
+
 void PrintUsage() {
     std::cerr
         << "Usage:\n"
@@ -430,6 +459,14 @@ int RunTasks(const std::filesystem::path& workspace, const int argc, char* argv[
     if (!tasks.has_value()) {
         std::cerr << "autodev tasks failed: " << error << '\n';
         return 1;
+    }
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"job_id", job_id_it->second},
+            {"total", tasks->size()},
+            {"tasks", RecordsJson(*tasks)},
+        });
+        return 0;
     }
 
     std::size_t passed = 0;
@@ -871,6 +908,14 @@ int RunVerifications(const std::filesystem::path& workspace, const int argc, cha
         std::cerr << "autodev verifications failed: " << error << '\n';
         return 1;
     }
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"job_id", job_id_it->second},
+            {"total", verifications->size()},
+            {"verifications", RecordsJson(*verifications)},
+        });
+        return 0;
+    }
 
     std::cout << "AutoDev verifications\n"
               << "job_id: " << job_id_it->second << '\n'
@@ -965,6 +1010,14 @@ int RunDiffs(const std::filesystem::path& workspace, const int argc, char* argv[
         std::cerr << "autodev diffs failed: " << error << '\n';
         return 1;
     }
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"job_id", job_id_it->second},
+            {"total", diffs->size()},
+            {"diffs", RecordsJson(*diffs)},
+        });
+        return 0;
+    }
 
     std::cout << "AutoDev diffs\n"
               << "job_id: " << job_id_it->second << '\n'
@@ -1038,6 +1091,14 @@ int RunAcceptances(const std::filesystem::path& workspace, const int argc, char*
         std::cerr << "autodev acceptances failed: " << error << '\n';
         return 1;
     }
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"job_id", job_id_it->second},
+            {"total", acceptances->size()},
+            {"acceptances", RecordsJson(*acceptances)},
+        });
+        return 0;
+    }
 
     std::cout << "AutoDev acceptances\n"
               << "job_id: " << job_id_it->second << '\n'
@@ -1109,6 +1170,14 @@ int RunFinalReviews(const std::filesystem::path& workspace, const int argc, char
     if (!final_reviews.has_value()) {
         std::cerr << "autodev final-reviews failed: " << error << '\n';
         return 1;
+    }
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"job_id", job_id_it->second},
+            {"total", final_reviews->size()},
+            {"final_reviews", RecordsJson(*final_reviews)},
+        });
+        return 0;
     }
 
     std::cout << "AutoDev final reviews\n"
@@ -1367,6 +1436,28 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
         }
     }
     const auto progress = ComputeProgress(*job, *tasks);
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"job", ToJson(*job)},
+            {"progress", ProgressJson(progress)},
+            {"fact_counts", {
+                {"snapshots", snapshots.size()},
+                {"verifications", verifications.size()},
+                {"diffs", diffs.size()},
+                {"acceptances", acceptances.size()},
+                {"final_reviews", final_reviews.size()},
+                {"repairs", repairs.size()},
+            }},
+            {"tasks", RecordsJson(*tasks)},
+            {"snapshots", RecordsJson(snapshots)},
+            {"verifications", RecordsJson(verifications)},
+            {"diffs", RecordsJson(diffs)},
+            {"acceptances", RecordsJson(acceptances)},
+            {"final_reviews", RecordsJson(final_reviews)},
+            {"repairs", RecordsJson(repairs)},
+        });
+        return 0;
+    }
 
     std::cout << "AutoDev summary\n"
               << "job_id:        " << job->job_id << '\n'

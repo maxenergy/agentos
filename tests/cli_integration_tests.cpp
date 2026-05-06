@@ -2759,6 +2759,50 @@ void TestAutoDevCommands() {
         "autodev summary should include latest acceptance fact per task");
     Expect(summary_result.output.find("final_review_id: final-review-001") != std::string::npos,
         "autodev summary should include latest final review fact");
+    const auto tasks_json_result = RunAgentos(workspace, {"autodev", "tasks", "job_id=" + executable_job_id, "format=json"});
+    Expect(tasks_json_result.exit_code == 0,
+        "autodev tasks format=json should succeed");
+    Expect(tasks_json_result.output.find("\"job_id\": \"" + executable_job_id + "\"") != std::string::npos,
+        "autodev tasks format=json should include job_id");
+    Expect(tasks_json_result.output.find("\"tasks\": [") != std::string::npos &&
+               tasks_json_result.output.find("\"task_id\": \"task-001\"") != std::string::npos,
+        "autodev tasks format=json should include task ids");
+    const auto verifications_json_result = RunAgentos(workspace, {"autodev", "verifications", "job_id=" + executable_job_id, "format=json"});
+    Expect(verifications_json_result.exit_code == 0,
+        "autodev verifications format=json should succeed");
+    Expect(verifications_json_result.output.find("\"verifications\": [") != std::string::npos &&
+               verifications_json_result.output.find("\"verification_id\": \"verify-001\"") != std::string::npos,
+        "autodev verifications format=json should include verification records");
+    const auto diffs_json_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id, "format=json"});
+    Expect(diffs_json_result.exit_code == 0,
+        "autodev diffs format=json should succeed");
+    Expect(diffs_json_result.output.find("\"diffs\": [") != std::string::npos &&
+               diffs_json_result.output.find("\"diff_id\": \"diff-001\"") != std::string::npos,
+        "autodev diffs format=json should include diff records");
+    const auto acceptances_json_result = RunAgentos(workspace, {"autodev", "acceptances", "job_id=" + executable_job_id, "format=json"});
+    Expect(acceptances_json_result.exit_code == 0,
+        "autodev acceptances format=json should succeed");
+    Expect(acceptances_json_result.output.find("\"acceptances\": [") != std::string::npos &&
+               acceptances_json_result.output.find("\"acceptance_id\": \"acceptance-001\"") != std::string::npos,
+        "autodev acceptances format=json should include acceptance records");
+    const auto final_reviews_json_result = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + executable_job_id, "format=json"});
+    Expect(final_reviews_json_result.exit_code == 0,
+        "autodev final-reviews format=json should succeed");
+    Expect(final_reviews_json_result.output.find("\"final_reviews\": [") != std::string::npos &&
+               final_reviews_json_result.output.find("\"final_review_id\": \"final-review-001\"") != std::string::npos,
+        "autodev final-reviews format=json should include final review records");
+    const auto summary_json_result = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id, "format=json"});
+    Expect(summary_json_result.exit_code == 0,
+        "autodev summary format=json should succeed");
+    Expect(summary_json_result.output.find("\"job\": {") != std::string::npos &&
+               summary_json_result.output.find("\"job_id\": \"" + executable_job_id + "\"") != std::string::npos,
+        "autodev summary format=json should include job object");
+    Expect(summary_json_result.output.find("\"progress\": {") != std::string::npos &&
+               summary_json_result.output.find("\"overall_percent\": 100") != std::string::npos,
+        "autodev summary format=json should include progress object");
+    Expect(summary_json_result.output.find("\"fact_counts\": {") != std::string::npos &&
+               summary_json_result.output.find("\"final_reviews\": 1") != std::string::npos,
+        "autodev summary format=json should include fact counts");
     const auto pr_summary = RunAgentos(workspace, {"autodev", "pr-summary", "job_id=" + executable_job_id});
     Expect(pr_summary.exit_code == 0,
         "autodev pr-summary should succeed after final review makes the job pr_ready");
