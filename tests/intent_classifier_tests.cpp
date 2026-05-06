@@ -86,6 +86,16 @@ void TestCurrentModelQuestionRoutesToLocalIntent() {
         "current model question should be handled by the interactive runtime");
 }
 
+void TestMemoryQuestionRoutesToLocalIntent() {
+    const auto decision = Classify("你记得什么？");
+    Expect(decision.route == agentos::InteractiveRouteKind::local_intent,
+        "memory question should route to local_intent");
+    Expect(decision.execution_mode == agentos::InteractiveExecutionMode::sync,
+        "memory question should be synchronous");
+    Expect(decision.selected_target == "interactive_runtime",
+        "memory question should be handled by the interactive runtime");
+}
+
 }  // namespace
 
 int main() {
@@ -95,6 +105,7 @@ int main() {
     TestCommandLineToolBuildRoutesToDevelopment();
     TestMainAgentOllamaConfigRoutesToLocalIntent();
     TestCurrentModelQuestionRoutesToLocalIntent();
+    TestMemoryQuestionRoutesToLocalIntent();
 
     if (failures != 0) {
         std::cerr << failures << " intent classifier test assertion(s) failed\n";

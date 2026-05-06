@@ -12,6 +12,7 @@ enum class InteractiveIntentKind {
     main_agent_inspect,
     runtime_self_description,
     host_info,
+    memory_inspect,
     skill_usage,
 };
 
@@ -31,6 +32,7 @@ bool LooksLikeMainAgentConfigIntent(const std::string& line);
 bool LooksLikeModelIdentityIntent(const std::string& line);
 bool LooksLikeRuntimeSelfDescriptionIntent(const std::string& line);
 bool LooksLikeHostInfoIntent(const std::string& line);
+bool LooksLikeMemoryInspectIntent(const std::string& line);
 bool LooksLikeSpecificSkillUsageIntent(const std::string& line,
                                        const SkillRegistry& skill_registry);
 

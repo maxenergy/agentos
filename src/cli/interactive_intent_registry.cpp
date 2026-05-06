@@ -49,6 +49,13 @@ bool LooksLikeHostInfoIntent(const std::string& line) {
     return std::regex_search(line, host_re);
 }
 
+bool LooksLikeMemoryInspectIntent(const std::string& line) {
+    static const std::regex memory_re(
+        R"((\b(what\s+do\s+you\s+remember|what\s+is\s+in\s+memory|show\s+memory|memory\s+summary|remembered|lessons?)\b)|你.*(记得|记住|记忆|学到).*(什么|哪些|内容)|你(还)?记得什么|你记住了什么|你的记忆|记忆里有什么|学到了什么|记住了哪些|记得哪些|详细记忆|完整记忆|全部记忆|记住的教训|可复用工作流|记忆详情)",
+        std::regex_constants::icase);
+    return std::regex_search(line, memory_re);
+}
+
 bool LooksLikeSpecificSkillUsageIntent(const std::string& line,
                                        const SkillRegistry& skill_registry) {
     auto manifests = skill_registry.list();
@@ -126,6 +133,13 @@ std::optional<InteractiveIntentMatch> MatchHardLocalInteractiveIntent(
         return InteractiveIntentMatch{
             .intent = InteractiveIntentKind::runtime_self_description,
             .reason = "matches runtime self-description local intent",
+            .score = -5,
+        };
+    }
+    if (LooksLikeMemoryInspectIntent(line)) {
+        return InteractiveIntentMatch{
+            .intent = InteractiveIntentKind::memory_inspect,
+            .reason = "asks for local runtime memory",
             .score = -5,
         };
     }

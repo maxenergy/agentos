@@ -5,5 +5,6 @@
 {"name":"ollama main model config","input":"请帮我配置首选模型使用本地ollama的gemma4:e2b模型。","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"development_agent","expected_ollama_model":"gemma4:e2b"}
 {"name":"current model question","input":"当前模型是什么？","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"chat_agent"}
 {"name":"skill list question","input":"你现在有什么技能？","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"development_agent"}
+{"name":"memory question","input":"你记得什么？","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"chat_agent"}
 {"name":"AI news search","input":"帮我搜索今天的 AI 新闻","expected_route":"direct_skill","expected_target":"news_search","expected_mode":"sync","must_not_route":"research_agent"}
 {"name":"Google weekly news top5","input":"帮我搜索谷歌看一周新闻top5","expected_route":"direct_skill","expected_target":"news_search","expected_mode":"sync","must_not_route":"research_agent"}
