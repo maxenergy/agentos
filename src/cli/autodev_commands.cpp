@@ -549,7 +549,7 @@ std::string PreviewText(const std::string& value, const std::size_t max_bytes = 
 void PrintUsage() {
     std::cerr
         << "Usage:\n"
-        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false]\n"
+        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false] [worktree_cleanup_policy=keep_until_done|delete_on_done|keep_always]\n"
         << "  agentos autodev status job_id=<job_id>\n"
         << "  agentos autodev status job_id=<job_id> --watch [iterations=1] [interval_ms=1000]\n"
         << "  agentos autodev watch job_id=<job_id> [iterations=1] [interval_ms=1000]\n"
@@ -616,6 +616,9 @@ int RunSubmit(const std::filesystem::path& workspace, const int argc, char* argv
     if (const auto it = options.find("allow_dirty_target"); it != options.end()) {
         request.allow_dirty_target = ParseBool(it->second);
     }
+    if (const auto it = options.find("worktree_cleanup_policy"); it != options.end()) {
+        request.worktree_cleanup_policy = it->second;
+    }
 
     AutoDevStateStore store(workspace);
     const auto result = store.submit(request);
@@ -634,6 +637,7 @@ int RunSubmit(const std::filesystem::path& workspace, const int argc, char* argv
               << "isolation_mode:     " << result.job.isolation_mode << '\n'
               << "isolation_status:   " << result.job.isolation_status << '\n'
               << "allow_dirty_target: " << (result.job.allow_dirty_target ? "true" : "false") << '\n'
+              << "cleanup_policy:     " << result.job.worktree_cleanup_policy << '\n'
               << "next_action:        " << result.job.next_action << '\n'
               << "skill_pack_status:  " << result.job.skill_pack.status << '\n'
               << "job_dir:            " << result.job_dir.string() << '\n'
@@ -1874,6 +1878,8 @@ int RunCompleteJob(const std::filesystem::path& workspace, const int argc, char*
               << "job_id:          " << result.job.job_id << '\n'
               << "status:          " << result.job.status << '\n'
               << "phase:           " << result.job.phase << '\n'
+              << "isolation_status: " << result.job.isolation_status << '\n'
+              << "cleanup_policy:  " << result.job.worktree_cleanup_policy << '\n'
               << "final_review_id: " << result.final_review.final_review_id << '\n'
               << "final_review:    passed\n"
               << "\nJob completion is controlled by AgentOS runtime facts, not Codex or Markdown summaries.\n";

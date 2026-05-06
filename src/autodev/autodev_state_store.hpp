@@ -20,6 +20,7 @@ struct AutoDevSubmitRequest {
     std::optional<std::filesystem::path> skill_pack_path;
     std::string isolation_mode = "git_worktree";
     bool allow_dirty_target = false;
+    std::string worktree_cleanup_policy = "keep_until_done";
 };
 
 struct AutoDevSubmitResult {

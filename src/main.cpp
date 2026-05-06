@@ -647,7 +647,7 @@ void PrintUsage() {
         << "  agentos interactive\n"
         << "  agentos serve [port=18080] [host=127.0.0.1]\n"
         << "  agentos agents\n"
-        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place]\n"
+        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [worktree_cleanup_policy=keep_until_done|delete_on_done|keep_always]\n"
         << "  agentos autodev status job_id=<job_id>\n"
         << "  agentos autodev status job_id=<job_id> --watch [iterations=1] [interval_ms=1000]\n"
         << "  agentos autodev watch job_id=<job_id> [iterations=1] [interval_ms=1000]\n"

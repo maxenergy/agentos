@@ -3154,7 +3154,8 @@ void TestAutoDevCommands() {
         "submit",
         "target_repo_path=" + target.string(),
         "objective=Run all tasks through job loop",
-        "skill_pack_path=" + skill_pack.string()});
+        "skill_pack_path=" + skill_pack.string(),
+        "worktree_cleanup_policy=delete_on_done"});
     Expect(run_job_submit.exit_code == 0,
         "autodev submit should support a run-job fixture");
     const auto run_job_id = ExtractLineValue(run_job_submit.output, "job_id:");
@@ -3246,12 +3247,32 @@ void TestAutoDevCommands() {
         "autodev run-job should leave the job running");
     Expect(run_job_status.output.find("Phase: final_review") != std::string::npos,
         "autodev run-job should leave the job at final_review");
+    const auto run_job_final_review = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + run_job_id});
+    Expect(run_job_final_review.exit_code == 0,
+        "autodev final-review should pass for the run-job fixture");
+    const auto run_job_complete = RunAgentos(workspace, {"autodev", "mark-done", "job_id=" + run_job_id});
+    Expect(run_job_complete.exit_code == 0,
+        "autodev mark-done should complete the delete_on_done fixture");
+    Expect(run_job_complete.output.find("cleanup_policy:  delete_on_done") != std::string::npos,
+        "autodev mark-done should report delete_on_done cleanup policy");
+    Expect(run_job_complete.output.find("isolation_status: cleaned") != std::string::npos,
+        "delete_on_done should clean the worktree during completion");
+    Expect(!std::filesystem::exists(run_job_path),
+        "delete_on_done should remove the job worktree after mark-done");
+    Expect(std::filesystem::exists(run_job_dir / "job.json"),
+        "delete_on_done should preserve runtime facts");
+    const auto run_job_cleanup_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + run_job_id});
+    Expect(run_job_cleanup_events.exit_code == 0,
+        "autodev events should read delete_on_done fixture events");
+    Expect(run_job_cleanup_events.output.find("autodev.worktree.cleaned") != std::string::npos,
+        "delete_on_done should append a worktree cleanup event");
     const auto interrupt_submit = RunAgentos(workspace, {
         "autodev",
         "submit",
         "target_repo_path=" + target.string(),
         "objective=Cancel running Codex CLI execution",
-        "skill_pack_path=" + skill_pack.string()});
+        "skill_pack_path=" + skill_pack.string(),
+        "worktree_cleanup_policy=keep_always"});
     Expect(interrupt_submit.exit_code == 0,
         "autodev submit should support an interrupt fixture job");
     const auto interrupt_job_id = ExtractLineValue(interrupt_submit.output, "job_id:");
@@ -3326,6 +3347,11 @@ void TestAutoDevCommands() {
         "autodev status should read cancelled interrupt fixture");
     Expect(interrupt_status.output.find("Status: cancelled") != std::string::npos,
         "autodev cancel should leave interrupted job cancelled");
+    const auto keep_always_cleanup = RunAgentos(workspace, {"autodev", "cleanup-worktree", "job_id=" + interrupt_job_id});
+    Expect(keep_always_cleanup.exit_code != 0,
+        "autodev cleanup-worktree should reject keep_always jobs");
+    Expect(keep_always_cleanup.output.find("keep_always prevents cleanup") != std::string::npos,
+        "autodev cleanup-worktree should explain keep_always policy");
     const auto interrupted_response = ReadTextFile(interrupt_job_dir / "responses" / "turn-001.md");
     Expect(interrupted_response.find("interrupted by autodev job status: cancelled") != std::string::npos,
         "interrupted execution should persist interruption reason in response artifact");

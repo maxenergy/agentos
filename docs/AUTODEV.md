@@ -94,6 +94,12 @@ Execution turn records do not mark tasks passed. Task state remains controlled b
 
 Mutating job commands acquire `<agentos_workspace>/runtime/autodev/jobs/<job_id>/job.lock` before writing runtime facts. The lock prevents overlapping execution, gate, rollback, recovery, pipeline, run-loop, completion, and cleanup commands from writing the same job concurrently. `pause`, `resume`, and `cancel` remain outside this lock so they can interrupt a running adapter.
 
+`worktree_cleanup_policy` supports three values at submit time:
+
+- `keep_until_done`: default; the worktree remains until explicit `cleanup-worktree` after `done` or `cancelled`.
+- `delete_on_done`: `mark-done` automatically removes the worktree after successful completion.
+- `keep_always`: `cleanup-worktree` refuses to remove the worktree.
+
 ## Repair Flow
 
 Failed verification, DiffGuard, AcceptanceGate, and FinalReview checks can record repair-needed facts in `repairs.json` and write a same-thread repair prompt under `repairs/<repair_id>.prompt.md`.

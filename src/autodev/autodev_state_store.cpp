@@ -1089,6 +1089,13 @@ AutoDevSubmitResult AutoDevStateStore::submit(const AutoDevSubmitRequest& reques
         result.error_message = "isolation_mode must be git_worktree or in_place";
         return result;
     }
+    if (request.worktree_cleanup_policy != "keep_until_done" &&
+        request.worktree_cleanup_policy != "delete_on_done" &&
+        request.worktree_cleanup_policy != "keep_always") {
+        AutoDevSubmitResult result;
+        result.error_message = "worktree_cleanup_policy must be keep_until_done, delete_on_done, or keep_always";
+        return result;
+    }
 
     const auto target_path = AbsoluteNormalized(request.target_repo_path);
     std::error_code ec;
@@ -1124,6 +1131,7 @@ AutoDevSubmitResult AutoDevStateStore::submit(const AutoDevSubmitRequest& reques
     job.isolation_mode = request.isolation_mode;
     job.isolation_status = "pending";
     job.allow_dirty_target = request.allow_dirty_target;
+    job.worktree_cleanup_policy = request.worktree_cleanup_policy;
     job.created_at = timestamp;
     job.updated_at = timestamp;
 
@@ -3005,6 +3013,13 @@ AutoDevCompleteJobResult AutoDevStateStore::complete_job(const std::string& job_
         {"at", job.updated_at},
     });
 
+    if (job.worktree_cleanup_policy == "delete_on_done") {
+        const auto cleanup = cleanup_worktree(job.job_id);
+        if (cleanup.success) {
+            job = cleanup.job;
+        }
+    }
+
     AutoDevCompleteJobResult result;
     result.success = true;
     result.job = std::move(job);
@@ -3166,7 +3181,10 @@ AutoDevCleanupWorktreeResult AutoDevStateStore::cleanup_worktree(const std::stri
     if (job.status != "done" && job.status != "cancelled") {
         return fail(std::move(job), "worktree cleanup requires job status done or cancelled");
     }
-    if (job.worktree_cleanup_policy != "keep_until_done") {
+    if (job.worktree_cleanup_policy == "keep_always") {
+        return fail(std::move(job), "worktree_cleanup_policy keep_always prevents cleanup");
+    }
+    if (job.worktree_cleanup_policy != "keep_until_done" && job.worktree_cleanup_policy != "delete_on_done") {
         return fail(std::move(job), "unsupported worktree_cleanup_policy: " + job.worktree_cleanup_policy);
     }
 
