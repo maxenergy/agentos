@@ -121,16 +121,30 @@ struct AutoDevDiffGuard {
     std::string checked_at;
 };
 
+struct AutoDevAcceptanceGate {
+    std::string acceptance_id;
+    std::string job_id;
+    std::string task_id;
+    std::string spec_revision;
+    bool passed = false;
+    std::optional<std::string> verification_id;
+    std::optional<std::string> diff_id;
+    std::vector<std::string> reasons;
+    std::string checked_at;
+};
+
 nlohmann::json ToJson(const AutoDevSkillPackBinding& binding);
 nlohmann::json ToJson(const AutoDevJob& job);
 nlohmann::json ToJson(const AutoDevTask& task);
 nlohmann::json ToJson(const AutoDevTurn& turn);
 nlohmann::json ToJson(const AutoDevVerification& verification);
 nlohmann::json ToJson(const AutoDevDiffGuard& diff_guard);
+nlohmann::json ToJson(const AutoDevAcceptanceGate& acceptance);
 AutoDevJob AutoDevJobFromJson(const nlohmann::json& json);
 AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json);
 AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json);
 AutoDevVerification AutoDevVerificationFromJson(const nlohmann::json& json);
 AutoDevDiffGuard AutoDevDiffGuardFromJson(const nlohmann::json& json);
+AutoDevAcceptanceGate AutoDevAcceptanceGateFromJson(const nlohmann::json& json);
 
 }  // namespace agentos

@@ -433,6 +433,28 @@ std::string NextDiffId(const nlohmann::json& diff_records) {
     return out.str();
 }
 
+std::string NextAcceptanceId(const nlohmann::json& acceptance_records) {
+    int max_acceptance = 0;
+    if (acceptance_records.is_array()) {
+        static const std::regex pattern(R"(^acceptance-([0-9]{3})$)");
+        for (const auto& acceptance : acceptance_records) {
+            if (!acceptance.is_object() ||
+                !acceptance.contains("acceptance_id") ||
+                !acceptance.at("acceptance_id").is_string()) {
+                continue;
+            }
+            std::smatch match;
+            const auto acceptance_id = acceptance.at("acceptance_id").get<std::string>();
+            if (std::regex_match(acceptance_id, match, pattern)) {
+                max_acceptance = std::max(max_acceptance, std::stoi(match[1].str()));
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "acceptance-" << std::setw(3) << std::setfill('0') << (max_acceptance + 1);
+    return out.str();
+}
+
 std::vector<std::string> Lines(const std::string& text) {
     std::vector<std::string> lines;
     std::istringstream input(text);
@@ -713,6 +735,10 @@ std::filesystem::path AutoDevStateStore::verification_path(const std::string& jo
 
 std::filesystem::path AutoDevStateStore::diffs_path(const std::string& job_id) const {
     return job_dir(job_id) / "diffs.json";
+}
+
+std::filesystem::path AutoDevStateStore::acceptance_path(const std::string& job_id) const {
+    return job_dir(job_id) / "acceptance.json";
 }
 
 std::filesystem::path AutoDevStateStore::logs_dir(const std::string& job_id) const {
@@ -1702,6 +1728,147 @@ AutoDevDiffGuardResult AutoDevStateStore::diff_guard(const std::string& job_id, 
     result.task = std::move(task);
     result.diff_guard = std::move(diff);
     result.diffs_path = this->diffs_path(job_id);
+    return result;
+}
+
+AutoDevAcceptanceGateResult AutoDevStateStore::acceptance_gate(
+    const std::string& job_id,
+    const std::string& task_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevAcceptanceGateResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevAcceptanceGateResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (task_id.empty()) {
+        return fail(std::move(job), "task_id is required");
+    }
+    if (!job.spec_revision.has_value() || !job.spec_hash.has_value()) {
+        return fail(std::move(job), "no approved frozen spec is recorded on the job");
+    }
+
+    auto maybe_tasks = load_tasks(job_id, &load_error);
+    if (!maybe_tasks.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    auto task_it = std::find_if(maybe_tasks->begin(), maybe_tasks->end(), [&task_id](const AutoDevTask& task) {
+        return task.task_id == task_id;
+    });
+    if (task_it == maybe_tasks->end()) {
+        return fail(std::move(job), "AutoDev task not found: " + task_id);
+    }
+
+    nlohmann::json acceptance_records = nlohmann::json::array();
+    if (std::filesystem::exists(acceptance_path(job_id))) {
+        try {
+            acceptance_records = nlohmann::json::parse(ReadFile(acceptance_path(job_id)));
+            if (!acceptance_records.is_array()) {
+                acceptance_records = nlohmann::json::array();
+            }
+        } catch (...) {
+            acceptance_records = nlohmann::json::array();
+        }
+    }
+
+    AutoDevAcceptanceGate acceptance;
+    acceptance.acceptance_id = NextAcceptanceId(acceptance_records);
+    acceptance.job_id = job.job_id;
+    acceptance.task_id = task_it->task_id;
+    acceptance.spec_revision = task_it->spec_revision.empty() ? job.spec_revision.value_or("") : task_it->spec_revision;
+    acceptance.checked_at = IsoUtcNow();
+
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.acceptance_gate.started"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task_it->task_id},
+        {"acceptance_id", acceptance.acceptance_id},
+        {"at", acceptance.checked_at},
+    });
+
+    const auto verifications = load_verifications(job_id, nullptr);
+    if (!verifications.has_value()) {
+        acceptance.reasons.push_back("no verification facts recorded");
+    } else {
+        for (auto it = verifications->rbegin(); it != verifications->rend(); ++it) {
+            if (it->task_id == task_it->task_id) {
+                acceptance.verification_id = it->verification_id;
+                if (!it->passed) {
+                    acceptance.reasons.push_back("latest verification did not pass");
+                }
+                break;
+            }
+        }
+        if (!acceptance.verification_id.has_value()) {
+            acceptance.reasons.push_back("no verification facts recorded for task");
+        }
+    }
+
+    const auto diffs = load_diffs(job_id, nullptr);
+    if (!diffs.has_value()) {
+        acceptance.reasons.push_back("no diff guard facts recorded");
+    } else {
+        for (auto it = diffs->rbegin(); it != diffs->rend(); ++it) {
+            if (it->task_id == task_it->task_id) {
+                acceptance.diff_id = it->diff_id;
+                if (!it->passed) {
+                    acceptance.reasons.push_back("latest diff guard did not pass");
+                }
+                break;
+            }
+        }
+        if (!acceptance.diff_id.has_value()) {
+            acceptance.reasons.push_back("no diff guard facts recorded for task");
+        }
+    }
+
+    acceptance.passed = acceptance.verification_id.has_value() &&
+        acceptance.diff_id.has_value() &&
+        acceptance.reasons.empty();
+    if (acceptance.passed) {
+        task_it->status = "passed";
+        task_it->current_activity = "none";
+        task_it->acceptance_passed = task_it->acceptance_total;
+        nlohmann::json task_records = nlohmann::json::array();
+        for (const auto& task : *maybe_tasks) {
+            task_records.push_back(ToJson(task));
+        }
+        WriteFileAtomically(tasks_path(job.job_id), task_records.dump(2) + "\n");
+    }
+
+    acceptance_records.push_back(ToJson(acceptance));
+    WriteFileAtomically(acceptance_path(job.job_id), acceptance_records.dump(2) + "\n");
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.acceptance_gate.completed"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task_it->task_id},
+        {"task_status", task_it->status},
+        {"acceptance_id", acceptance.acceptance_id},
+        {"passed", acceptance.passed},
+        {"verification_id", acceptance.verification_id.value_or("")},
+        {"diff_id", acceptance.diff_id.value_or("")},
+        {"reasons", acceptance.reasons},
+        {"at", IsoUtcNow()},
+    });
+
+    AutoDevAcceptanceGateResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.task = *task_it;
+    result.acceptance = std::move(acceptance);
+    result.acceptance_path = this->acceptance_path(job_id);
     return result;
 }
 

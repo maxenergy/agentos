@@ -280,4 +280,32 @@ AutoDevDiffGuard AutoDevDiffGuardFromJson(const nlohmann::json& json) {
     return diff_guard;
 }
 
+nlohmann::json ToJson(const AutoDevAcceptanceGate& acceptance) {
+    return nlohmann::json{
+        {"acceptance_id", acceptance.acceptance_id},
+        {"job_id", acceptance.job_id},
+        {"task_id", acceptance.task_id},
+        {"spec_revision", acceptance.spec_revision},
+        {"passed", acceptance.passed},
+        {"verification_id", OptionalString(acceptance.verification_id)},
+        {"diff_id", OptionalString(acceptance.diff_id)},
+        {"reasons", acceptance.reasons},
+        {"checked_at", acceptance.checked_at},
+    };
+}
+
+AutoDevAcceptanceGate AutoDevAcceptanceGateFromJson(const nlohmann::json& json) {
+    AutoDevAcceptanceGate acceptance;
+    acceptance.acceptance_id = json.value("acceptance_id", std::string{});
+    acceptance.job_id = json.value("job_id", std::string{});
+    acceptance.task_id = json.value("task_id", std::string{});
+    acceptance.spec_revision = json.value("spec_revision", std::string{});
+    acceptance.passed = json.value("passed", false);
+    acceptance.verification_id = ReadOptionalString(json, "verification_id");
+    acceptance.diff_id = ReadOptionalString(json, "diff_id");
+    acceptance.reasons = ReadStringVector(json, "reasons");
+    acceptance.checked_at = json.value("checked_at", std::string{});
+    return acceptance;
+}
+
 }  // namespace agentos

@@ -2629,6 +2629,33 @@ void TestAutoDevCommands() {
         "autodev diff-guard should report passed=true for allowed file");
     Expect(std::filesystem::exists(executable_job_dir / "diffs.json"),
         "autodev diff-guard should write diffs.json under runtime store");
+    const auto acceptance_gate = RunAgentos(workspace, {
+        "autodev",
+        "acceptance-gate",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(acceptance_gate.exit_code == 0,
+        "autodev acceptance-gate should pass when latest verification and diff guard passed");
+    Expect(acceptance_gate.output.find("AutoDev acceptance gate checked") != std::string::npos,
+        "autodev acceptance-gate should print heading");
+    Expect(acceptance_gate.output.find("acceptance_id: acceptance-001") != std::string::npos,
+        "autodev acceptance-gate should print acceptance id");
+    Expect(acceptance_gate.output.find("passed:        true") != std::string::npos,
+        "autodev acceptance-gate should report passed=true");
+    Expect(acceptance_gate.output.find("task_status:   passed") != std::string::npos,
+        "autodev acceptance-gate should mark the task passed");
+    Expect(std::filesystem::exists(executable_job_dir / "acceptance.json"),
+        "autodev acceptance-gate should write acceptance.json under runtime store");
+    const auto accepted_tasks = ReadTextFile(executable_job_dir / "tasks.json");
+    Expect(accepted_tasks.find("\"status\": \"passed\"") != std::string::npos,
+        "autodev acceptance-gate should persist passed task status");
+    const auto accepted_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + executable_job_id});
+    Expect(accepted_status.exit_code == 0,
+        "autodev status should read job after acceptance gate");
+    Expect(accepted_status.output.find("Status: running") != std::string::npos,
+        "autodev acceptance-gate should not mark the job done");
+    Expect(accepted_status.output.find("passed: 1") != std::string::npos,
+        "autodev status should count accepted task as passed");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);
@@ -2663,6 +2690,8 @@ void TestAutoDevCommands() {
         "autodev verify-task should append a verification completed event");
     Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,
         "autodev diff-guard should append a diff guard completed event");
+    Expect(executable_events.output.find("autodev.acceptance_gate.completed") != std::string::npos,
+        "autodev acceptance-gate should append an acceptance completed event");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

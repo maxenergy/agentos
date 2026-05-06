@@ -48,6 +48,7 @@ void PrintUsage() {
         << "  agentos autodev verifications job_id=<job_id>\n"
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev diffs job_id=<job_id>\n"
+        << "  agentos autodev acceptance-gate job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -647,6 +648,44 @@ int RunDiffs(const std::filesystem::path& workspace, const int argc, char* argv[
     return 0;
 }
 
+int RunAcceptanceGate(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev acceptance-gate failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev acceptance-gate failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+    const auto task_id_it = options.find("task_id");
+    if (task_id_it == options.end() || task_id_it->second.empty()) {
+        std::cerr << "autodev acceptance-gate failed: task_id is required\n";
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.acceptance_gate(job_id_it->second, task_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev acceptance-gate failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev acceptance gate checked\n"
+              << "job_id:        " << result.acceptance.job_id << '\n'
+              << "task_id:       " << result.acceptance.task_id << '\n'
+              << "acceptance_id: " << result.acceptance.acceptance_id << '\n'
+              << "passed:        " << (result.acceptance.passed ? "true" : "false") << '\n'
+              << "task_status:   " << result.task.status << '\n'
+              << "verification:  " << result.acceptance.verification_id.value_or("(none)") << '\n'
+              << "diff:          " << result.acceptance.diff_id.value_or("(none)") << '\n'
+              << "acceptance:    " << result.acceptance_path.string() << '\n';
+    PrintStringList("reasons:       ", result.acceptance.reasons);
+    std::cout << "\nAcceptanceGate updated only the task when runtime facts passed. Job completion was not evaluated.\n";
+    return result.acceptance.passed ? 0 : 1;
+}
+
 int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -884,6 +923,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "diffs") {
         return RunDiffs(workspace, argc, argv);
+    }
+    if (subcommand == "acceptance-gate" || subcommand == "acceptance_gate") {
+        return RunAcceptanceGate(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);

@@ -763,6 +763,32 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     Expect(diffs.has_value() && diffs->size() == 1,
         "load_diffs should read diff guard records");
     {
+        const auto tasks_before_acceptance = nlohmann::json::parse(ReadFile(store.tasks_path(submit.job.job_id)));
+        Expect(tasks_before_acceptance[0]["status"] == "pending",
+            "recording verification and diff guard facts should not change task status before AcceptanceGate");
+    }
+    const auto accepted = store.acceptance_gate(submit.job.job_id, "task-001");
+    Expect(accepted.success, "acceptance_gate should evaluate recorded runtime facts");
+    Expect(accepted.acceptance.acceptance_id == "acceptance-001",
+        "first acceptance gate check should use acceptance-001");
+    Expect(accepted.acceptance.passed,
+        "acceptance_gate should pass when latest verification and diff guard passed");
+    Expect(accepted.acceptance.verification_id == "verify-001",
+        "acceptance_gate should link latest verification fact");
+    Expect(accepted.acceptance.diff_id == "diff-001",
+        "acceptance_gate should link latest diff guard fact");
+    Expect(accepted.task.status == "passed",
+        "acceptance_gate should mark the task passed when runtime facts pass");
+    Expect(std::filesystem::exists(store.acceptance_path(submit.job.job_id)),
+        "acceptance_gate should write acceptance.json under runtime store");
+    {
+        const auto accepted_tasks = nlohmann::json::parse(ReadFile(store.tasks_path(submit.job.job_id)));
+        Expect(accepted_tasks[0]["status"] == "passed",
+            "acceptance_gate should persist passed task status");
+        Expect(accepted_tasks[0]["acceptance_passed"] == accepted_tasks[0]["acceptance_total"],
+            "acceptance_gate should mark all task acceptance criteria passed");
+    }
+    {
         std::ofstream blocked(approved.job.job_worktree_path / "package.json", std::ios::binary);
         blocked << "{}\n";
     }
@@ -835,6 +861,8 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record diff guard started event");
     Expect(events.find("\"type\":\"autodev.diff_guard.completed\"") != std::string::npos,
         "events.ndjson should record diff guard completed event");
+    Expect(events.find("\"type\":\"autodev.acceptance_gate.completed\"") != std::string::npos,
+        "events.ndjson should record acceptance gate completed event");
     Expect(events.find("\"verify_report_path\"") != std::string::npos,
         "verification completed event should link VERIFY.md report path");
     Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,
@@ -842,11 +870,11 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     Expect(events.find("\"event_stream_mode\":\"synthetic\"") != std::string::npos,
         "execution blocked event should record adapter event stream mode");
     const auto persisted_tasks = nlohmann::json::parse(ReadFile(store.tasks_path(submit.job.job_id)));
-    Expect(persisted_tasks[0]["status"] == "pending",
-        "recording execution and verification facts should not change task status");
+    Expect(persisted_tasks[0]["status"] == "passed",
+        "AcceptanceGate should be the first runtime step that changes task status");
     const auto persisted_job = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
     Expect(persisted_job["status"] == "running",
-        "recording execution blocked event should not change job status");
+        "acceptance_gate should not mark the job done");
 }
 
 }  // namespace
