@@ -157,6 +157,16 @@ struct AutoDevCleanupWorktreeResult {
     bool removed = false;
 };
 
+struct AutoDevCrashRecoveryResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    int recovered_count = 0;
+    bool blocked = false;
+    bool stale_lock_removed = false;
+    std::vector<std::string> findings;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -223,6 +233,7 @@ public:
     AutoDevJobControlResult resume_job(const std::string& job_id);
     AutoDevJobControlResult cancel_job(const std::string& job_id);
     AutoDevCleanupWorktreeResult cleanup_worktree(const std::string& job_id);
+    AutoDevCrashRecoveryResult recover_crash(const std::string& job_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
         const std::string& job_id,

@@ -78,6 +78,8 @@ docs/schemas/AUTODEV_SPEC.schema.json
 
 The command does not approve specs, mark tasks passed, run Codex execution, or mark jobs done. Jobs in `awaiting_approval` still require an explicit hash-bound `approve-spec` command.
 
+`agentos autodev recover-crash job_id=<job_id>` inspects crash-sensitive runtime state for a single job. It removes stale `job.lock` files so otherwise-clean jobs can continue, detects unreadable or malformed `turns.json`, marks in-flight turn records as failed, recreates missing prompt/response artifact placeholders, and blocks the job when runtime facts are incomplete and need inspection.
+
 ## Execution Adapter
 
 `agentos autodev execute-next-task job_id=<job_id> execution_adapter=codex_cli` records a pre-task snapshot, builds a task prompt, runs the configured Codex CLI command in the job worktree, and records a turn fact with prompt artifact, response artifact, exit code, duration, and changed files. The command defaults to `codex exec --skip-git-repo-check --sandbox workspace-write -`; callers can override it with `codex_cli_command=<command>` or `AGENTOS_AUTODEV_CODEX_CLI_COMMAND`.
@@ -112,5 +114,6 @@ Only AgentOS runtime gates mutate authoritative state:
 - `final-review` may advance a job to `pr_ready`.
 - `complete-job` / `mark-done` may advance a `pr_ready` job with latest passed final review to `done`.
 - `recover-blocked` may rerun setup gates selected from runtime `next_action`; it cannot approve specs or start execution.
+- `recover-crash` may repair stale locks and incomplete turn artifacts; it blocks the job when runtime facts require inspection.
 - `cleanup-worktree` may remove a job worktree only after the job is `done` or `cancelled`; runtime facts remain in the AgentOS store.
 - `pause` and `cancel` mutate job state, append events, and are observed by the Codex CLI execution path; a running `execute-next-task`, `run-task`, or `run-job` process is terminated when it sees `paused` or `cancelled`. `resume` only changes runtime state and does not restart an interrupted process.

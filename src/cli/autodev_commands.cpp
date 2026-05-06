@@ -560,6 +560,7 @@ void PrintUsage() {
         << "  agentos autodev validate-spec job_id=<job_id>\n"
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
         << "  agentos autodev recover-blocked job_id=<job_id> [skill_pack_path=<path>]\n"
+        << "  agentos autodev recover-crash job_id=<job_id>\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
         << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
@@ -948,6 +949,40 @@ int RunRecoverBlocked(const std::filesystem::path& workspace, const int argc, ch
     print_job(result_job);
     std::cout << "Recovery command only reran the blocked runtime gate; it did not approve specs or start Codex execution.\n";
     return 0;
+}
+
+int RunRecoverCrash(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev recover-crash failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev recover-crash failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.recover_crash(job_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev recover-crash failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev crash recovery checked\n"
+              << "job_id:              " << result.job.job_id << '\n'
+              << "status:              " << result.job.status << '\n'
+              << "phase:               " << result.job.phase << '\n'
+              << "next_action:         " << result.job.next_action << '\n'
+              << "blocked:             " << (result.blocked ? "true" : "false") << '\n'
+              << "recovered_count:     " << result.recovered_count << '\n'
+              << "stale_lock_removed:  " << (result.stale_lock_removed ? "true" : "false") << '\n';
+    if (result.job.blocker.has_value()) {
+        std::cout << "blocker:             " << *result.job.blocker << '\n';
+    }
+    PrintStringList("findings:", result.findings);
+    return result.blocked ? 1 : 0;
 }
 
 int RunTasks(const std::filesystem::path& workspace, const int argc, char* argv[]) {
@@ -2832,6 +2867,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "recover-blocked" || subcommand == "recover_blocked") {
         return RunRecoverBlocked(workspace, argc, argv);
+    }
+    if (subcommand == "recover-crash" || subcommand == "recover_crash") {
+        return RunRecoverCrash(workspace, argc, argv);
     }
     if (subcommand == "tasks") {
         return RunTasks(workspace, argc, argv);

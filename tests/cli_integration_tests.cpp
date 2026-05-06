@@ -3099,6 +3099,56 @@ void TestAutoDevCommands() {
         "autodev run-task should not mark the job done");
     Expect(pipeline_status.output.find("Phase: final_review") != std::string::npos,
         "autodev run-task should advance all-passed jobs to final_review");
+    {
+        std::ofstream stale_lock(pipeline_job_dir / "job.lock", std::ios::binary | std::ios::trunc);
+        stale_lock << "stale lock from crashed process\n";
+    }
+    std::filesystem::remove(pipeline_job_dir / "responses" / "turn-001.md");
+    {
+        auto turns_json = ReadTextFile(pipeline_job_dir / "turns.json");
+        const auto status_pos = turns_json.find("\"status\": \"completed\"");
+        Expect(status_pos != std::string::npos,
+            "pipeline fixture should have a completed turn before crash recovery test mutation");
+        if (status_pos != std::string::npos) {
+            turns_json.replace(status_pos, std::string("\"status\": \"completed\"").size(), "\"status\": \"running\"");
+            std::ofstream turns_out(pipeline_job_dir / "turns.json", std::ios::binary | std::ios::trunc);
+            turns_out << turns_json;
+        }
+    }
+    const auto crash_recovery = RunAgentos(workspace, {"autodev", "recover-crash", "job_id=" + pipeline_job_id});
+    Expect(crash_recovery.exit_code != 0,
+        "autodev recover-crash should return nonzero when recovery blocks the job");
+    Expect(crash_recovery.output.find("AutoDev crash recovery checked") != std::string::npos,
+        "autodev recover-crash should print a recovery heading");
+    Expect(crash_recovery.output.find("blocked:             true") != std::string::npos,
+        "autodev recover-crash should report blocked recovery for incomplete runtime facts");
+    Expect(crash_recovery.output.find("stale_lock_removed:  true") != std::string::npos,
+        "autodev recover-crash should remove stale job runtime locks");
+    Expect(crash_recovery.output.find("marked in-flight turn failed") != std::string::npos,
+        "autodev recover-crash should identify in-flight turns");
+    Expect(crash_recovery.output.find("recreated missing response_artifact") != std::string::npos,
+        "autodev recover-crash should identify missing response artifacts");
+    Expect(!std::filesystem::exists(pipeline_job_dir / "job.lock"),
+        "autodev recover-crash should remove stale job.lock");
+    Expect(std::filesystem::exists(pipeline_job_dir / "responses" / "turn-001.md"),
+        "autodev recover-crash should recreate missing response artifact placeholders");
+    const auto recovered_turns = ReadTextFile(pipeline_job_dir / "turns.json");
+    Expect(recovered_turns.find("\"status\": \"failed\"") != std::string::npos,
+        "autodev recover-crash should mark in-flight turns failed");
+    Expect(recovered_turns.find("crash_recovered_missing_response_artifact") != std::string::npos,
+        "autodev recover-crash should annotate missing response artifact recovery");
+    const auto crash_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + pipeline_job_id});
+    Expect(crash_status.exit_code == 0,
+        "autodev status should read crash-recovered jobs");
+    Expect(crash_status.output.find("Status: blocked") != std::string::npos,
+        "autodev recover-crash should block jobs with incomplete runtime facts");
+    Expect(crash_status.output.find("AutoDev crash recovery found incomplete runtime facts") != std::string::npos,
+        "autodev recover-crash should persist a blocker");
+    const auto crash_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + pipeline_job_id});
+    Expect(crash_events.exit_code == 0,
+        "autodev events should list crash recovery events");
+    Expect(crash_events.output.find("autodev.crash_recovery.completed") != std::string::npos,
+        "autodev recover-crash should append a crash recovery event");
     const auto run_job_submit = RunAgentos(workspace, {
         "autodev",
         "submit",

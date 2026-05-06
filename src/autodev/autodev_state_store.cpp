@@ -3205,6 +3205,125 @@ AutoDevCleanupWorktreeResult AutoDevStateStore::cleanup_worktree(const std::stri
     return result;
 }
 
+AutoDevCrashRecoveryResult AutoDevStateStore::recover_crash(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevCrashRecoveryResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    AutoDevCrashRecoveryResult result;
+    result.success = true;
+    result.job = job;
+
+    const auto lock_path = job_dir(job.job_id) / "job.lock";
+    if (std::filesystem::exists(lock_path)) {
+        std::error_code ec;
+        std::filesystem::remove(lock_path, ec);
+        if (!ec) {
+            result.stale_lock_removed = true;
+            result.recovered_count += 1;
+            result.findings.push_back("removed stale job runtime lock");
+        } else {
+            result.findings.push_back("could not remove stale job runtime lock: " + ec.message());
+        }
+    }
+
+    nlohmann::json turn_records = nlohmann::json::array();
+    bool turns_changed = false;
+    bool should_block = false;
+    if (std::filesystem::exists(turns_path(job.job_id))) {
+        try {
+            turn_records = nlohmann::json::parse(ReadFile(turns_path(job.job_id)));
+            if (!turn_records.is_array()) {
+                should_block = true;
+                result.findings.push_back("turns.json is not an array");
+            }
+        } catch (const std::exception& e) {
+            should_block = true;
+            result.findings.push_back(std::string("turns.json is unreadable: ") + e.what());
+        }
+    }
+
+    if (turn_records.is_array()) {
+        for (auto& record : turn_records) {
+            if (!record.is_object()) {
+                should_block = true;
+                result.findings.push_back("turns.json contains a non-object turn record");
+                continue;
+            }
+            const auto turn_id = record.value("turn_id", std::string{});
+            const auto status = record.value("status", std::string{});
+            if (status == "running" || status == "in_progress" || status == "started") {
+                record["status"] = "failed";
+                record["completed_at"] = IsoUtcNow();
+                record["error_code"] = "crash_recovered_inflight_turn";
+                record["error_message"] = "AutoDev crash recovery found an in-flight turn";
+                record["summary"] = "AutoDev crash recovery marked an in-flight turn as failed";
+                turns_changed = true;
+                should_block = true;
+                result.recovered_count += 1;
+                result.findings.push_back("marked in-flight turn failed: " + turn_id);
+            }
+            for (const auto* key : {"prompt_artifact", "response_artifact"}) {
+                if (!record.contains(key) || !record.at(key).is_string()) {
+                    continue;
+                }
+                const auto artifact_path = std::filesystem::path(record.at(key).get<std::string>());
+                if (std::filesystem::exists(artifact_path)) {
+                    continue;
+                }
+                WriteFileAtomically(
+                    artifact_path,
+                    "# AutoDev Crash Recovery Artifact\n\n"
+                    "AutoDev crash recovery recreated this placeholder because the original artifact was missing.\n"
+                    "Treat the related runtime turn as incomplete until a human reviews it.\n");
+                if (std::string(key) == "response_artifact") {
+                    record["status"] = "failed";
+                    record["completed_at"] = IsoUtcNow();
+                    record["error_code"] = "crash_recovered_missing_response_artifact";
+                    record["error_message"] = "AutoDev crash recovery recreated a missing response artifact";
+                    record["summary"] = "AutoDev crash recovery found a missing response artifact";
+                }
+                turns_changed = true;
+                should_block = true;
+                result.recovered_count += 1;
+                result.findings.push_back("recreated missing " + std::string(key) + " for turn: " + turn_id);
+            }
+        }
+    }
+    if (turns_changed) {
+        WriteFileAtomically(turns_path(job.job_id), turn_records.dump(2) + "\n");
+    }
+
+    if (should_block) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.next_action = "inspect_runtime";
+        job.blocker = "AutoDev crash recovery found incomplete runtime facts";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        result.job = job;
+        result.blocked = true;
+    }
+
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.crash_recovery.completed"},
+        {"job_id", job.job_id},
+        {"status", result.job.status},
+        {"phase", result.job.phase},
+        {"next_action", result.job.next_action},
+        {"blocked", result.blocked},
+        {"recovered_count", result.recovered_count},
+        {"stale_lock_removed", result.stale_lock_removed},
+        {"findings", result.findings},
+        {"at", IsoUtcNow()},
+    });
+    return result;
+}
+
 std::optional<AutoDevJob> AutoDevStateStore::load_job(
     const std::string& job_id,
     std::string* error_message) const {
