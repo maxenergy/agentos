@@ -649,6 +649,8 @@ void PrintUsage() {
         << "  agentos agents\n"
         << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place]\n"
         << "  agentos autodev status job_id=<job_id>\n"
+        << "  agentos autodev status job_id=<job_id> --watch [iterations=1] [interval_ms=1000]\n"
+        << "  agentos autodev watch job_id=<job_id> [iterations=1] [interval_ms=1000]\n"
         << "  agentos autodev summary job_id=<job_id>\n"
         << "  agentos autodev prepare-workspace job_id=<job_id>\n"
         << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"

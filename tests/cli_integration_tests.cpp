@@ -3141,6 +3141,31 @@ void TestAutoDevCommands() {
         "autodev status should read cancelled job");
     Expect(cancelled_status.output.find("Status: cancelled") != std::string::npos,
         "autodev status should show cancelled status");
+    const auto watch_cancelled_status = RunAgentos(workspace, {
+        "autodev",
+        "status",
+        "job_id=" + failing_verify_job_id,
+        "--watch",
+        "iterations=1",
+        "interval_ms=0"});
+    Expect(watch_cancelled_status.exit_code == 0,
+        "autodev status --watch should poll job status once when iterations=1");
+    Expect(watch_cancelled_status.output.find("AutoDev watch") != std::string::npos,
+        "autodev status --watch should print watch heading");
+    Expect(watch_cancelled_status.output.find("status:      cancelled") != std::string::npos,
+        "autodev status --watch should show current status");
+    Expect(watch_cancelled_status.output.find("latest:      autodev.job.cancelled") != std::string::npos,
+        "autodev status --watch should show the latest event");
+    const auto watch_alias = RunAgentos(workspace, {
+        "autodev",
+        "watch",
+        "job_id=" + failing_verify_job_id,
+        "iterations=1",
+        "interval_ms=0"});
+    Expect(watch_alias.exit_code == 0,
+        "autodev watch should alias status --watch");
+    Expect(watch_alias.output.find("AutoDev watch") != std::string::npos,
+        "autodev watch should print watch heading");
     const auto cancelled_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + failing_verify_job_id});
     Expect(cancelled_events.exit_code == 0,
         "autodev events should read pause/resume/cancel events");

@@ -4,12 +4,14 @@
 #include "autodev/autodev_job_id.hpp"
 #include "autodev/autodev_state_store.hpp"
 
+#include <chrono>
 #include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -26,6 +28,9 @@ std::map<std::string, std::string> ParseOptionsFromArgs(const int argc, char* ar
         }
         const auto separator = argument.find('=');
         if (separator == std::string::npos) {
+            if (!argument.empty()) {
+                options[argument] = "true";
+            }
             continue;
         }
         options[argument.substr(0, separator)] = argument.substr(separator + 1);
@@ -33,11 +38,28 @@ std::map<std::string, std::string> ParseOptionsFromArgs(const int argc, char* ar
     return options;
 }
 
+int ParseIntOption(
+    const std::map<std::string, std::string>& options,
+    const std::string& key,
+    const int default_value) {
+    const auto it = options.find(key);
+    if (it == options.end() || it->second.empty()) {
+        return default_value;
+    }
+    try {
+        return std::stoi(it->second);
+    } catch (...) {
+        return default_value;
+    }
+}
+
 void PrintUsage() {
     std::cerr
         << "Usage:\n"
         << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false]\n"
         << "  agentos autodev status job_id=<job_id>\n"
+        << "  agentos autodev status job_id=<job_id> --watch [iterations=1] [interval_ms=1000]\n"
+        << "  agentos autodev watch job_id=<job_id> [iterations=1] [interval_ms=1000]\n"
         << "  agentos autodev summary job_id=<job_id>\n"
         << "  agentos autodev prepare-workspace job_id=<job_id>\n"
         << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
@@ -1504,6 +1526,49 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
         return 1;
     }
 
+    const auto watch_requested = options.find("watch") != options.end() ||
+        (argc >= 3 && std::string(argv[2]) == "watch");
+    if (watch_requested) {
+        const auto iterations = std::max(1, ParseIntOption(options, "iterations", 1));
+        const auto interval_ms = std::max(0, ParseIntOption(options, "interval_ms", 1000));
+        std::cout << "AutoDev watch\n"
+                  << "job_id:      " << job_id_it->second << '\n'
+                  << "iterations:  " << iterations << '\n'
+                  << "interval_ms: " << interval_ms << '\n';
+        for (int iteration = 1; iteration <= iterations; ++iteration) {
+            const auto watched_job = store.load_job(job_id_it->second, &error);
+            if (!watched_job.has_value()) {
+                std::cerr << "autodev watch failed: " << error << '\n';
+                return 1;
+            }
+            const auto event_lines = store.load_event_lines(job_id_it->second, nullptr)
+                .value_or(std::vector<std::string>{});
+            std::string latest_event = "(none)";
+            if (!event_lines.empty()) {
+                try {
+                    const auto event = nlohmann::json::parse(event_lines.back());
+                    latest_event = event.value("type", "unknown");
+                    if (event.contains("at") && event.at("at").is_string()) {
+                        latest_event += " at " + event.at("at").get<std::string>();
+                    }
+                } catch (...) {
+                    latest_event = "unparseable";
+                }
+            }
+            std::cout << '\n'
+                      << "Tick " << iteration << "/" << iterations << '\n'
+                      << "  status:      " << watched_job->status << '\n'
+                      << "  phase:       " << watched_job->phase << '\n'
+                      << "  next_action: " << watched_job->next_action << '\n'
+                      << "  events:      " << event_lines.size() << '\n'
+                      << "  latest:      " << latest_event << '\n';
+            if (iteration < iterations && interval_ms > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+            }
+        }
+        return 0;
+    }
+
     std::cout << "Job: " << job->job_id << '\n'
               << "Status: " << job->status << '\n'
               << "Phase: " << job->phase << '\n'
@@ -1598,7 +1663,7 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     if (subcommand == "submit") {
         return RunSubmit(workspace, argc, argv);
     }
-    if (subcommand == "status") {
+    if (subcommand == "status" || subcommand == "watch") {
         return RunStatus(workspace, argc, argv);
     }
     if (subcommand == "summary") {
