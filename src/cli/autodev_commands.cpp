@@ -50,6 +50,7 @@ void PrintUsage() {
         << "  agentos autodev diffs job_id=<job_id>\n"
         << "  agentos autodev acceptance-gate job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev final-review job_id=<job_id>\n"
+        << "  agentos autodev final-reviews job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -723,6 +724,43 @@ int RunFinalReview(const std::filesystem::path& workspace, const int argc, char*
     return result.final_review.passed ? 0 : 1;
 }
 
+int RunFinalReviews(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev final-reviews failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev final-reviews failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto final_reviews = store.load_final_reviews(job_id_it->second, &error);
+    if (!final_reviews.has_value()) {
+        std::cerr << "autodev final-reviews failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev final reviews\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << final_reviews->size() << '\n';
+    for (const auto& final_review : *final_reviews) {
+        std::cout << '\n'
+                  << "- final_review_id: " << final_review.final_review_id << '\n'
+                  << "  passed:          " << (final_review.passed ? "true" : "false") << '\n'
+                  << "  tasks:           " << final_review.tasks_passed << "/" << final_review.tasks_total << '\n'
+                  << "  checked_at:      " << final_review.checked_at << '\n';
+        PrintStringList("  changed_files:           ", final_review.changed_files);
+        PrintStringList("  blocked_file_violations:", final_review.blocked_file_violations);
+        PrintStringList("  outside_allowed_files:  ", final_review.outside_allowed_files);
+        PrintStringList("  reasons:                ", final_review.reasons);
+    }
+    return 0;
+}
+
 int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -970,6 +1008,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "final-review" || subcommand == "final_review") {
         return RunFinalReview(workspace, argc, argv);
+    }
+    if (subcommand == "final-reviews" || subcommand == "final_reviews") {
+        return RunFinalReviews(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);

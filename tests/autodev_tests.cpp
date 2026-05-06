@@ -809,6 +809,12 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "final_review should record pr_ready phase after passing");
     Expect(std::filesystem::exists(store.final_review_path(submit.job.job_id)),
         "final_review should write final_review.json under runtime store");
+    std::string final_reviews_error;
+    const auto final_reviews = store.load_final_reviews(submit.job.job_id, &final_reviews_error);
+    Expect(final_reviews.has_value() && final_reviews->size() == 1,
+        "load_final_reviews should read final review records");
+    Expect(final_reviews.has_value() && final_reviews->front().final_review_id == "final-review-001",
+        "load_final_reviews should preserve final review id");
     Expect(std::filesystem::exists(final_review.final_review_report_path),
         "final_review should write FINAL_REVIEW.md summary under job worktree");
     Expect(final_review.final_review_report_path == approved.job.job_worktree_path / "docs" / "goal" / "FINAL_REVIEW.md",

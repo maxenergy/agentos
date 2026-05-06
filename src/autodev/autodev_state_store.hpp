@@ -164,6 +164,9 @@ public:
     std::optional<std::vector<AutoDevDiffGuard>> load_diffs(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevFinalReview>> load_final_reviews(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
     std::optional<std::vector<std::string>> load_event_lines(
         const std::string& job_id,
         std::string* error_message = nullptr) const;

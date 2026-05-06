@@ -2683,6 +2683,15 @@ void TestAutoDevCommands() {
         "autodev status should show pr_ready after final review");
     Expect(final_review_status.output.find("Next action:\n  none") != std::string::npos,
         "autodev status should show no next action after pr_ready");
+    const auto final_reviews = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + executable_job_id});
+    Expect(final_reviews.exit_code == 0,
+        "autodev final-reviews should list final review records");
+    Expect(final_reviews.output.find("AutoDev final reviews") != std::string::npos,
+        "autodev final-reviews should print heading");
+    Expect(final_reviews.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-reviews should include final-review-001");
+    Expect(final_reviews.output.find("passed:          true") != std::string::npos,
+        "autodev final-reviews should show passed final review");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);

@@ -2327,6 +2327,47 @@ std::optional<std::vector<AutoDevDiffGuard>> AutoDevStateStore::load_diffs(
     }
 }
 
+std::optional<std::vector<AutoDevFinalReview>> AutoDevStateStore::load_final_reviews(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = final_review_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev final review records not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev final review records: final_review.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevFinalReview> final_reviews;
+        for (const auto& final_review_json : json) {
+            final_reviews.push_back(AutoDevFinalReviewFromJson(final_review_json));
+        }
+        return final_reviews;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev final review records: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
 std::optional<std::vector<std::string>> AutoDevStateStore::load_event_lines(
     const std::string& job_id,
     std::string* error_message) const {
