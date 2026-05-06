@@ -195,6 +195,34 @@ std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 1
     return text.substr(0, max_chars) + "...";
 }
 
+struct AgentSkillSummary {
+    std::string name;
+    std::filesystem::path path;
+};
+
+std::vector<AgentSkillSummary> ListRepoAgentSkills(const std::filesystem::path& workspace) {
+    std::vector<AgentSkillSummary> skills;
+    const auto root = workspace / ".agents" / "skills";
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+        return skills;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        const auto skill_file = entry.path() / "SKILL.md";
+        if (!std::filesystem::exists(skill_file, ec) || !std::filesystem::is_regular_file(skill_file, ec)) {
+            continue;
+        }
+        skills.push_back({entry.path().filename().string(), skill_file});
+    }
+    std::sort(skills.begin(), skills.end(), [](const AgentSkillSummary& lhs, const AgentSkillSummary& rhs) {
+        return lhs.name < rhs.name;
+    });
+    return skills;
+}
+
 bool LooksLikeMemoryQuestion(const std::string& line) {
     static const std::regex memory_re(
         R"((\b(what\s+do\s+you\s+remember|what\s+is\s+in\s+memory|show\s+memory|memory\s+summary|remembered|lessons?)\b)|你.*(记得|记住|记忆|学到).*(什么|哪些|内容)|你(还)?记得什么|你记住了什么|你的记忆|记忆里有什么|学到了什么|记住了哪些|记得哪些|详细记忆|完整记忆|全部记忆|记住的教训|可复用工作流|记忆详情)",
@@ -691,7 +719,8 @@ bool PrintLocalBrowserErrorFollowup(const std::string& line,
     return true;
 }
 
-void PrintRegisteredSkillsGuide(const SkillRegistry& skill_registry) {
+void PrintRegisteredSkillsGuide(const SkillRegistry& skill_registry,
+                                const std::filesystem::path& workspace) {
     const auto skills = skill_registry.list();
     if (skills.empty()) {
         std::cout << "当前没有注册 skill。\n\n";
@@ -736,6 +765,16 @@ void PrintRegisteredSkillsGuide(const SkillRegistry& skill_registry) {
               << "  run <skill_name> key=value ...\n"
               << "  skills\n"
               << "  如何使用 <skill_name> 技能？\n\n";
+
+    const auto agent_skills = ListRepoAgentSkills(workspace);
+    if (!agent_skills.empty()) {
+        std::cout << "仓库级 agent skills (" << agent_skills.size()
+                  << ", 供 Codex/Claude 等代理读取，不是 `run` 调用的 runtime skill):\n";
+        for (const auto& skill : agent_skills) {
+            std::cout << "  " << skill.name << "  path=" << skill.path.string() << '\n';
+        }
+        std::cout << '\n';
+    }
 }
 
 void PrintRegisteredAgentsGuide(const AgentRegistry& agent_registry) {
@@ -1916,7 +1955,7 @@ int RunInteractiveCommand(
 
         // ── skills ──────────────────────────────────────────────────────
         if (command == "skills") {
-            PrintRegisteredSkillsGuide(skill_registry);
+            PrintRegisteredSkillsGuide(skill_registry, workspace);
             continue;
         }
 
@@ -2141,7 +2180,7 @@ int RunInteractiveCommand(
                 continue;
             }
             if (LooksLikeSkillListQuestion(line)) {
-                PrintRegisteredSkillsGuide(skill_registry);
+                PrintRegisteredSkillsGuide(skill_registry, workspace);
                 continue;
             }
             if (LooksLikeMemoryQuestion(line)) {

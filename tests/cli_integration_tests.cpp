@@ -373,6 +373,27 @@ void TestAgentsCommand() {
     Expect(result.output.find("codex_cli") != std::string::npos, "agents command should list codex_cli");
 }
 
+void TestSkillsCommandShowsRepoAgentSkills() {
+    const auto workspace = FreshWorkspace("skills_repo_agent_skills");
+    const auto skill_dir = workspace / ".agents" / "skills" / "sample-agent-skill";
+    std::filesystem::create_directories(skill_dir);
+    {
+        std::ofstream output(skill_dir / "SKILL.md", std::ios::binary);
+        output << "# sample-agent-skill\n";
+    }
+
+    const auto result = RunAgentosWithStdin(workspace, {"interactive"}, "skills\nexit\n");
+    Expect(result.exit_code == 0, "skills command should succeed");
+    Expect(result.output.find("可用 skill") != std::string::npos,
+        "skills command should still list runtime skills");
+    Expect(result.output.find("仓库级 agent skills") != std::string::npos,
+        "skills command should list repo-level agent skills separately");
+    Expect(result.output.find("sample-agent-skill") != std::string::npos,
+        "skills command should include repo-level agent skill names");
+    Expect(result.output.find("不是 `run` 调用的 runtime skill") != std::string::npos,
+        "skills command should explain agent skills are not runtime skills");
+}
+
 void TestPluginsCommand() {
     const auto workspace = FreshWorkspace("plugins");
     std::filesystem::create_directories(workspace / "runtime" / "plugin_specs");
@@ -2288,6 +2309,7 @@ void TestDiagnosticsCommand() {
 
 int main() {
     TestAgentsCommand();
+    TestSkillsCommandShowsRepoAgentSkills();
     TestCliSpecsCommand();
     TestSpecNameConflictsAreAudited();
     TestPluginNameConflictsWithExternalCliSpec();
