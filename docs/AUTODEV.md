@@ -90,6 +90,8 @@ Execution turn records do not mark tasks passed. Task state remains controlled b
 
 `agentos autodev run-job job_id=<job_id>` loops `run-task` across pending tasks until the job reaches `final_review`. It stops on the first failed task pipeline and does not run `final-review`, `complete-job`, or cleanup.
 
+Mutating job commands acquire `<agentos_workspace>/runtime/autodev/jobs/<job_id>/job.lock` before writing runtime facts. The lock prevents overlapping execution, gate, rollback, recovery, pipeline, run-loop, completion, and cleanup commands from writing the same job concurrently. `pause`, `resume`, and `cancel` remain outside this lock so they can interrupt a running adapter.
+
 ## Repair Flow
 
 Failed verification, DiffGuard, AcceptanceGate, and FinalReview checks can record repair-needed facts in `repairs.json` and write a same-thread repair prompt under `repairs/<repair_id>.prompt.md`.

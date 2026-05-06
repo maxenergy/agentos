@@ -6,11 +6,14 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <sstream>
@@ -19,7 +22,9 @@
 
 #include <nlohmann/json.hpp>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
@@ -47,6 +52,99 @@ std::map<std::string, std::string> ParseOptionsFromArgs(const int argc, char* ar
         options[argument.substr(0, separator)] = argument.substr(separator + 1);
     }
     return options;
+}
+
+class AutoDevJobRuntimeLock {
+public:
+    explicit AutoDevJobRuntimeLock(std::filesystem::path lock_path)
+        : lock_path_(std::move(lock_path)) {
+        acquire();
+    }
+
+    AutoDevJobRuntimeLock(const AutoDevJobRuntimeLock&) = delete;
+    AutoDevJobRuntimeLock& operator=(const AutoDevJobRuntimeLock&) = delete;
+
+    ~AutoDevJobRuntimeLock() {
+#ifdef _WIN32
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+        }
+#else
+        if (fd_ >= 0) {
+            close(fd_);
+            std::filesystem::remove(lock_path_);
+        }
+#endif
+    }
+
+private:
+    void acquire() {
+        std::filesystem::create_directories(lock_path_.parent_path());
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (true) {
+#ifdef _WIN32
+            handle_ = CreateFileW(
+                lock_path_.wstring().c_str(),
+                GENERIC_WRITE,
+                0,
+                nullptr,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
+                nullptr);
+            if (handle_ != INVALID_HANDLE_VALUE) {
+                return;
+            }
+            const auto error = GetLastError();
+            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) {
+                throw std::runtime_error("could not create AutoDev job runtime lock with Windows error " +
+                    std::to_string(error));
+            }
+#else
+            fd_ = open(lock_path_.string().c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+            if (fd_ >= 0) {
+                return;
+            }
+            if (errno != EEXIST) {
+                throw std::runtime_error("could not create AutoDev job runtime lock: " +
+                    std::string(std::strerror(errno)));
+            }
+#endif
+            if (std::chrono::steady_clock::now() >= deadline) {
+                throw std::runtime_error("timed out waiting for AutoDev job runtime lock: " + lock_path_.string());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+
+    std::filesystem::path lock_path_;
+#ifdef _WIN32
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+    int fd_ = -1;
+#endif
+};
+
+bool AutoDevSubcommandNeedsJobRuntimeLock(const std::string& subcommand) {
+    return subcommand == "prepare-workspace" || subcommand == "prepare_workspace" ||
+        subcommand == "load-skill-pack" || subcommand == "load_skill_pack" ||
+        subcommand == "generate-goal-docs" || subcommand == "generate_goal_docs" ||
+        subcommand == "validate-spec" || subcommand == "validate_spec" ||
+        subcommand == "approve-spec" || subcommand == "approve_spec" ||
+        subcommand == "recover-blocked" || subcommand == "recover_blocked" ||
+        subcommand == "snapshot-task" || subcommand == "snapshot_task" ||
+        subcommand == "rollback-soft" || subcommand == "rollback_soft" ||
+        subcommand == "rollback-hard" || subcommand == "rollback_hard" ||
+        subcommand == "verify-task" || subcommand == "verify_task" ||
+        subcommand == "diff-guard" || subcommand == "diff_guard" ||
+        subcommand == "acceptance-gate" || subcommand == "acceptance_gate" ||
+        subcommand == "final-review" || subcommand == "final_review" ||
+        subcommand == "complete-job" || subcommand == "complete_job" ||
+        subcommand == "mark-done" || subcommand == "mark_done" ||
+        subcommand == "cleanup-worktree" || subcommand == "cleanup_worktree" ||
+        subcommand == "execute-next-task" || subcommand == "execute_next_task" ||
+        subcommand == "run-task" || subcommand == "run_task" ||
+        subcommand == "pipeline-task" || subcommand == "pipeline_task" ||
+        subcommand == "run-job" || subcommand == "run_job";
 }
 
 int ParseIntOption(
@@ -2693,6 +2791,21 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
         return 1;
     }
     const std::string subcommand = argv[2];
+    std::unique_ptr<AutoDevJobRuntimeLock> job_runtime_lock;
+    if (AutoDevSubcommandNeedsJobRuntimeLock(subcommand)) {
+        const auto options = ParseOptionsFromArgs(argc, argv, 3);
+        const auto job_id_it = options.find("job_id");
+        if (job_id_it != options.end() && IsValidAutoDevJobId(job_id_it->second)) {
+            try {
+                AutoDevStateStore store(workspace);
+                job_runtime_lock = std::make_unique<AutoDevJobRuntimeLock>(
+                    store.job_dir(job_id_it->second) / "job.lock");
+            } catch (const std::exception& e) {
+                std::cerr << "autodev " << subcommand << " failed: " << e.what() << '\n';
+                return 1;
+            }
+        }
+    }
     if (subcommand == "submit") {
         return RunSubmit(workspace, argc, argv);
     }

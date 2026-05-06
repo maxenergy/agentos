@@ -2706,6 +2706,20 @@ void TestAutoDevCommands() {
         "autodev tasks should list materialized executable task");
     Expect(executable_tasks_result.output.find("retry:           0/3") != std::string::npos,
         "autodev tasks should show default retry counters");
+    {
+        std::ofstream lock(executable_job_dir / "job.lock", std::ios::binary | std::ios::trunc);
+        lock << "held by test\n";
+    }
+    const auto locked_snapshot = RunAgentos(workspace, {
+        "autodev",
+        "snapshot-task",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(locked_snapshot.exit_code != 0,
+        "mutating AutoDev job commands should fail while the job runtime lock is held");
+    Expect(locked_snapshot.output.find("AutoDev job runtime lock") != std::string::npos,
+        "runtime lock failures should explain the locked job");
+    std::filesystem::remove(executable_job_dir / "job.lock");
     const auto codex_fixture = WriteAutoDevCodexCliFixture(workspace / "bin");
     const auto execute_next = RunAgentos(workspace, {
         "autodev",
