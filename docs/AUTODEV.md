@@ -60,6 +60,16 @@ final_reviews
 repairs
 ```
 
+## AUTODEV_SPEC Schema
+
+The repository carries the current AutoDev spec schema at:
+
+```text
+docs/schemas/AUTODEV_SPEC.schema.json
+```
+
+`agentos autodev validate-spec` enforces the supported `schema_version` and the core shape used by the runtime before it snapshots a pending spec revision. Empty `tasks` are allowed at validation time so generated goal skeletons can be reviewed, but `approve-spec` blocks execution until tasks can be materialized.
+
 ## Authority Boundary
 
 Codex may read and modify files under the job worktree, including `docs/goal/*`. Codex cannot mark a task passed or a job done by editing worktree files.
@@ -72,4 +82,3 @@ Only AgentOS runtime gates mutate authoritative state:
 - `final-review` may advance a job to `pr_ready`.
 - `complete-job` / `mark-done` may advance a `pr_ready` job with latest passed final review to `done`.
 - `pause`, `resume`, and `cancel` currently mutate job state and append events only; they do not interrupt or terminate a Codex process.
-

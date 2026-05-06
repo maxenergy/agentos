@@ -548,6 +548,55 @@ void TestValidateSpecBlocksUnsupportedSchema() {
         "unsupported schema should explain blocker");
 }
 
+void TestValidateSpecBlocksInvalidTaskShape() {
+    const auto workspace = FreshWorkspace("validate_spec_bad_task_shape");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Validate bad task shape",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before invalid task shape validate_spec should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace before invalid task shape validate_spec should succeed");
+    Expect(store.load_skill_pack(submit.job.job_id).success,
+        "load_skill_pack before invalid task shape validate_spec should succeed");
+    Expect(store.generate_goal_docs(submit.job.job_id).success,
+        "generate_goal_docs before invalid task shape validate_spec should succeed");
+
+    const auto spec_path = prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json";
+    auto spec = nlohmann::json::parse(ReadFile(spec_path));
+    spec["tasks"] = nlohmann::json::array({
+        {
+            {"task_id", "task-001"},
+            {"title", "Invalid task shape"},
+            {"allowed_files", nlohmann::json::array({"README.md", 42})},
+            {"blocked_files", nlohmann::json::array({"package.json"})},
+            {"verify_command", "true"},
+            {"acceptance", nlohmann::json::array({"shape validation"})},
+        }
+    });
+    {
+        std::ofstream output(spec_path, std::ios::binary | std::ios::trunc);
+        output << spec.dump(2) << '\n';
+    }
+
+    const auto validated = store.validate_spec(submit.job.job_id);
+    Expect(!validated.success,
+        "validate_spec should block invalid task field shapes");
+    Expect(validated.job.status == "blocked",
+        "invalid task shape should block the job");
+    Expect(validated.job.blocker.has_value() &&
+               validated.job.blocker->find("allowed_files entries must be strings") != std::string::npos,
+        "invalid task shape should explain array item type failure");
+}
+
 void TestApproveSpecRequiresNonEmptyTasks() {
     const auto workspace = FreshWorkspace("approve_spec_empty_tasks");
     const auto target = workspace / "target_app";
@@ -1208,6 +1257,7 @@ int main() {
     TestGenerateGoalDocsBlocksUntilReady();
     TestValidateSpecSnapshotsPendingRevision();
     TestValidateSpecBlocksUnsupportedSchema();
+    TestValidateSpecBlocksInvalidTaskShape();
     TestApproveSpecRequiresNonEmptyTasks();
     TestApproveSpecFreezesHashBoundRevision();
     TestRecordExecutionBlockedAppendsAuditEventOnly();

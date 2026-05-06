@@ -316,6 +316,48 @@ std::string ValidateAutoDevSpecShape(const nlohmann::json& spec) {
     if (spec.at("schema_version").get<std::string>() != "1.0.0") {
         return "unsupported AUTODEV_SPEC schema_version: " + spec.at("schema_version").get<std::string>();
     }
+    for (const auto& source : spec.at("source_of_truth")) {
+        if (!source.is_string()) {
+            return "AUTODEV_SPEC.json source_of_truth entries must be strings";
+        }
+    }
+    int index = 0;
+    for (const auto& task : spec.at("tasks")) {
+        const auto prefix = "AUTODEV_SPEC.json task[" + std::to_string(index) + "]";
+        if (!task.is_object()) {
+            return prefix + " must be an object";
+        }
+        if (task.contains("task_id") && !task.at("task_id").is_string()) {
+            return prefix + " field has invalid type: task_id";
+        }
+        if (!task.contains("title") || !task.at("title").is_string()) {
+            return prefix + " missing required string field: title";
+        }
+        for (const auto* key : {"allowed_files", "blocked_files", "acceptance", "acceptance_criteria"}) {
+            if (!task.contains(key)) {
+                continue;
+            }
+            if (!task.at(key).is_array()) {
+                return prefix + " field has invalid type: " + key;
+            }
+            for (const auto& value : task.at(key)) {
+                if (!value.is_string()) {
+                    return prefix + " " + key + " entries must be strings";
+                }
+            }
+        }
+        if (task.contains("verify_command") && !task.at("verify_command").is_string()) {
+            return prefix + " field has invalid type: verify_command";
+        }
+        if (task.contains("max_retries") &&
+            (!task.at("max_retries").is_number_integer() || task.at("max_retries").get<int>() < 0)) {
+            return prefix + " field has invalid type: max_retries";
+        }
+        if (!task.contains("acceptance") && !task.contains("acceptance_criteria")) {
+            return prefix + " missing acceptance or acceptance_criteria";
+        }
+        ++index;
+    }
     return {};
 }
 
