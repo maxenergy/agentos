@@ -379,6 +379,7 @@ void PrintUsage() {
         << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
+        << "  agentos autodev run-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n";
 }
 
@@ -2233,6 +2234,122 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
     return 1;
 }
 
+void PrintPipelineRepairHint(AutoDevStateStore& store, const std::string& job_id, const std::string& task_id) {
+    const auto repairs = store.load_repairs(job_id, nullptr);
+    if (!repairs.has_value()) {
+        return;
+    }
+    for (auto it = repairs->rbegin(); it != repairs->rend(); ++it) {
+        if (it->task_id != task_id) {
+            continue;
+        }
+        std::cout << "repair_id:       " << it->repair_id << '\n'
+                  << "repair_source:   " << it->source_type << " " << it->source_id << '\n'
+                  << "repair_retry:    " << it->retry_count << "/" << it->max_retries << '\n'
+                  << "repair_command:  agentos autodev repair-task job_id=" << job_id
+                  << " task_id=" << task_id << '\n';
+        if (it->prompt_artifact.has_value()) {
+            std::cout << "repair_prompt:   " << it->prompt_artifact->string() << '\n';
+        }
+        return;
+    }
+}
+
+int RunTaskPipeline(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev run-task failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev run-task failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    std::size_t existing_turn_count = 0;
+    if (std::filesystem::exists(store.turns_path(job_id_it->second))) {
+        const auto existing_turns = store.load_turns(job_id_it->second, &error);
+        if (!existing_turns.has_value()) {
+            std::cerr << "autodev run-task failed: " << error << '\n';
+            return 1;
+        }
+        existing_turn_count = existing_turns->size();
+    }
+
+    std::cout << "AutoDev single-task pipeline\n"
+              << "job_id:        " << job_id_it->second << '\n'
+              << "stage:         execute\n";
+    const int execute_code = RunExecuteNextTask(workspace, argc, argv);
+    if (execute_code != 0) {
+        std::cout << "stopped_stage: execute\n";
+        return execute_code;
+    }
+
+    const auto turns = store.load_turns(job_id_it->second, &error);
+    if (!turns.has_value()) {
+        std::cerr << "autodev run-task failed: " << error << '\n';
+        return 1;
+    }
+    if (turns->size() <= existing_turn_count) {
+        std::cerr << "autodev run-task failed: execute stage did not record a new turn\n";
+        return 1;
+    }
+    const auto& turn = turns->back();
+    const auto task_id = turn.task_id;
+    std::cout << "\nstage:         verify-task\n";
+    const auto verification = store.verify_task(job_id_it->second, task_id, turn.turn_id);
+    if (!verification.success) {
+        std::cerr << "autodev run-task failed: " << verification.error_message << '\n';
+        return 1;
+    }
+    std::cout << "verification_id: " << verification.verification.verification_id << '\n'
+              << "verification_passed: " << (verification.verification.passed ? "true" : "false") << '\n';
+    if (!verification.verification.passed) {
+        std::cout << "stopped_stage: verify-task\n";
+        PrintPipelineRepairHint(store, job_id_it->second, task_id);
+        return 1;
+    }
+
+    std::cout << "\nstage:         diff-guard\n";
+    const auto diff = store.diff_guard(job_id_it->second, task_id);
+    if (!diff.success) {
+        std::cerr << "autodev run-task failed: " << diff.error_message << '\n';
+        return 1;
+    }
+    std::cout << "diff_id:       " << diff.diff_guard.diff_id << '\n'
+              << "diff_passed:   " << (diff.diff_guard.passed ? "true" : "false") << '\n'
+              << "changed_files: " << diff.diff_guard.changed_files.size() << '\n';
+    if (!diff.diff_guard.passed) {
+        std::cout << "stopped_stage: diff-guard\n";
+        PrintPipelineRepairHint(store, job_id_it->second, task_id);
+        return 1;
+    }
+
+    std::cout << "\nstage:         acceptance-gate\n";
+    const auto acceptance = store.acceptance_gate(job_id_it->second, task_id);
+    if (!acceptance.success) {
+        std::cerr << "autodev run-task failed: " << acceptance.error_message << '\n';
+        return 1;
+    }
+    std::cout << "acceptance_id: " << acceptance.acceptance.acceptance_id << '\n'
+              << "acceptance_passed: " << (acceptance.acceptance.passed ? "true" : "false") << '\n'
+              << "task_status:   " << acceptance.task.status << '\n'
+              << "job_phase:     " << acceptance.job.phase << '\n'
+              << "next_action:   " << acceptance.job.next_action << '\n';
+    if (!acceptance.acceptance.passed) {
+        std::cout << "stopped_stage: acceptance-gate\n";
+        PrintPipelineRepairHint(store, job_id_it->second, task_id);
+        return 1;
+    }
+
+    std::cout << "pipeline_status: passed\n"
+              << "\nJob completion remains controlled by final-review and complete-job.\n";
+    return 0;
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -2500,6 +2617,10 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "execute-next-task" || subcommand == "execute_next_task") {
         return RunExecuteNextTask(workspace, argc, argv);
+    }
+    if (subcommand == "run-task" || subcommand == "run_task" ||
+        subcommand == "pipeline-task" || subcommand == "pipeline_task") {
+        return RunTaskPipeline(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';

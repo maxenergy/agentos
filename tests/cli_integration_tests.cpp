@@ -2958,6 +2958,98 @@ void TestAutoDevCommands() {
         "autodev pr-summary should include final review facts");
     Expect(pr_summary.output.find("command=true") != std::string::npos,
         "autodev pr-summary should include verification commands run");
+    const auto pipeline_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Run one task through pipeline",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(pipeline_submit.exit_code == 0,
+        "autodev submit should support a pipeline fixture job");
+    const auto pipeline_job_id = ExtractLineValue(pipeline_submit.output, "job_id:");
+    const auto pipeline_worktree = ExtractLineValue(pipeline_submit.output, "job_worktree_path:");
+    const auto pipeline_path = pipeline_worktree.substr(0, pipeline_worktree.find(" "));
+    const auto pipeline_job_dir = workspace / "runtime" / "autodev" / "jobs" / pipeline_job_id;
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + pipeline_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare pipeline fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + pipeline_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load pipeline fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + pipeline_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate pipeline fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(pipeline_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Run one task through pipeline\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Pipeline update README\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"Pipeline can accept the task\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto pipeline_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + pipeline_job_id});
+    Expect(pipeline_validate.exit_code == 0,
+        "autodev validate-spec should validate pipeline fixture spec");
+    const auto pipeline_hash = ExtractLineValue(pipeline_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + pipeline_job_id,
+        "spec_hash=" + pipeline_hash}).exit_code == 0,
+        "autodev approve-spec should approve pipeline fixture spec");
+    const auto run_task = RunAgentos(workspace, {
+        "autodev",
+        "run-task",
+        "job_id=" + pipeline_job_id,
+        "codex_cli_command=" + codex_fixture.string()});
+    Expect(run_task.exit_code == 0,
+        "autodev run-task should execute and gate the next pending task");
+    Expect(run_task.output.find("AutoDev single-task pipeline") != std::string::npos,
+        "autodev run-task should print pipeline heading");
+    Expect(run_task.output.find("AutoDev execution completed") != std::string::npos,
+        "autodev run-task should include execution stage output");
+    Expect(run_task.output.find("verification_passed: true") != std::string::npos,
+        "autodev run-task should run verification");
+    Expect(run_task.output.find("diff_passed:   true") != std::string::npos,
+        "autodev run-task should run diff guard");
+    Expect(run_task.output.find("acceptance_passed: true") != std::string::npos,
+        "autodev run-task should run acceptance gate");
+    Expect(run_task.output.find("pipeline_status: passed") != std::string::npos,
+        "autodev run-task should report a passed pipeline");
+    Expect(std::filesystem::exists(pipeline_job_dir / "snapshots.json"),
+        "autodev run-task should record a snapshot");
+    Expect(std::filesystem::exists(pipeline_job_dir / "turns.json"),
+        "autodev run-task should record a turn");
+    Expect(std::filesystem::exists(pipeline_job_dir / "verification.json"),
+        "autodev run-task should record verification facts");
+    Expect(std::filesystem::exists(pipeline_job_dir / "diffs.json"),
+        "autodev run-task should record diff guard facts");
+    Expect(std::filesystem::exists(pipeline_job_dir / "acceptance.json"),
+        "autodev run-task should record acceptance facts");
+    const auto pipeline_tasks = ReadTextFile(pipeline_job_dir / "tasks.json");
+    Expect(pipeline_tasks.find("\"status\": \"passed\"") != std::string::npos,
+        "autodev run-task should mark accepted task passed");
+    const auto pipeline_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + pipeline_job_id});
+    Expect(pipeline_status.exit_code == 0,
+        "autodev status should read pipeline fixture job");
+    Expect(pipeline_status.output.find("Status: running") != std::string::npos,
+        "autodev run-task should not mark the job done");
+    Expect(pipeline_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev run-task should advance all-passed jobs to final_review");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);
