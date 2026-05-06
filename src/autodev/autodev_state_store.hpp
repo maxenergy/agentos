@@ -96,6 +96,9 @@ public:
         const std::string& spec_hash,
         const std::optional<std::string>& spec_revision = std::nullopt);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevTask>> load_tasks(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
 
 private:
     std::filesystem::path agentos_workspace_;

@@ -600,6 +600,15 @@ void TestApproveSpecFreezesHashBoundRevision() {
         "materialized runtime task should preserve verify command");
     Expect(tasks[0]["acceptance_total"] == 1,
         "materialized runtime task should preserve acceptance count");
+    std::string load_tasks_error;
+    const auto loaded_tasks = store.load_tasks(submit.job.job_id, &load_tasks_error);
+    Expect(loaded_tasks.has_value(), "load_tasks should read materialized runtime tasks");
+    Expect(loaded_tasks.has_value() && loaded_tasks->size() == 1,
+        "load_tasks should return materialized task count");
+    Expect(loaded_tasks.has_value() && loaded_tasks->front().task_id == "task-001",
+        "load_tasks should preserve task id");
+    Expect(loaded_tasks.has_value() && loaded_tasks->front().status == "pending",
+        "load_tasks should preserve pending task status");
 
     const auto events = ReadFile(store.events_path(submit.job.job_id));
     Expect(events.find("\"type\":\"autodev.spec.approved\"") != std::string::npos,

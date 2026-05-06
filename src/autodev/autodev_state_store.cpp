@@ -1193,4 +1193,45 @@ std::optional<AutoDevJob> AutoDevStateStore::load_job(
     }
 }
 
+std::optional<std::vector<AutoDevTask>> AutoDevStateStore::load_tasks(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = tasks_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev tasks not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev tasks: tasks.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevTask> tasks;
+        for (const auto& task_json : json) {
+            tasks.push_back(AutoDevTaskFromJson(task_json));
+        }
+        return tasks;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev tasks: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
 }  // namespace agentos

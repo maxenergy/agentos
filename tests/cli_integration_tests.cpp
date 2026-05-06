@@ -2465,6 +2465,11 @@ void TestAutoDevCommands() {
     Expect(approve_empty.exit_code != 0, "autodev approve-spec should block empty generated task skeleton");
     Expect(approve_empty.output.find("tasks must not be empty") != std::string::npos,
         "autodev approve-spec should explain empty tasks blocker");
+    const auto tasks_before_approval = RunAgentos(workspace, {"autodev", "tasks", "job_id=" + job_id});
+    Expect(tasks_before_approval.exit_code != 0,
+        "autodev tasks should fail before runtime tasks are materialized");
+    Expect(tasks_before_approval.output.find("AutoDev tasks not found") != std::string::npos,
+        "autodev tasks should explain missing tasks.json before approval");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

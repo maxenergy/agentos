@@ -39,7 +39,8 @@ void PrintUsage() {
         << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
         << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
         << "  agentos autodev validate-spec job_id=<job_id>\n"
-        << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n";
+        << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
+        << "  agentos autodev tasks job_id=<job_id>\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -296,6 +297,72 @@ int RunApproveSpec(const std::filesystem::path& workspace, const int argc, char*
     return 0;
 }
 
+int RunTasks(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev tasks failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev tasks failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto tasks = store.load_tasks(job_id_it->second, &error);
+    if (!tasks.has_value()) {
+        std::cerr << "autodev tasks failed: " << error << '\n';
+        return 1;
+    }
+
+    std::size_t passed = 0;
+    for (const auto& task : *tasks) {
+        if (task.status == "passed") {
+            ++passed;
+        }
+    }
+
+    std::cout << "AutoDev tasks\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << tasks->size() << '\n'
+              << "passed: " << passed << '\n';
+    for (const auto& task : *tasks) {
+        std::cout << '\n'
+                  << "- task_id:          " << task.task_id << '\n'
+                  << "  title:            " << task.title << '\n'
+                  << "  status:           " << task.status << '\n'
+                  << "  current_activity: " << task.current_activity << '\n'
+                  << "  spec_revision:    " << task.spec_revision << '\n'
+                  << "  acceptance:       " << task.acceptance_passed << "/" << task.acceptance_total << '\n';
+        if (task.verify_command.has_value()) {
+            std::cout << "  verify_command:   " << *task.verify_command << '\n';
+        }
+        if (!task.allowed_files.empty()) {
+            std::cout << "  allowed_files:    ";
+            for (std::size_t i = 0; i < task.allowed_files.size(); ++i) {
+                if (i != 0) {
+                    std::cout << ", ";
+                }
+                std::cout << task.allowed_files[i];
+            }
+            std::cout << '\n';
+        }
+        if (!task.blocked_files.empty()) {
+            std::cout << "  blocked_files:    ";
+            for (std::size_t i = 0; i < task.blocked_files.size(); ++i) {
+                if (i != 0) {
+                    std::cout << ", ";
+                }
+                std::cout << task.blocked_files[i];
+            }
+            std::cout << '\n';
+        }
+    }
+    return 0;
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -423,6 +490,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "approve-spec" || subcommand == "approve_spec") {
         return RunApproveSpec(workspace, argc, argv);
+    }
+    if (subcommand == "tasks") {
+        return RunTasks(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';
