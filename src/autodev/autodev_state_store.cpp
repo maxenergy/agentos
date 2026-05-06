@@ -365,6 +365,7 @@ std::vector<AutoDevTask> MaterializeTasksFromSpec(
         } else if (raw_task.contains("acceptance_criteria") && raw_task.at("acceptance_criteria").is_array()) {
             task.acceptance_total = static_cast<int>(raw_task.at("acceptance_criteria").size());
         }
+        task.max_retries = std::max(0, raw_task.value("max_retries", 3));
         tasks.push_back(std::move(task));
         ++generated_id;
     }
@@ -676,12 +677,14 @@ std::string RepairPromptArtifact(
         << "## Task\n\n"
         << "- task_id: `" << task.task_id << "`\n"
         << "- title: " << task.title << "\n"
-        << "- status: `" << task.status << "`\n\n"
+        << "- status: `" << task.status << "`\n"
+        << "- retry: `" << repair.retry_count << "/" << repair.max_retries << "`\n\n"
         << "## Failed Runtime Fact\n\n"
         << "- repair_id: `" << repair.repair_id << "`\n"
         << "- source_type: `" << repair.source_type << "`\n"
         << "- source_id: `" << repair.source_id << "`\n"
-        << "- next_action: `" << repair.next_action << "`\n\n"
+        << "- next_action: `" << repair.next_action << "`\n"
+        << "- retry_limit_exceeded: `" << (repair.retry_limit_exceeded ? "true" : "false") << "`\n\n"
         << "## Reasons\n\n";
     for (const auto& reason : repair.reasons) {
         out << "- " << reason << '\n';
@@ -1711,10 +1714,45 @@ AutoDevRepairNeeded AutoDevStateStore::record_repair_needed(
     repair.status = "needed";
     repair.next_action = "repair_task";
     repair.recorded_at = IsoUtcNow();
+
+    int retry_count = task.retry_count + 1;
+    int max_retries = task.max_retries;
+    if (auto tasks = load_tasks(job.job_id, nullptr); tasks.has_value()) {
+        for (auto& runtime_task : *tasks) {
+            if (runtime_task.task_id == task.task_id) {
+                runtime_task.retry_count += 1;
+                retry_count = runtime_task.retry_count;
+                max_retries = runtime_task.max_retries;
+                break;
+            }
+        }
+        nlohmann::json task_records = nlohmann::json::array();
+        for (const auto& runtime_task : *tasks) {
+            task_records.push_back(ToJson(runtime_task));
+        }
+        WriteFileAtomically(tasks_path(job.job_id), task_records.dump(2) + "\n");
+    }
+
+    repair.retry_count = retry_count;
+    repair.max_retries = max_retries;
+    repair.retry_limit_exceeded = retry_count > max_retries;
     repair.prompt_artifact = job_dir(job.job_id) / "repairs" / (repair.repair_id + ".prompt.md");
     WriteFileAtomically(*repair.prompt_artifact, RepairPromptArtifact(job, task, repair));
     repair_records.push_back(ToJson(repair));
     WriteFileAtomically(repairs_path(job.job_id), repair_records.dump(2) + "\n");
+
+    if (repair.retry_limit_exceeded) {
+        if (auto loaded_job = load_job(job.job_id, nullptr); loaded_job.has_value()) {
+            auto blocked_job = *loaded_job;
+            blocked_job.status = "blocked";
+            blocked_job.phase = "repairing";
+            blocked_job.current_activity = "none";
+            blocked_job.next_action = "inspect_repairs";
+            blocked_job.blocker = "retry limit exceeded for task: " + task.task_id;
+            blocked_job.updated_at = IsoUtcNow();
+            save_job(blocked_job);
+        }
+    }
 
     append_event(job.job_id, nlohmann::json{
         {"type", "autodev.repair.needed"},
@@ -1727,9 +1765,24 @@ AutoDevRepairNeeded AutoDevStateStore::record_repair_needed(
         {"source_id", repair.source_id},
         {"reasons", repair.reasons},
         {"next_action", repair.next_action},
+        {"retry_count", repair.retry_count},
+        {"max_retries", repair.max_retries},
+        {"retry_limit_exceeded", repair.retry_limit_exceeded},
         {"prompt_artifact", repair.prompt_artifact->string()},
         {"at", repair.recorded_at},
     });
+    if (repair.retry_limit_exceeded) {
+        append_event(job.job_id, nlohmann::json{
+            {"type", "autodev.repair.retry_limit_exceeded"},
+            {"job_id", job.job_id},
+            {"task_id", task.task_id},
+            {"repair_id", repair.repair_id},
+            {"retry_count", repair.retry_count},
+            {"max_retries", repair.max_retries},
+            {"blocker", "retry limit exceeded for task: " + task.task_id},
+            {"at", IsoUtcNow()},
+        });
+    }
     return repair;
 }
 

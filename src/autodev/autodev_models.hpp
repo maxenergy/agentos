@@ -65,6 +65,8 @@ struct AutoDevTask {
     std::optional<std::string> verify_command;
     int acceptance_total = 0;
     int acceptance_passed = 0;
+    int retry_count = 0;
+    int max_retries = 3;
 };
 
 struct AutoDevTurn {
@@ -123,6 +125,9 @@ struct AutoDevRepairNeeded {
     std::vector<std::string> reasons;
     std::string status = "needed";
     std::string next_action = "repair_task";
+    int retry_count = 0;
+    int max_retries = 3;
+    bool retry_limit_exceeded = false;
     std::string recorded_at;
     std::optional<std::filesystem::path> prompt_artifact;
 };

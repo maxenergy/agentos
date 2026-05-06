@@ -141,6 +141,8 @@ nlohmann::json ToJson(const AutoDevTask& task) {
         {"verify_command", OptionalString(task.verify_command)},
         {"acceptance_total", task.acceptance_total},
         {"acceptance_passed", task.acceptance_passed},
+        {"retry_count", task.retry_count},
+        {"max_retries", task.max_retries},
     };
 }
 
@@ -157,6 +159,8 @@ AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json) {
     task.verify_command = ReadOptionalString(json, "verify_command");
     task.acceptance_total = json.value("acceptance_total", 0);
     task.acceptance_passed = json.value("acceptance_passed", 0);
+    task.retry_count = json.value("retry_count", 0);
+    task.max_retries = json.value("max_retries", 3);
     return task;
 }
 
@@ -276,6 +280,9 @@ nlohmann::json ToJson(const AutoDevRepairNeeded& repair) {
         {"reasons", repair.reasons},
         {"status", repair.status},
         {"next_action", repair.next_action},
+        {"retry_count", repair.retry_count},
+        {"max_retries", repair.max_retries},
+        {"retry_limit_exceeded", repair.retry_limit_exceeded},
         {"recorded_at", repair.recorded_at},
         {"prompt_artifact", OptionalPath(repair.prompt_artifact)},
     };
@@ -291,6 +298,9 @@ AutoDevRepairNeeded AutoDevRepairNeededFromJson(const nlohmann::json& json) {
     repair.reasons = ReadStringVector(json, "reasons");
     repair.status = json.value("status", "needed");
     repair.next_action = json.value("next_action", "repair_task");
+    repair.retry_count = json.value("retry_count", 0);
+    repair.max_retries = json.value("max_retries", 3);
+    repair.retry_limit_exceeded = json.value("retry_limit_exceeded", false);
     repair.recorded_at = json.value("recorded_at", std::string{});
     repair.prompt_artifact = ReadOptionalPath(json, "prompt_artifact");
     return repair;

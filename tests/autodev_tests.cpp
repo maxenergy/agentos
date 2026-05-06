@@ -686,6 +686,7 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
             {"allowed_files", nlohmann::json::array({"README.md"})},
             {"blocked_files", nlohmann::json::array({"package.json"})},
             {"verify_command", "true"},
+            {"max_retries", 1},
             {"acceptance", nlohmann::json::array({"preflight only"})},
         }
     });
@@ -887,6 +888,12 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "repair-needed fact should record diff guard source");
     Expect(repairs.has_value() && repairs->front().next_action == "repair_task",
         "repair-needed fact should record next repair action");
+    Expect(repairs.has_value() && repairs->front().retry_count == 1,
+        "first repair-needed fact should record retry count");
+    Expect(repairs.has_value() && repairs->front().max_retries == 1,
+        "repair-needed fact should record task retry limit");
+    Expect(repairs.has_value() && !repairs->front().retry_limit_exceeded,
+        "first repair-needed fact should not exceed max_retries=1");
     Expect(repairs.has_value() && repairs->front().prompt_artifact.has_value() &&
                std::filesystem::exists(*repairs->front().prompt_artifact),
         "repair-needed fact should write same-thread repair prompt artifact");
@@ -1027,6 +1034,36 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "complete_job should persist done phase");
     Expect(persisted_job["next_action"] == "none",
         "complete_job should clear next action after done");
+
+    const auto retry_limited_acceptance = store.acceptance_gate(submit.job.job_id, "task-001");
+    Expect(retry_limited_acceptance.success,
+        "acceptance_gate should still record failed runtime facts after a stale diff appears");
+    Expect(!retry_limited_acceptance.acceptance.passed,
+        "acceptance_gate should fail when the latest diff guard failed");
+    const auto retry_limited_tasks = nlohmann::json::parse(ReadFile(store.tasks_path(submit.job.job_id)));
+    Expect(retry_limited_tasks[0]["retry_count"] == 2,
+        "repair-needed facts should increment persisted task retry_count");
+    Expect(retry_limited_tasks[0]["max_retries"] == 1,
+        "materialized task should persist max_retries from AUTODEV_SPEC");
+    const auto repairs_after_retry_limit = store.load_repairs(submit.job.job_id, &repairs_error);
+    Expect(repairs_after_retry_limit.has_value() && repairs_after_retry_limit->size() == 2,
+        "second failed runtime gate should append another repair-needed fact");
+    Expect(repairs_after_retry_limit.has_value() && repairs_after_retry_limit->back().retry_count == 2,
+        "second repair-needed fact should record incremented retry count");
+    Expect(repairs_after_retry_limit.has_value() && repairs_after_retry_limit->back().retry_limit_exceeded,
+        "second repair-needed fact should record retry limit exceeded");
+    const auto retry_blocked_job = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
+    Expect(retry_blocked_job["status"] == "blocked",
+        "retry limit exceeded should block the job");
+    Expect(retry_blocked_job["phase"] == "repairing",
+        "retry limit exceeded should keep the job in repairing phase");
+    Expect(retry_blocked_job["next_action"] == "inspect_repairs",
+        "retry limit exceeded should direct the user to inspect repairs");
+    Expect(retry_blocked_job["blocker"].get<std::string>().find("retry limit exceeded") != std::string::npos,
+        "retry limit exceeded should persist a blocker");
+    const auto events_after_retry_limit = ReadFile(store.events_path(submit.job.job_id));
+    Expect(events_after_retry_limit.find("\"type\":\"autodev.repair.retry_limit_exceeded\"") != std::string::npos,
+        "events.ndjson should record retry limit exceeded event");
 }
 
 }  // namespace

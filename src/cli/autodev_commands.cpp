@@ -360,6 +360,7 @@ int RunTasks(const std::filesystem::path& workspace, const int argc, char* argv[
                   << "  status:           " << task.status << '\n'
                   << "  current_activity: " << task.current_activity << '\n'
                   << "  spec_revision:    " << task.spec_revision << '\n'
+                  << "  retry:           " << task.retry_count << "/" << task.max_retries << '\n'
                   << "  acceptance:       " << task.acceptance_passed << "/" << task.acceptance_total << '\n';
         if (task.verify_command.has_value()) {
             std::cout << "  verify_command:   " << *task.verify_command << '\n';
@@ -704,6 +705,8 @@ int RunRepairs(const std::filesystem::path& workspace, const int argc, char* arg
                   << "  source:      " << repair.source_type << " " << repair.source_id << '\n'
                   << "  status:      " << repair.status << '\n'
                   << "  next_action: " << repair.next_action << '\n'
+                  << "  retry:       " << repair.retry_count << "/" << repair.max_retries << '\n'
+                  << "  retry_limit_exceeded: " << (repair.retry_limit_exceeded ? "true" : "false") << '\n'
                   << "  recorded_at: " << repair.recorded_at << '\n';
         if (repair.prompt_artifact.has_value()) {
             std::cout << "  prompt_artifact: " << repair.prompt_artifact->string() << '\n';
@@ -1254,6 +1257,7 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
         const auto diff = latest_diff(task.task_id);
         const auto acceptance = latest_acceptance(task.task_id);
         std::cout << "- " << task.task_id << " " << task.status << " - " << task.title << '\n'
+                  << "  retry:        " << task.retry_count << "/" << task.max_retries << '\n'
                   << "  verification: "
                   << (verification.has_value() ? verification->verification_id : "(none)");
         if (verification.has_value()) {
@@ -1302,7 +1306,9 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
         std::cout << "  repair_id:   " << repair.repair_id << '\n'
                   << "  task_id:     " << repair.task_id << '\n'
                   << "  source:      " << repair.source_type << " " << repair.source_id << '\n'
-                  << "  next_action: " << repair.next_action << '\n';
+                  << "  next_action: " << repair.next_action << '\n'
+                  << "  retry:       " << repair.retry_count << "/" << repair.max_retries << '\n'
+                  << "  retry_limit_exceeded: " << (repair.retry_limit_exceeded ? "true" : "false") << '\n';
         if (repair.prompt_artifact.has_value()) {
             std::cout << "  prompt_artifact: " << repair.prompt_artifact->string() << '\n';
         }

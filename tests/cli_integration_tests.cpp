@@ -2533,6 +2533,11 @@ void TestAutoDevCommands() {
         "spec_hash=" + executable_spec_hash});
     Expect(executable_approve.exit_code == 0,
         "autodev approve-spec should approve executable fixture spec");
+    const auto executable_tasks_result = RunAgentos(workspace, {"autodev", "tasks", "job_id=" + executable_job_id});
+    Expect(executable_tasks_result.exit_code == 0,
+        "autodev tasks should list materialized executable task");
+    Expect(executable_tasks_result.output.find("retry:           0/3") != std::string::npos,
+        "autodev tasks should show default retry counters");
     const auto execute_next = RunAgentos(workspace, {"autodev", "execute-next-task", "job_id=" + executable_job_id});
     Expect(execute_next.exit_code != 0,
         "autodev execute-next-task should fail closed until a real execution adapter is implemented");
@@ -2848,6 +2853,8 @@ void TestAutoDevCommands() {
         "autodev summary should show latest repair-needed fact");
     Expect(failed_summary.output.find("next_action: repair_task") != std::string::npos,
         "autodev summary should show next repair action");
+    Expect(failed_summary.output.find("retry:       2/3") != std::string::npos,
+        "autodev summary should show latest repair retry counters");
     const auto repairs_after_failed_gates = RunAgentos(workspace, {"autodev", "repairs", "job_id=" + executable_job_id});
     Expect(repairs_after_failed_gates.exit_code == 0,
         "autodev repairs should list repair-needed facts");
@@ -2859,6 +2866,12 @@ void TestAutoDevCommands() {
         "autodev repairs should link diff guard repair source");
     Expect(repairs_after_failed_gates.output.find("source:      acceptance_gate acceptance-002") != std::string::npos,
         "autodev repairs should link acceptance repair source");
+    Expect(repairs_after_failed_gates.output.find("retry:       1/3") != std::string::npos,
+        "autodev repairs should show first repair retry counter");
+    Expect(repairs_after_failed_gates.output.find("retry:       2/3") != std::string::npos,
+        "autodev repairs should show second repair retry counter");
+    Expect(repairs_after_failed_gates.output.find("retry_limit_exceeded: false") != std::string::npos,
+        "autodev repairs should show retry limit status");
     Expect(repairs_after_failed_gates.output.find("prompt_artifact:") != std::string::npos,
         "autodev repairs should show repair prompt artifact path");
     Expect(std::filesystem::exists(executable_job_dir / "repairs" / "repair-001.prompt.md"),
