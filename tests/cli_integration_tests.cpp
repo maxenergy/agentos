@@ -2996,6 +2996,27 @@ void TestAutoDevCommands() {
         "job_id=" + failing_verify_job_id,
         "spec_hash=" + failing_verify_hash}).exit_code == 0,
         "autodev approve-spec should approve failing verification fixture spec");
+    const auto app_server_execute_next = RunAgentos(workspace, {
+        "autodev",
+        "execute-next-task",
+        "job_id=" + failing_verify_job_id,
+        "execution_adapter=codex_app_server"});
+    Expect(app_server_execute_next.exit_code != 0,
+        "autodev execute-next-task should fail closed for the Codex app-server skeleton");
+    Expect(app_server_execute_next.output.find("adapter_kind:                codex_app_server") != std::string::npos,
+        "autodev execute-next-task should expose the Codex app-server adapter kind");
+    Expect(app_server_execute_next.output.find("continuity_mode:             persistent_thread") != std::string::npos,
+        "autodev execute-next-task should expose persistent thread continuity");
+    Expect(app_server_execute_next.output.find("event_stream_mode:           native_app_server") != std::string::npos,
+        "autodev execute-next-task should expose native app-server event mode");
+    Expect(app_server_execute_next.output.find("supports_persistent_session: true") != std::string::npos,
+        "autodev execute-next-task should expose app-server persistent session support");
+    Expect(app_server_execute_next.output.find("supports_same_thread_repair: true") != std::string::npos,
+        "autodev execute-next-task should expose app-server same-thread repair support");
+    Expect(app_server_execute_next.output.find("healthy:                     false") != std::string::npos,
+        "autodev execute-next-task should keep the app-server skeleton fail-closed");
+    Expect(app_server_execute_next.output.find("Codex app-server AutoDev execution is not implemented") != std::string::npos,
+        "autodev execute-next-task should explain the app-server skeleton blocker");
     const auto failing_verify = RunAgentos(workspace, {
         "autodev",
         "verify-task",
@@ -3057,7 +3078,7 @@ void TestAutoDevCommands() {
     const auto failing_verify_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + failing_verify_job_id});
     Expect(failing_verify_summary.exit_code == 0,
         "autodev summary should read failed verification facts");
-    Expect(failing_verify_summary.output.find("facts:         snapshots=0 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=2") != std::string::npos,
+    Expect(failing_verify_summary.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=2") != std::string::npos,
         "autodev summary should count failed verification fixture facts");
     Expect(failing_verify_summary.output.find("verification: verify-001 passed=false") != std::string::npos,
         "autodev summary should show latest failed verification");

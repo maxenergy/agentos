@@ -34,7 +34,14 @@ public:
     [[nodiscard]] bool healthy() const override;
 };
 
+class CodexAppServerAutoDevAdapter final : public AutoDevExecutionAdapter {
+public:
+    [[nodiscard]] AutoDevExecutionAdapterProfile profile() const override;
+    [[nodiscard]] bool healthy() const override;
+};
+
 [[nodiscard]] nlohmann::json ToJson(const AutoDevExecutionAdapterProfile& profile);
 AutoDevExecutionAdapterProfile CodexCliAutoDevAdapterProfile();
+AutoDevExecutionAdapterProfile CodexAppServerAutoDevAdapterProfile();
 
 }  // namespace agentos

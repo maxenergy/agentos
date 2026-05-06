@@ -63,7 +63,7 @@ void PrintUsage() {
         << "  agentos autodev complete-job job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
-        << "  agentos autodev execute-next-task job_id=<job_id>\n";
+        << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server]\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -1370,14 +1370,34 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
         return 1;
     }
 
+    const auto adapter_it = options.find("execution_adapter");
+    const auto adapter_kind = adapter_it == options.end() || adapter_it->second.empty()
+        ? std::string("codex_cli")
+        : adapter_it->second;
+    AutoDevExecutionAdapterProfile profile;
+    bool adapter_healthy = false;
+    std::string blocked_reason;
+    if (adapter_kind == "codex_cli") {
+        const CodexCliAutoDevAdapter adapter;
+        profile = adapter.profile();
+        adapter_healthy = adapter.healthy();
+        blocked_reason = "Codex CLI AutoDev execution is not implemented in this build";
+    } else if (adapter_kind == "codex_app_server") {
+        const CodexAppServerAutoDevAdapter adapter;
+        profile = adapter.profile();
+        adapter_healthy = adapter.healthy();
+        blocked_reason = "Codex app-server AutoDev execution is not implemented in this build";
+    } else {
+        std::cerr << "autodev execute-next-task failed: unsupported execution_adapter: " << adapter_kind << '\n'
+                  << "supported: codex_cli, codex_app_server\n";
+        return 1;
+    }
+
     const auto snapshot = store.record_task_snapshot(job_id_it->second, pending_task->task_id);
     if (!snapshot.success) {
         std::cerr << "autodev execute-next-task failed: " << snapshot.error_message << '\n';
         return 1;
     }
-    const CodexCliAutoDevAdapter adapter;
-    const auto profile = adapter.profile();
-    constexpr const char* blocked_reason = "Codex CLI AutoDev execution is not implemented in this build";
     store.record_execution_blocked(*job, *pending_task, profile, blocked_reason);
     std::cout << "AutoDev execution preflight\n"
               << "job_id:             " << job->job_id << '\n'
@@ -1413,7 +1433,7 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
               << "  supports_native_event_stream:" << (profile.supports_native_event_stream ? " true" : " false") << '\n'
               << "  supports_same_thread_repair: " << (profile.supports_same_thread_repair ? "true" : "false") << '\n'
               << "  production_final_executor:   " << (profile.production_final_executor ? "true" : "false") << '\n'
-              << "  healthy:                     " << (adapter.healthy() ? "true" : "false") << '\n'
+              << "  healthy:                     " << (adapter_healthy ? "true" : "false") << '\n'
               << "  risk_level:                  " << profile.risk_level << '\n'
               << '\n'
               << "Execution was not started. " << blocked_reason << ".\n"

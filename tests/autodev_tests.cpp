@@ -131,6 +131,29 @@ void TestCodexCliExecutionAdapterProfileIsTransitional() {
         "Codex CLI AutoDev adapter should expose its profile through the adapter interface");
     Expect(!adapter.healthy(),
         "Codex CLI AutoDev adapter should fail closed until execution is implemented");
+
+    const auto app_server_profile = agentos::CodexAppServerAutoDevAdapterProfile();
+    Expect(app_server_profile.adapter_kind == "codex_app_server",
+        "Codex app-server AutoDev profile should identify the adapter kind");
+    Expect(app_server_profile.adapter_name == "CodexAppServerAutoDevAdapter",
+        "Codex app-server AutoDev profile should identify the skeleton adapter name");
+    Expect(app_server_profile.continuity_mode == "persistent_thread",
+        "Codex app-server AutoDev profile should model persistent thread continuity");
+    Expect(app_server_profile.event_stream_mode == "native_app_server",
+        "Codex app-server AutoDev profile should model native app-server events");
+    Expect(app_server_profile.supports_persistent_session,
+        "Codex app-server AutoDev profile should support persistent sessions");
+    Expect(app_server_profile.supports_native_event_stream,
+        "Codex app-server AutoDev profile should support native event streams");
+    Expect(app_server_profile.supports_same_thread_repair,
+        "Codex app-server AutoDev profile should support same-thread repair");
+    Expect(!app_server_profile.production_final_executor,
+        "Codex app-server AutoDev skeleton should not claim final production executor status");
+    const agentos::CodexAppServerAutoDevAdapter app_server_adapter;
+    Expect(app_server_adapter.profile().adapter_kind == "codex_app_server",
+        "Codex app-server AutoDev adapter should expose its profile through the adapter interface");
+    Expect(!app_server_adapter.healthy(),
+        "Codex app-server AutoDev skeleton should fail closed until real execution is implemented");
 }
 
 void TestSubmitCreatesRuntimeFactsOnly() {

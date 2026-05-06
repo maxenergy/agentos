@@ -674,7 +674,7 @@ void PrintUsage() {
         << "  agentos autodev complete-job job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
-        << "  agentos autodev execute-next-task job_id=<job_id>\n"
+        << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server]\n"
         << "  agentos cli-specs validate\n"
         << "  agentos diagnostics [format=text|json]\n"
         << "  agentos plugins\n"

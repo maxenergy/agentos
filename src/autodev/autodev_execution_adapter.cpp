@@ -36,11 +36,35 @@ AutoDevExecutionAdapterProfile CodexCliAutoDevAdapterProfile() {
     };
 }
 
+AutoDevExecutionAdapterProfile CodexAppServerAutoDevAdapterProfile() {
+    return AutoDevExecutionAdapterProfile{
+        .adapter_kind = "codex_app_server",
+        .adapter_name = "CodexAppServerAutoDevAdapter",
+        .supports_persistent_session = true,
+        .supports_native_event_stream = true,
+        .supports_interrupt = true,
+        .supports_realtime_diff = true,
+        .supports_same_thread_repair = true,
+        .continuity_mode = "persistent_thread",
+        .event_stream_mode = "native_app_server",
+        .risk_level = "medium",
+        .production_final_executor = false,
+    };
+}
+
 AutoDevExecutionAdapterProfile CodexCliAutoDevAdapter::profile() const {
     return CodexCliAutoDevAdapterProfile();
 }
 
 bool CodexCliAutoDevAdapter::healthy() const {
+    return false;
+}
+
+AutoDevExecutionAdapterProfile CodexAppServerAutoDevAdapter::profile() const {
+    return CodexAppServerAutoDevAdapterProfile();
+}
+
+bool CodexAppServerAutoDevAdapter::healthy() const {
     return false;
 }
 
