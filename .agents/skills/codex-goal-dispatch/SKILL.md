@@ -1,108 +1,139 @@
 ---
 name: codex-goal-dispatch
-description: Dispatch a compiled /goal objective to the codex_cli subagent via AgentOS, run per-task verification after each Codex turn, feed failures back to the same thread, and handle budget-limit states. Use after /goal-compiler has produced docs/goal/GOAL.md.
+description: Dispatch a compiled /goal objective to any AgentOS coding agent (codex_cli, anthropic, gemini, qwen). Handles per-task verification, retry-with-error-context feedback loop, scope checks, budget-limit detection, and adversarial Stop Rule review. Use after /goal-compiler has produced docs/goal/GOAL.md.
 ---
 
-# Codex Goal Dispatch
+# Codex Goal Dispatch (AgentOS)
 
-Dispatch the compiled goal to Codex via AgentOS's `codex_cli` adapter and run the verify-then-feedback loop until the goal is achieved, budget-limited, or blocked on a human decision. This skill is the AgentOS side of the pipeline — it assumes `/goal-compiler` has already produced `docs/goal/GOAL.md`.
+This is the AgentOS-specific version of `/goal-dispatch`. It is identical in behavior to the general `/goal-dispatch` skill from the skills plugin, and exists here for use when Claude Code is working within the AgentOS project itself.
+
+## Agent selection
+
+AgentOS provides these coding agent adapters. Ask the user which to use if not specified:
+
+| Agent key | When to prefer |
+|-----------|----------------|
+| `codex_cli` | OpenAI Codex CLI -- best for /goal integration with its built-in continuation loop |
+| `anthropic` | Claude via Anthropic API -- strong reasoning, no /goal state machine |
+| `gemini` | Gemini via Google API |
+| `qwen` | Qwen via Alibaba API |
+
+Default to `codex_cli` when the goal was compiled by `/goal-compiler` (because Codex's internal continuation.md protocol aligns with the goal format). Use `anthropic` for tasks that need heavy reasoning or where Codex's quota is exhausted.
 
 ## Prerequisites
 
-Before dispatching, verify all of the following. Stop and report which is missing if any fails:
+Verify before dispatching:
 
 - `docs/goal/GOAL.md` exists
 - `docs/goal/TASKS.md` exists
 - `docs/goal/ACCEPTANCE.md` exists
+- `build/agentos` is built: `cmake --build build` if stale
 - `git status --short` returns nothing, or only untracked files under `docs/goal/`
 
 ## Initial dispatch
 
-Run the `codex_cli` subagent with the goal as its objective:
-
 ```
-agentos run codex_cli objective="$(cat docs/goal/GOAL.md)"
+agentos run <agent_key> objective="$(cat docs/goal/GOAL.md)"
 ```
 
-Use a single persistent thread. Do not restart the thread unless the user explicitly asks. Codex's goal state machine (`pursuing → achieved / unmet / budget-limited`) must run to completion in one thread.
+For AgentOS development tasks specifically, you can also pass `allow_high_risk=true` if the task requires file writes or shell execution that the policy engine would otherwise block.
 
 ## Verify loop
 
-After each Codex response, run the verification commands for the tasks Codex worked on:
+After each agent run, verify the tasks completed in that run:
 
-1. Run the `Verification` command for the task just completed.
-2. **Pass**: log `[PASS] Task N: <name>` in `docs/goal/DISPATCH_LOG.md` and continue.
-3. **Fail**: capture the exact command, exit code, stdout, and stderr (cap at 2000 chars). Send this back to the same Codex thread:
+1. Run the Verification command from `docs/goal/TASKS.md` for the current task.
+2. **Pass**: log `[PASS] Task N` in `docs/goal/DISPATCH_LOG.md`, continue.
+3. **Fail**: build retry objective (see below) and rerun.
+
+For AgentOS C++ tasks, the standard verification sequence is:
 
 ```
+cmake --build build
+ctest --test-dir build -R <relevant_test> --output-on-failure --timeout 60
+```
+
+Full suite check (run before final review):
+
+```
+cmake --build build
+ctest --test-dir build --output-on-failure --timeout 60
+```
+
+## Retry protocol
+
+On verification failure, build a retry objective that embeds the accumulated error context:
+
+```
+<original docs/goal/GOAL.md content>
+
+---
+## Retry context
+
 Verification failed for Task N: <name>
 
-Command: <exact command>
+Command: `<command>`
 Exit code: <n>
 Output:
-<stderr/stdout, capped at 2000 chars>
+<truncated to 2000 chars>
 
-Please diagnose and fix before continuing.
+Fix this failure before continuing. Do not mark any task complete until
+its verification command passes.
 ```
 
-4. Retry up to two times for the same task. On the third consecutive failure, pause and present the failure to the user:
-   - What command failed
-   - The full output
-   - The question: "Should I continue retrying, adjust the verification command, or stop?"
+Rerun with this objective. Retry up to 2 times per task. On the third consecutive failure, pause and present to the user.
 
-## Safety — scope check
+## Safety -- scope check
 
-Before each Codex continuation turn, run `git diff --name-only`. Check that every changed file appears in the current task's Scope field in `docs/goal/TASKS.md`. If unexpected files appear:
+After each agent run, run `git diff --name-only`. If files outside the task's Scope appear:
 
-1. Log the unexpected files in `docs/goal/DISPATCH_LOG.md`.
-2. Ask the user: "Codex modified files outside the task scope: `<files>`. Continue, roll back those files, or stop?"
+1. Log the unexpected files.
+2. Ask: "Agent touched files outside scope: `<files>`. Continue, revert those files, or stop?"
 
-Never roll back automatically.
-
-## Budget-limit handling
-
-If Codex's response contains language consistent with `budget_limit.md` injection (summaries of progress, "remaining work includes…", no new code changes):
-
-1. Stop the dispatch loop.
-2. Present the user with:
-   - Tasks completed (from `docs/goal/DISPATCH_LOG.md`)
-   - Tasks remaining (from `docs/goal/TASKS.md`)
-   - Codex's exact summary of the blocker or remaining work
-   - The next step recommendation: "Resume with `/codex-goal-dispatch` after adjusting budget, or split remaining tasks."
-
-Do not automatically resume. Ask the user.
+Never revert automatically. This is especially important for AgentOS: the agent might accidentally touch `runtime/` or `src/` files not in scope.
 
 ## Final review
 
-When Codex marks the goal `achieved`:
+When all task verifications pass:
 
-1. Run every criterion in the Stop Rule section of `docs/goal/ACCEPTANCE.md`.
-2. Run `git diff --name-only` and verify it matches the expected file set.
-3. **All pass**: report "Goal achieved. All acceptance criteria verified." Update `docs/goal/DISPATCH_LOG.md` with the final status.
-4. **Any fail**: do not accept the completion. Send back to the same Codex thread:
+1. Run every condition in the Stop Rule section of `docs/goal/ACCEPTANCE.md`.
+2. Run the full test suite: `ctest --test-dir build --output-on-failure --timeout 60`.
+3. Run `git diff --name-only` against the expected file set.
+4. **All pass**: report complete, update `docs/goal/DISPATCH_LOG.md`.
+5. **Any fail**: rerun with a final-review retry objective that lists the failing conditions.
+
+## Parallel agent orchestration
+
+For independent tasks (Dependencies: none), AgentOS can run multiple agents in parallel via `SubagentManager`. This is advanced usage -- only apply it when tasks are explicitly marked independent in `docs/goal/TASKS.md`.
+
+To run two tasks in parallel:
 
 ```
-The goal was marked achieved prematurely. The following acceptance criteria did not pass:
-
-<list of failed criteria with commands and outputs>
-
-Please fix these before calling update_goal with status=achieved.
+agentos run anthropic objective="Task A: <goal>" &
+agentos run anthropic objective="Task B: <goal>" &
+wait
 ```
 
-## Dispatch log format
+Merge their outputs manually and run the combined verification before proceeding.
 
-Maintain `docs/goal/DISPATCH_LOG.md` throughout:
+## Dispatch log
 
-```markdown
+Maintain `docs/goal/DISPATCH_LOG.md`:
+
+```
 ## Dispatch Log
 
+Agent: <agent_key>
+Project: AgentOS
+
 ### Task N: <name>
-- Status: pass / fail / retrying / pending
-- Verification: `<command>` → exit <n>
-- Files changed: <git diff --name-only output>
-- Notes: <any anomalies>
+- Status: pass / fail / retrying
+- Verification: `<command>` -> exit <n>
+- Scope: ok / unexpected: <files>
+- Attempts: <n>
 
 ### Final Status
-- Goal state: achieved / budget-limited / unmet / in-progress
-- Criteria verified: N/N
+- Tasks: N/N passed
+- Stop Rule: pass / fail
+- Full test suite: pass / fail
 ```
