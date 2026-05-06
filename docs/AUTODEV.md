@@ -111,4 +111,4 @@ Only AgentOS runtime gates mutate authoritative state:
 - `complete-job` / `mark-done` may advance a `pr_ready` job with latest passed final review to `done`.
 - `recover-blocked` may rerun setup gates selected from runtime `next_action`; it cannot approve specs or start execution.
 - `cleanup-worktree` may remove a job worktree only after the job is `done` or `cancelled`; runtime facts remain in the AgentOS store.
-- `pause`, `resume`, and `cancel` currently mutate job state and append events only; they do not interrupt or terminate a Codex process.
+- `pause` and `cancel` mutate job state, append events, and are observed by the Codex CLI execution path; a running `execute-next-task`, `run-task`, or `run-job` process is terminated when it sees `paused` or `cancelled`. `resume` only changes runtime state and does not restart an interrupted process.

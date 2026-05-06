@@ -20,7 +20,10 @@
 #include <nlohmann/json.hpp>
 
 #ifndef _WIN32
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace agentos {
@@ -157,7 +160,7 @@ struct ShellCommandResult {
     int duration_ms = 0;
 };
 
-ShellCommandResult RunShellCommand(const std::filesystem::path& cwd, const std::string& command) {
+[[maybe_unused]] ShellCommandResult RunShellCommand(const std::filesystem::path& cwd, const std::string& command) {
     const auto started = std::chrono::steady_clock::now();
     std::ostringstream shell;
 #ifdef _WIN32
@@ -191,6 +194,111 @@ ShellCommandResult RunShellCommand(const std::filesystem::path& cwd, const std::
     const auto duration_ms = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(completed - started).count());
     return {.exit_code = exit_code, .output = std::move(output), .duration_ms = duration_ms};
+}
+
+ShellCommandResult RunShellCommandWithAutoDevControl(
+    const std::filesystem::path& cwd,
+    const std::string& command,
+    const std::filesystem::path& workspace,
+    const std::string& job_id) {
+#ifdef _WIN32
+    (void)workspace;
+    (void)job_id;
+    return RunShellCommand(cwd, command);
+#else
+    const auto started = std::chrono::steady_clock::now();
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        return {.exit_code = -1, .output = "failed to create process pipe", .duration_ms = 0};
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return {.exit_code = -1, .output = "failed to fork process", .duration_ms = 0};
+    }
+    if (pid == 0) {
+        setpgid(0, 0);
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        close(pipe_fds[1]);
+        const auto shell_command = "cd " + ShellQuote(cwd.string()) + " && " + command;
+        execl("/bin/sh", "sh", "-c", shell_command.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    setpgid(pid, pid);
+    close(pipe_fds[1]);
+    const int flags = fcntl(pipe_fds[0], F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(pipe_fds[0], F_SETFL, flags | O_NONBLOCK);
+    }
+
+    AutoDevStateStore control_store(workspace);
+    std::string output;
+    int status = 0;
+    bool exited = false;
+    bool interrupt_sent = false;
+    std::string interrupt_status;
+    auto last_poll = std::chrono::steady_clock::now() - std::chrono::milliseconds(250);
+
+    while (!exited) {
+        char buffer[4096];
+        while (true) {
+            const ssize_t n = read(pipe_fds[0], buffer, sizeof(buffer));
+            if (n > 0) {
+                output.append(buffer, static_cast<std::size_t>(n));
+                continue;
+            }
+            break;
+        }
+
+        const pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) {
+            exited = true;
+            break;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (!interrupt_sent && now - last_poll >= std::chrono::milliseconds(100)) {
+            last_poll = now;
+            if (const auto job = control_store.load_job(job_id, nullptr); job.has_value()) {
+                if (job->status == "paused" || job->status == "cancelled") {
+                    interrupt_sent = true;
+                    interrupt_status = job->status;
+                    output += "\n[agentos] interrupted by autodev job status: " + interrupt_status + "\n";
+                    kill(-pid, SIGTERM);
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    char buffer[4096];
+    while (true) {
+        const ssize_t n = read(pipe_fds[0], buffer, sizeof(buffer));
+        if (n > 0) {
+            output.append(buffer, static_cast<std::size_t>(n));
+            continue;
+        }
+        break;
+    }
+    close(pipe_fds[0]);
+
+    const auto duration_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+    int exit_code = status;
+    if (interrupt_sent) {
+        exit_code = interrupt_status == "cancelled" ? 130 : 131;
+    } else if (WIFEXITED(status)) {
+        exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        exit_code = 128 + WTERMSIG(status);
+    }
+    return {.exit_code = exit_code, .output = std::move(output), .duration_ms = duration_ms};
+#endif
 }
 
 std::string BuildCodexCliPrompt(const AutoDevJob& job, const AutoDevTask& task) {
@@ -2100,7 +2208,11 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
             prompt << BuildCodexCliPrompt(*job, *pending_task);
         }
         const auto command = codex_cli_command + " < " + ShellQuote(input_path.string());
-        const auto execution = RunShellCommand(job->job_worktree_path, command);
+        const auto execution = RunShellCommandWithAutoDevControl(
+            job->job_worktree_path,
+            command,
+            workspace,
+            job_id_it->second);
         const auto turn = store.record_execution_turn(
             job_id_it->second,
             pending_task->task_id,

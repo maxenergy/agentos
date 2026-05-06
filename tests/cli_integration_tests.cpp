@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -417,6 +418,40 @@ std::filesystem::path WriteAutoDevCodexCliFixture(const std::filesystem::path& b
         << "cat >/dev/null\n"
         << "printf '%s\\n' 'codex fixture update' >> README.md\n"
         << "printf '%s\\n' 'fixture codex completed'\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+    return fixture_path;
+}
+
+std::filesystem::path WriteLongAutoDevCodexCliFixture(
+    const std::filesystem::path& bin_dir,
+    const std::filesystem::path& marker_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "autodev_long_codex_fixture.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "type CON > NUL\n"
+        << "echo started>" << marker_path.string() << "\n"
+        << "ping -n 11 127.0.0.1 > NUL\n"
+        << "echo long fixture completed>> README.md\n"
+        << "echo completed\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "autodev_long_codex_fixture";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "cat >/dev/null\n"
+        << "printf '%s\\n' started > " << QuoteShellArg(marker_path.string()) << "\n"
+        << "sleep 10\n"
+        << "printf '%s\\n' 'long fixture completed' >> README.md\n"
+        << "printf '%s\\n' completed\n";
     output.close();
     std::filesystem::permissions(
         fixture_path,
@@ -3147,6 +3182,91 @@ void TestAutoDevCommands() {
         "autodev run-job should leave the job running");
     Expect(run_job_status.output.find("Phase: final_review") != std::string::npos,
         "autodev run-job should leave the job at final_review");
+    const auto interrupt_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Cancel running Codex CLI execution",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(interrupt_submit.exit_code == 0,
+        "autodev submit should support an interrupt fixture job");
+    const auto interrupt_job_id = ExtractLineValue(interrupt_submit.output, "job_id:");
+    const auto interrupt_worktree = ExtractLineValue(interrupt_submit.output, "job_worktree_path:");
+    const auto interrupt_path = interrupt_worktree.substr(0, interrupt_worktree.find(" "));
+    const auto interrupt_job_dir = workspace / "runtime" / "autodev" / "jobs" / interrupt_job_id;
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + interrupt_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare interrupt fixture");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + interrupt_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load interrupt fixture");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + interrupt_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate interrupt fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(interrupt_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Cancel running Codex CLI execution\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Long running execution\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"Long execution can be cancelled\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto interrupt_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + interrupt_job_id});
+    Expect(interrupt_validate.exit_code == 0,
+        "autodev validate-spec should validate interrupt fixture spec");
+    const auto interrupt_hash = ExtractLineValue(interrupt_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + interrupt_job_id,
+        "spec_hash=" + interrupt_hash}).exit_code == 0,
+        "autodev approve-spec should approve interrupt fixture spec");
+    const auto interrupt_marker = workspace / "autodev-interrupt-started.txt";
+    const auto long_codex_fixture = WriteLongAutoDevCodexCliFixture(workspace / "bin", interrupt_marker);
+    auto running_task = std::async(std::launch::async, [&]() {
+        return RunAgentos(workspace, {
+            "autodev",
+            "run-task",
+            "job_id=" + interrupt_job_id,
+            "codex_cli_command=" + long_codex_fixture.string()});
+    });
+    for (int i = 0; i < 80 && !std::filesystem::exists(interrupt_marker); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    Expect(std::filesystem::exists(interrupt_marker),
+        "long Codex fixture should start before cancellation is requested");
+    const auto cancel_interrupt = RunAgentos(workspace, {"autodev", "cancel", "job_id=" + interrupt_job_id});
+    Expect(cancel_interrupt.exit_code == 0,
+        "autodev cancel should update runtime while Codex CLI execution is running");
+    const auto interrupted_task = running_task.get();
+    Expect(interrupted_task.exit_code != 0,
+        "running autodev run-task should stop after job cancellation");
+    Expect(interrupted_task.output.find("stopped_stage: execute") != std::string::npos,
+        "running autodev run-task should stop at the execute stage after cancellation");
+    const auto interrupt_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + interrupt_job_id});
+    Expect(interrupt_status.exit_code == 0,
+        "autodev status should read cancelled interrupt fixture");
+    Expect(interrupt_status.output.find("Status: cancelled") != std::string::npos,
+        "autodev cancel should leave interrupted job cancelled");
+    const auto interrupted_response = ReadTextFile(interrupt_job_dir / "responses" / "turn-001.md");
+    Expect(interrupted_response.find("interrupted by autodev job status: cancelled") != std::string::npos,
+        "interrupted execution should persist interruption reason in response artifact");
+    Expect(ReadTextFile(std::filesystem::path(interrupt_path) / "README.md").find("long fixture completed") == std::string::npos,
+        "cancelled Codex CLI process should not finish its worktree write");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);

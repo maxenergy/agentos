@@ -1901,8 +1901,15 @@ AutoDevExecutionTurnResult AutoDevStateStore::record_execution_turn(
     WriteFileAtomically(turns_path(job.job_id), turns.dump(2) + "\n");
 
     job.current_activity = "none";
-    job.next_action = exit_code == 0 ? "verify_task" : "inspect_turn";
-    job.blocker = exit_code == 0 ? std::nullopt : std::optional<std::string>("latest execution turn failed");
+    if (job.status == "cancelled") {
+        job.next_action = "none";
+        job.blocker = std::nullopt;
+    } else if (job.status == "paused") {
+        job.next_action = "resume";
+    } else {
+        job.next_action = exit_code == 0 ? "verify_task" : "inspect_turn";
+        job.blocker = exit_code == 0 ? std::nullopt : std::optional<std::string>("latest execution turn failed");
+    }
     job.updated_at = IsoUtcNow();
     save_job(job);
 
