@@ -1089,6 +1089,91 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record retry limit exceeded event");
 }
 
+void TestMultiTaskAcceptanceKeepsJobRunningUntilAllTasksPass() {
+    const auto workspace = FreshWorkspace("multi_task_acceptance");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Exercise multi-task acceptance",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "multi-task fixture submit should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "multi-task fixture prepare_workspace should succeed");
+    Expect(store.load_skill_pack(submit.job.job_id).success,
+        "multi-task fixture load_skill_pack should succeed");
+    Expect(store.generate_goal_docs(submit.job.job_id).success,
+        "multi-task fixture generate_goal_docs should succeed");
+
+    const auto spec_path = prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json";
+    auto spec = nlohmann::json::parse(ReadFile(spec_path));
+    spec["tasks"] = nlohmann::json::array({
+        {
+            {"task_id", "task-001"},
+            {"title", "First task"},
+            {"allowed_files", nlohmann::json::array({"README.md"})},
+            {"blocked_files", nlohmann::json::array({"package.json"})},
+            {"verify_command", "true"},
+            {"acceptance", nlohmann::json::array({"first accepted"})},
+        },
+        {
+            {"task_id", "task-002"},
+            {"title", "Second task"},
+            {"allowed_files", nlohmann::json::array({"README.md"})},
+            {"blocked_files", nlohmann::json::array({"package.json"})},
+            {"verify_command", "true"},
+            {"acceptance", nlohmann::json::array({"second accepted"})},
+        },
+    });
+    {
+        std::ofstream output(spec_path, std::ios::binary | std::ios::trunc);
+        output << spec.dump(2) << '\n';
+    }
+
+    const auto validated = store.validate_spec(submit.job.job_id);
+    Expect(validated.success, "multi-task fixture validate_spec should succeed");
+    const auto approved = store.approve_spec(submit.job.job_id, validated.spec_hash);
+    Expect(approved.success, "multi-task fixture approve_spec should succeed");
+    {
+        std::ofstream readme(approved.job.job_worktree_path / "README.md", std::ios::binary | std::ios::app);
+        readme << "multi-task change\n";
+    }
+
+    Expect(store.verify_task(submit.job.job_id, "task-001").success,
+        "first task verification should pass");
+    Expect(store.diff_guard(submit.job.job_id, "task-001").success,
+        "first task diff guard should pass");
+    const auto first_acceptance = store.acceptance_gate(submit.job.job_id, "task-001");
+    Expect(first_acceptance.success && first_acceptance.acceptance.passed,
+        "first task acceptance should pass");
+    Expect(first_acceptance.job.status == "running",
+        "first accepted task should leave multi-task job running");
+    Expect(first_acceptance.job.phase == "codex_execution",
+        "first accepted task should not advance multi-task job to final_review");
+    Expect(first_acceptance.job.next_action == "execute_next_task",
+        "first accepted task should point to the next task");
+
+    Expect(store.verify_task(submit.job.job_id, "task-002").success,
+        "second task verification should pass");
+    Expect(store.diff_guard(submit.job.job_id, "task-002").success,
+        "second task diff guard should pass");
+    const auto second_acceptance = store.acceptance_gate(submit.job.job_id, "task-002");
+    Expect(second_acceptance.success && second_acceptance.acceptance.passed,
+        "second task acceptance should pass");
+    Expect(second_acceptance.job.status == "running",
+        "all accepted tasks should still leave explicit job completion pending");
+    Expect(second_acceptance.job.phase == "final_review",
+        "all accepted tasks should advance the job to final_review");
+    Expect(second_acceptance.job.next_action == "final_review",
+        "all accepted tasks should make final_review the next action");
+}
+
 }  // namespace
 
 int main() {
@@ -1109,6 +1194,7 @@ int main() {
     TestApproveSpecRequiresNonEmptyTasks();
     TestApproveSpecFreezesHashBoundRevision();
     TestRecordExecutionBlockedAppendsAuditEventOnly();
+    TestMultiTaskAcceptanceKeepsJobRunningUntilAllTasksPass();
 
     if (failures != 0) {
         std::cerr << failures << " AutoDev test assertion(s) failed\n";
