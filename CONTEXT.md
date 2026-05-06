@@ -290,6 +290,7 @@ _Avoid_: sandbox mode, workspace path, checkout type
 - Each AutoDev Spec Snapshot records the **Skill Pack Snapshot** used to generate that spec revision, not merely the job's declared binding.
 - Loading a skill pack never implies that a Candidate Spec exists, that a Spec Freeze happened, or that code execution is approved.
 - Generating goal-document skeletons writes Candidate Spec working files under the Job Worktree Path only, and does not validate, snapshot, freeze, approve, or execute the spec.
+- Validating a Candidate Spec writes a pending normalized spec revision and hash under the AutoDev Job Directory, then stops at the before-code approval gate; it does not freeze the spec or execute code.
 - The **Codex CLI Development Skill** is a legacy or MVP execution adapter for lightweight Development Requests and does not own AutoDev lifecycle concerns.
 - AutoDev must reuse AgentOS routing, policy, audit, memory, runtime-store, agent-dispatch, workspace-session, subagent-orchestration, and scheduler concepts instead of defining a parallel operating system.
 - Only an **Acceptance Gate** can mark an AutoDev task or job complete.

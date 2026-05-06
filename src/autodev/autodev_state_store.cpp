@@ -3,12 +3,15 @@
 #include "autodev/autodev_job_id.hpp"
 #include "autodev/autodev_skill_pack_loader.hpp"
 #include "utils/atomic_file.hpp"
+#include "utils/sha256.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <regex>
 #include <sstream>
 #include <string>
 
@@ -209,6 +212,71 @@ nlohmann::json GoalDocsGeneratedEvent(const AutoDevJob& job, const std::vector<s
     };
 }
 
+nlohmann::json SpecValidatedEvent(const AutoDevJob& job) {
+    return nlohmann::json{
+        {"type", "autodev.spec.validated"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"approval_gate", job.approval_gate},
+        {"schema_version", job.schema_version.value_or("")},
+        {"spec_revision", job.spec_revision.value_or("")},
+        {"spec_hash", job.spec_hash.value_or("")},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
+    };
+}
+
+std::string NextSpecRevision(const std::filesystem::path& dir) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    int max_revision = 0;
+    const std::regex pattern(R"(rev-([0-9]{3})\.normalized\.json)");
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) {
+            break;
+        }
+        std::smatch match;
+        const auto name = entry.path().filename().string();
+        if (std::regex_match(name, match, pattern)) {
+            max_revision = std::max(max_revision, std::stoi(match[1].str()));
+        }
+    }
+
+    std::ostringstream out;
+    out << "rev-" << std::setw(3) << std::setfill('0') << (max_revision + 1);
+    return out.str();
+}
+
+std::string ValidateAutoDevSpecShape(const nlohmann::json& spec) {
+    if (!spec.is_object()) {
+        return "AUTODEV_SPEC.json must contain a JSON object";
+    }
+    const std::vector<std::pair<const char*, nlohmann::json::value_t>> required = {
+        {"schema_version", nlohmann::json::value_t::string},
+        {"generated_by", nlohmann::json::value_t::string},
+        {"generated_by_skill_pack", nlohmann::json::value_t::string},
+        {"agentos_min_version", nlohmann::json::value_t::string},
+        {"created_at", nlohmann::json::value_t::string},
+        {"objective", nlohmann::json::value_t::string},
+        {"mode", nlohmann::json::value_t::string},
+        {"source_of_truth", nlohmann::json::value_t::array},
+        {"tasks", nlohmann::json::value_t::array},
+    };
+    for (const auto& [key, type] : required) {
+        if (!spec.contains(key)) {
+            return std::string("AUTODEV_SPEC.json missing required field: ") + key;
+        }
+        if (spec.at(key).type() != type) {
+            return std::string("AUTODEV_SPEC.json field has invalid type: ") + key;
+        }
+    }
+    if (spec.at("schema_version").get<std::string>() != "1.0.0") {
+        return "unsupported AUTODEV_SPEC schema_version: " + spec.at("schema_version").get<std::string>();
+    }
+    return {};
+}
+
 std::string MarkdownSkeleton(const AutoDevJob& job, const std::string& title, const std::string& body) {
     std::ostringstream out;
     out << "# " << title << "\n\n"
@@ -313,6 +381,10 @@ std::filesystem::path AutoDevStateStore::events_path(const std::string& job_id) 
 
 std::filesystem::path AutoDevStateStore::artifacts_dir(const std::string& job_id) const {
     return job_dir(job_id) / "artifacts";
+}
+
+std::filesystem::path AutoDevStateStore::spec_revisions_dir(const std::string& job_id) const {
+    return job_dir(job_id) / "spec_revisions";
 }
 
 AutoDevSubmitResult AutoDevStateStore::submit(const AutoDevSubmitRequest& request) {
@@ -731,7 +803,7 @@ AutoDevGenerateGoalDocsResult AutoDevStateStore::generate_goal_docs(const std::s
 
     job.phase = "requirements_grilling";
     job.current_activity = "none";
-    job.next_action = "run_docs_pipeline";
+    job.next_action = "validate_spec";
     job.blocker = std::nullopt;
     job.updated_at = IsoUtcNow();
     save_job(job);
@@ -742,6 +814,130 @@ AutoDevGenerateGoalDocsResult AutoDevStateStore::generate_goal_docs(const std::s
     result.job = std::move(job);
     result.goal_dir = goal_dir;
     result.written_files = std::move(written);
+    return result;
+}
+
+AutoDevValidateSpecResult AutoDevStateStore::validate_spec(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevValidateSpecResult result;
+        result.error_message = load_error;
+        return result;
+    }
+
+    AutoDevJob job = std::move(*maybe_job);
+    const auto block = [this](AutoDevJob job, const std::string& message, const std::string& next_action) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.blocker = message;
+        job.next_action = next_action;
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, nlohmann::json{
+            {"type", "autodev.spec.blocked"},
+            {"job_id", job.job_id},
+            {"status", job.status},
+            {"phase", job.phase},
+            {"blocker", message},
+            {"next_action", next_action},
+            {"at", job.updated_at},
+        });
+        AutoDevValidateSpecResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (job.isolation_status != "ready" || !std::filesystem::exists(job.job_worktree_path)) {
+        return block(std::move(job), "workspace is not ready", "prepare_workspace");
+    }
+    const auto spec_path = job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json";
+    if (!std::filesystem::exists(spec_path)) {
+        return block(std::move(job), "AUTODEV_SPEC.json does not exist in job worktree", "generate_goal_docs");
+    }
+
+    job.status = "running";
+    job.phase = "spec_freezing";
+    job.current_activity = "validating_spec";
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.spec.validating"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"current_activity", job.current_activity},
+        {"spec_path", spec_path.string()},
+        {"at", job.updated_at},
+    });
+
+    nlohmann::json spec;
+    try {
+        std::ifstream input(spec_path, std::ios::binary);
+        input >> spec;
+    } catch (const std::exception& e) {
+        return block(std::move(job), std::string("failed to parse AUTODEV_SPEC.json: ") + e.what(), "fix_autodev_spec");
+    }
+
+    const auto validation_error = ValidateAutoDevSpecShape(spec);
+    if (!validation_error.empty()) {
+        return block(std::move(job), validation_error, "fix_autodev_spec");
+    }
+
+    job.current_activity = "snapshotting_spec";
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.spec.snapshotting"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"current_activity", job.current_activity},
+        {"at", job.updated_at},
+    });
+
+    const auto revisions_dir = spec_revisions_dir(job.job_id);
+    std::filesystem::create_directories(revisions_dir);
+    const auto revision = NextSpecRevision(revisions_dir);
+    const auto normalized = spec.dump(2) + "\n";
+    const auto hash = Sha256Hex(normalized);
+    const auto normalized_path = revisions_dir / (revision + ".normalized.json");
+    const auto hash_path = revisions_dir / (revision + ".sha256");
+    const auto status_path = revisions_dir / (revision + ".status.json");
+    WriteFileAtomically(normalized_path, normalized);
+    WriteFileAtomically(hash_path, hash + "\n");
+    WriteFileAtomically(status_path, nlohmann::json{
+        {"job_id", job.job_id},
+        {"spec_revision", revision},
+        {"spec_hash", hash},
+        {"schema_version", spec.at("schema_version").get<std::string>()},
+        {"status", "pending_approval"},
+        {"approval_gate", "before_code_execution"},
+        {"created_at", IsoUtcNow()},
+    }.dump(2) + "\n");
+
+    job.status = "awaiting_approval";
+    job.phase = "goal_packing";
+    job.current_activity = "none";
+    job.approval_gate = "before_code_execution";
+    job.schema_version = spec.at("schema_version").get<std::string>();
+    job.spec_revision = revision;
+    job.spec_hash = hash;
+    job.next_action = "approve_spec";
+    job.blocker = std::nullopt;
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, SpecValidatedEvent(job));
+
+    AutoDevValidateSpecResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.spec_revision = revision;
+    result.spec_hash = hash;
+    result.normalized_path = normalized_path;
+    result.hash_path = hash_path;
+    result.status_path = status_path;
     return result;
 }
 

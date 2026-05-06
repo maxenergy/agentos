@@ -351,8 +351,8 @@ void TestGenerateGoalDocsWritesOnlyJobWorktree() {
     Expect(generated.success, "generate_goal_docs should succeed after workspace and skill pack are ready");
     Expect(generated.job.phase == "requirements_grilling",
         "generate_goal_docs should advance to requirements_grilling");
-    Expect(generated.job.next_action == "run_docs_pipeline",
-        "generate_goal_docs should set docs pipeline next action");
+    Expect(generated.job.next_action == "validate_spec",
+        "generate_goal_docs should set validate_spec next action");
     Expect(generated.written_files.size() == 13,
         "generate_goal_docs should write the candidate goal doc skeleton set");
     Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "GOAL.md"),
@@ -397,6 +397,101 @@ void TestGenerateGoalDocsBlocksUntilReady() {
         "blocked generate_goal_docs should not write target docs");
 }
 
+void TestValidateSpecSnapshotsPendingRevision() {
+    const auto workspace = FreshWorkspace("validate_spec");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Validate spec",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before validate_spec should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace before validate_spec should succeed");
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(loaded.success, "load_skill_pack before validate_spec should succeed");
+    const auto generated = store.generate_goal_docs(submit.job.job_id);
+    Expect(generated.success, "generate_goal_docs before validate_spec should succeed");
+
+    const auto validated = store.validate_spec(submit.job.job_id);
+    Expect(validated.success, "validate_spec should validate generated candidate AUTODEV_SPEC");
+    Expect(validated.job.status == "awaiting_approval",
+        "validate_spec should stop at approval instead of continuing");
+    Expect(validated.job.phase == "goal_packing",
+        "validate_spec should move to goal_packing after pending snapshot");
+    Expect(validated.job.approval_gate == "before_code_execution",
+        "validate_spec should set before_code_execution approval gate");
+    Expect(validated.job.next_action == "approve_spec",
+        "validate_spec should point at the approval action");
+    Expect(validated.spec_revision == "rev-001",
+        "validate_spec should create first spec revision");
+    Expect(validated.spec_hash.size() == 64,
+        "validate_spec should compute sha256 spec hash");
+    Expect(std::filesystem::exists(validated.normalized_path),
+        "validate_spec should write normalized spec snapshot");
+    Expect(std::filesystem::exists(validated.hash_path),
+        "validate_spec should write hash file");
+    Expect(std::filesystem::exists(validated.status_path),
+        "validate_spec should write revision status file");
+    Expect(!std::filesystem::exists(target / "runtime" / "autodev"),
+        "validate_spec should not write runtime facts into target repo");
+
+    const auto revision_status = nlohmann::json::parse(ReadFile(validated.status_path));
+    Expect(revision_status["status"] == "pending_approval",
+        "spec revision status should be pending approval");
+    Expect(revision_status["approval_gate"] == "before_code_execution",
+        "spec revision status should record approval gate");
+
+    const auto events = ReadFile(store.events_path(submit.job.job_id));
+    Expect(events.find("\"type\":\"autodev.spec.validated\"") != std::string::npos,
+        "events.ndjson should record spec validated event");
+}
+
+void TestValidateSpecBlocksUnsupportedSchema() {
+    const auto workspace = FreshWorkspace("validate_spec_bad_schema");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Validate bad spec",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before unsupported validate_spec should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace before unsupported validate_spec should succeed");
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(loaded.success, "load_skill_pack before unsupported validate_spec should succeed");
+    const auto generated = store.generate_goal_docs(submit.job.job_id);
+    Expect(generated.success, "generate_goal_docs before unsupported validate_spec should succeed");
+
+    const auto spec_path = prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json";
+    auto spec = nlohmann::json::parse(ReadFile(spec_path));
+    spec["schema_version"] = "9.9.9";
+    {
+        std::ofstream output(spec_path, std::ios::binary | std::ios::trunc);
+        output << spec.dump(2) << '\n';
+    }
+
+    const auto validated = store.validate_spec(submit.job.job_id);
+    Expect(!validated.success, "validate_spec should block unsupported schema versions");
+    Expect(validated.job.status == "blocked",
+        "unsupported schema should block the job");
+    Expect(validated.job.blocker.has_value() &&
+               validated.job.blocker->find("unsupported AUTODEV_SPEC schema_version") != std::string::npos,
+        "unsupported schema should explain blocker");
+}
+
 }  // namespace
 
 int main() {
@@ -411,6 +506,8 @@ int main() {
     TestLoadSkillPackBlocksMissingSteps();
     TestGenerateGoalDocsWritesOnlyJobWorktree();
     TestGenerateGoalDocsBlocksUntilReady();
+    TestValidateSpecSnapshotsPendingRevision();
+    TestValidateSpecBlocksUnsupportedSchema();
 
     if (failures != 0) {
         std::cerr << failures << " AutoDev test assertion(s) failed\n";

@@ -2428,8 +2428,34 @@ void TestAutoDevCommands() {
     Expect(generated_status.exit_code == 0, "autodev status should read generated goal docs job");
     Expect(generated_status.output.find("Phase: requirements_grilling") != std::string::npos,
         "autodev status should show requirements_grilling after goal docs generation");
-    Expect(generated_status.output.find("agentos autodev run_docs_pipeline job_id=" + job_id) != std::string::npos,
-        "autodev status should show run_docs_pipeline next action");
+    Expect(generated_status.output.find("agentos autodev validate_spec job_id=" + job_id) != std::string::npos,
+        "autodev status should show validate_spec next action");
+
+    const auto validate_spec = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + job_id});
+    Expect(validate_spec.exit_code == 0, "autodev validate-spec should succeed for generated candidate spec");
+    Expect(validate_spec.output.find("AutoDev spec validated") != std::string::npos,
+        "autodev validate-spec should print success heading");
+    Expect(validate_spec.output.find("status:        awaiting_approval") != std::string::npos,
+        "autodev validate-spec should stop at awaiting approval");
+    Expect(validate_spec.output.find("approval_gate: before_code_execution") != std::string::npos,
+        "autodev validate-spec should report before_code_execution gate");
+    Expect(validate_spec.output.find("spec_revision: rev-001") != std::string::npos,
+        "autodev validate-spec should report first spec revision");
+    Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.normalized.json"),
+        "autodev validate-spec should write normalized spec snapshot under runtime store");
+    Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.sha256"),
+        "autodev validate-spec should write spec hash under runtime store");
+    Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.status.json"),
+        "autodev validate-spec should write spec revision status under runtime store");
+
+    const auto validated_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(validated_status.exit_code == 0, "autodev status should read validated spec job");
+    Expect(validated_status.output.find("Status: awaiting_approval") != std::string::npos,
+        "autodev status should show awaiting approval after spec validation");
+    Expect(validated_status.output.find("Approval gate: before_code_execution") != std::string::npos,
+        "autodev status should show before_code_execution after spec validation");
+    Expect(validated_status.output.find("revision:       rev-001") != std::string::npos,
+        "autodev status should show spec revision");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

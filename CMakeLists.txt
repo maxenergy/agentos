@@ -70,6 +70,7 @@ add_library(agentos_core
     src/utils/path_utils.cpp
     src/utils/secret_redaction.cpp
     src/utils/secure_random.cpp
+    src/utils/sha256.cpp
     src/utils/signal_cancellation.cpp
     src/utils/spec_parsing.cpp
     src/core/registry/skill_registry.cpp

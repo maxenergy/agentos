@@ -49,6 +49,17 @@ struct AutoDevGenerateGoalDocsResult {
     std::vector<std::filesystem::path> written_files;
 };
 
+struct AutoDevValidateSpecResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    std::string spec_revision;
+    std::string spec_hash;
+    std::filesystem::path normalized_path;
+    std::filesystem::path hash_path;
+    std::filesystem::path status_path;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -60,6 +71,7 @@ public:
     [[nodiscard]] std::filesystem::path job_json_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path events_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path artifacts_dir(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path spec_revisions_dir(const std::string& job_id) const;
 
     AutoDevSubmitResult submit(const AutoDevSubmitRequest& request);
     AutoDevPrepareWorkspaceResult prepare_workspace(const std::string& job_id);
@@ -67,6 +79,7 @@ public:
         const std::string& job_id,
         const std::optional<std::filesystem::path>& override_path = std::nullopt);
     AutoDevGenerateGoalDocsResult generate_goal_docs(const std::string& job_id);
+    AutoDevValidateSpecResult validate_spec(const std::string& job_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
 
 private:

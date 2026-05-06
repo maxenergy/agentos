@@ -43,6 +43,9 @@ struct AutoDevJob {
 
     std::string next_action = "prepare_workspace";
     std::optional<std::string> blocker;
+    std::optional<std::string> schema_version;
+    std::optional<std::string> spec_revision;
+    std::optional<std::string> spec_hash;
     AutoDevSkillPackBinding skill_pack;
 
     std::string created_at;

@@ -34,7 +34,8 @@ void PrintUsage() {
         << "  agentos autodev status job_id=<job_id>\n"
         << "  agentos autodev prepare-workspace job_id=<job_id>\n"
         << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
-        << "  agentos autodev generate-goal-docs job_id=<job_id>\n";
+        << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
+        << "  agentos autodev validate-spec job_id=<job_id>\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -205,6 +206,45 @@ int RunGenerateGoalDocs(const std::filesystem::path& workspace, const int argc, 
     return 0;
 }
 
+int RunValidateSpec(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev validate-spec failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev validate-spec failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.validate_spec(job_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev validate-spec failed: " << result.error_message << '\n';
+        if (!result.job.job_id.empty()) {
+            std::cerr << "status:      " << result.job.status << '\n'
+                      << "phase:       " << result.job.phase << '\n'
+                      << "next_action: " << result.job.next_action << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "AutoDev spec validated\n"
+              << "job_id:        " << result.job.job_id << '\n'
+              << "status:        " << result.job.status << '\n'
+              << "phase:         " << result.job.phase << '\n'
+              << "approval_gate: " << result.job.approval_gate << '\n'
+              << "spec_revision: " << result.spec_revision << '\n'
+              << "spec_hash:     " << result.spec_hash << '\n'
+              << "normalized:    " << result.normalized_path.string() << '\n'
+              << "hash_file:     " << result.hash_path.string() << '\n'
+              << "status_file:   " << result.status_path.string() << '\n'
+              << "next_action:   " << result.job.next_action << '\n'
+              << "\nThe spec snapshot is pending approval. No spec was frozen and no Codex execution was started.\n";
+    return 0;
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -255,6 +295,13 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
     if (job->skill_pack.error.has_value()) {
         std::cout << "  error:  " << *job->skill_pack.error << '\n';
     }
+    if (job->spec_revision.has_value()) {
+        std::cout << '\n'
+                  << "Spec:\n"
+                  << "  schema_version: " << job->schema_version.value_or("(none)") << '\n'
+                  << "  revision:       " << *job->spec_revision << '\n'
+                  << "  hash:           " << job->spec_hash.value_or("(none)") << '\n';
+    }
     std::cout << '\n'
               << "Next action:\n"
               << "  agentos autodev "
@@ -291,6 +338,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "generate-goal-docs" || subcommand == "generate_goal_docs") {
         return RunGenerateGoalDocs(workspace, argc, argv);
+    }
+    if (subcommand == "validate-spec" || subcommand == "validate_spec") {
+        return RunValidateSpec(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';
