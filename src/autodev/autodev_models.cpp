@@ -160,4 +160,54 @@ AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json) {
     return task;
 }
 
+nlohmann::json ToJson(const AutoDevTurn& turn) {
+    return nlohmann::json{
+        {"turn_id", turn.turn_id},
+        {"job_id", turn.job_id},
+        {"task_id", turn.task_id},
+        {"adapter_kind", turn.adapter_kind},
+        {"adapter_name", turn.adapter_name},
+        {"continuity_mode", turn.continuity_mode},
+        {"event_stream_mode", turn.event_stream_mode},
+        {"session_id", turn.session_id},
+        {"thread_id", OptionalString(turn.thread_id)},
+        {"provider_turn_id", OptionalString(turn.provider_turn_id)},
+        {"status", turn.status},
+        {"started_at", turn.started_at},
+        {"completed_at", OptionalString(turn.completed_at)},
+        {"duration_ms", turn.duration_ms},
+        {"prompt_artifact", OptionalPath(turn.prompt_artifact)},
+        {"response_artifact", OptionalPath(turn.response_artifact)},
+        {"changed_files", turn.changed_files},
+        {"summary", OptionalString(turn.summary)},
+        {"error_code", OptionalString(turn.error_code)},
+        {"error_message", OptionalString(turn.error_message)},
+    };
+}
+
+AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json) {
+    AutoDevTurn turn;
+    turn.turn_id = json.value("turn_id", std::string{});
+    turn.job_id = json.value("job_id", std::string{});
+    turn.task_id = json.value("task_id", std::string{});
+    turn.adapter_kind = json.value("adapter_kind", std::string{});
+    turn.adapter_name = json.value("adapter_name", std::string{});
+    turn.continuity_mode = json.value("continuity_mode", std::string{});
+    turn.event_stream_mode = json.value("event_stream_mode", std::string{});
+    turn.session_id = json.value("session_id", std::string{});
+    turn.thread_id = ReadOptionalString(json, "thread_id");
+    turn.provider_turn_id = ReadOptionalString(json, "provider_turn_id");
+    turn.status = json.value("status", std::string{});
+    turn.started_at = json.value("started_at", std::string{});
+    turn.completed_at = ReadOptionalString(json, "completed_at");
+    turn.duration_ms = json.value("duration_ms", 0);
+    turn.prompt_artifact = ReadOptionalPath(json, "prompt_artifact");
+    turn.response_artifact = ReadOptionalPath(json, "response_artifact");
+    turn.changed_files = ReadStringVector(json, "changed_files");
+    turn.summary = ReadOptionalString(json, "summary");
+    turn.error_code = ReadOptionalString(json, "error_code");
+    turn.error_message = ReadOptionalString(json, "error_message");
+    return turn;
+}
+
 }  // namespace agentos

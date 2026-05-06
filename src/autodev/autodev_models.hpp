@@ -67,10 +67,35 @@ struct AutoDevTask {
     int acceptance_passed = 0;
 };
 
+struct AutoDevTurn {
+    std::string turn_id;
+    std::string job_id;
+    std::string task_id;
+    std::string adapter_kind;
+    std::string adapter_name;
+    std::string continuity_mode;
+    std::string event_stream_mode;
+    std::string session_id;
+    std::optional<std::string> thread_id;
+    std::optional<std::string> provider_turn_id;
+    std::string status;
+    std::string started_at;
+    std::optional<std::string> completed_at;
+    int duration_ms = 0;
+    std::optional<std::filesystem::path> prompt_artifact;
+    std::optional<std::filesystem::path> response_artifact;
+    std::vector<std::string> changed_files;
+    std::optional<std::string> summary;
+    std::optional<std::string> error_code;
+    std::optional<std::string> error_message;
+};
+
 nlohmann::json ToJson(const AutoDevSkillPackBinding& binding);
 nlohmann::json ToJson(const AutoDevJob& job);
 nlohmann::json ToJson(const AutoDevTask& task);
+nlohmann::json ToJson(const AutoDevTurn& turn);
 AutoDevJob AutoDevJobFromJson(const nlohmann::json& json);
 AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json);
+AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json);
 
 }  // namespace agentos

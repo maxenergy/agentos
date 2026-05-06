@@ -655,6 +655,7 @@ void PrintUsage() {
         << "  agentos autodev validate-spec job_id=<job_id>\n"
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
+        << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n"
         << "  agentos cli-specs validate\n"

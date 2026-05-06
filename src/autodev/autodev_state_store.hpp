@@ -82,6 +82,7 @@ public:
     [[nodiscard]] std::filesystem::path job_json_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path events_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path tasks_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path turns_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path artifacts_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path spec_revisions_dir(const std::string& job_id) const;
 
@@ -103,6 +104,9 @@ public:
         const std::string& reason);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevTurn>> load_turns(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<std::string>> load_event_lines(

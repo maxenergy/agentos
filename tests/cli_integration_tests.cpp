@@ -2551,6 +2551,17 @@ void TestAutoDevCommands() {
     const auto executable_tasks = ReadTextFile(executable_job_dir / "tasks.json");
     Expect(executable_tasks.find("\"status\": \"pending\"") != std::string::npos,
         "failed-closed execute-next-task should leave runtime task status pending");
+    const auto turns_result = RunAgentos(workspace, {"autodev", "turns", "job_id=" + executable_job_id});
+    Expect(turns_result.exit_code == 0,
+        "autodev turns should list synthetic turn records");
+    Expect(turns_result.output.find("AutoDev turns") != std::string::npos,
+        "autodev turns should print heading");
+    Expect(turns_result.output.find("turn_id:           turn-001") != std::string::npos,
+        "autodev turns should list the first synthetic turn id");
+    Expect(turns_result.output.find("status:            blocked") != std::string::npos,
+        "autodev turns should show blocked synthetic turn status");
+    Expect(turns_result.output.find("adapter_kind:      codex_cli") != std::string::npos,
+        "autodev turns should show adapter kind");
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
         "autodev events should read execution preflight audit event");

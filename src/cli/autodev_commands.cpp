@@ -43,6 +43,7 @@ void PrintUsage() {
         << "  agentos autodev validate-spec job_id=<job_id>\n"
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
+        << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -415,6 +416,52 @@ int RunEvents(const std::filesystem::path& workspace, const int argc, char* argv
     return 0;
 }
 
+int RunTurns(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev turns failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev turns failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto turns = store.load_turns(job_id_it->second, &error);
+    if (!turns.has_value()) {
+        std::cerr << "autodev turns failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev turns\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << turns->size() << '\n';
+    for (const auto& turn : *turns) {
+        std::cout << '\n'
+                  << "- turn_id:           " << turn.turn_id << '\n'
+                  << "  task_id:           " << turn.task_id << '\n'
+                  << "  status:            " << turn.status << '\n'
+                  << "  adapter_kind:      " << turn.adapter_kind << '\n'
+                  << "  continuity_mode:   " << turn.continuity_mode << '\n'
+                  << "  event_stream_mode: " << turn.event_stream_mode << '\n'
+                  << "  session_id:        " << turn.session_id << '\n'
+                  << "  started_at:        " << turn.started_at << '\n';
+        if (turn.completed_at.has_value()) {
+            std::cout << "  completed_at:      " << *turn.completed_at << '\n';
+        }
+        if (turn.error_code.has_value()) {
+            std::cout << "  error_code:        " << *turn.error_code << '\n';
+        }
+        if (turn.error_message.has_value()) {
+            std::cout << "  error_message:     " << *turn.error_message << '\n';
+        }
+    }
+    return 0;
+}
+
 int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -637,6 +684,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "tasks") {
         return RunTasks(workspace, argc, argv);
+    }
+    if (subcommand == "turns") {
+        return RunTurns(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);

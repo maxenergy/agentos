@@ -706,9 +706,30 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     const auto profile = agentos::CodexCliAutoDevAdapterProfile();
     store.record_execution_blocked(approved.job, tasks->front(), profile, "adapter not implemented");
 
+    Expect(std::filesystem::exists(store.turns_path(submit.job.job_id)),
+        "recording execution blocked event should create turns.json");
+    std::string turns_error;
+    const auto turns = store.load_turns(submit.job.job_id, &turns_error);
+    Expect(turns.has_value() && turns->size() == 1,
+        "load_turns should read the blocked synthetic turn record");
+    Expect(turns.has_value() && turns->front().turn_id == "turn-001",
+        "first blocked synthetic turn should use turn-001");
+    Expect(turns.has_value() && turns->front().status == "blocked",
+        "blocked synthetic turn should record blocked status");
+    Expect(turns.has_value() && turns->front().adapter_kind == "codex_cli",
+        "blocked synthetic turn should record adapter kind");
+    Expect(turns.has_value() && turns->front().continuity_mode == "best_effort_context",
+        "blocked synthetic turn should record continuity mode");
+    Expect(turns.has_value() && turns->front().event_stream_mode == "synthetic",
+        "blocked synthetic turn should record event stream mode");
+    Expect(turns.has_value() && turns->front().error_code == "execution_adapter_unavailable",
+        "blocked synthetic turn should record an execution adapter unavailable error");
+
     const auto events = ReadFile(store.events_path(submit.job.job_id));
     Expect(events.find("\"type\":\"autodev.execution.blocked\"") != std::string::npos,
         "events.ndjson should record execution blocked event");
+    Expect(events.find("\"turn_id\":\"turn-001\"") != std::string::npos,
+        "execution blocked event should link to the synthetic turn record");
     Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,
         "execution blocked event should record adapter kind");
     Expect(events.find("\"event_stream_mode\":\"synthetic\"") != std::string::npos,

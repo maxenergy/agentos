@@ -371,6 +371,26 @@ std::vector<AutoDevTask> MaterializeTasksFromSpec(
     return tasks;
 }
 
+std::string NextTurnId(const nlohmann::json& turn_records) {
+    int max_turn = 0;
+    if (turn_records.is_array()) {
+        static const std::regex pattern(R"(^turn-([0-9]{3})$)");
+        for (const auto& turn : turn_records) {
+            if (!turn.is_object() || !turn.contains("turn_id") || !turn.at("turn_id").is_string()) {
+                continue;
+            }
+            std::smatch match;
+            const auto turn_id = turn.at("turn_id").get<std::string>();
+            if (std::regex_match(turn_id, match, pattern)) {
+                max_turn = std::max(max_turn, std::stoi(match[1].str()));
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "turn-" << std::setw(3) << std::setfill('0') << (max_turn + 1);
+    return out.str();
+}
+
 std::string MarkdownSkeleton(const AutoDevJob& job, const std::string& title, const std::string& body) {
     std::ostringstream out;
     out << "# " << title << "\n\n"
@@ -475,6 +495,10 @@ std::filesystem::path AutoDevStateStore::events_path(const std::string& job_id) 
 
 std::filesystem::path AutoDevStateStore::tasks_path(const std::string& job_id) const {
     return job_dir(job_id) / "tasks.json";
+}
+
+std::filesystem::path AutoDevStateStore::turns_path(const std::string& job_id) const {
+    return job_dir(job_id) / "turns.json";
 }
 
 std::filesystem::path AutoDevStateStore::artifacts_dir(const std::string& job_id) const {
@@ -1167,6 +1191,38 @@ void AutoDevStateStore::record_execution_blocked(
     const AutoDevTask& task,
     const AutoDevExecutionAdapterProfile& adapter_profile,
     const std::string& reason) {
+    nlohmann::json turns = nlohmann::json::array();
+    if (std::filesystem::exists(turns_path(job.job_id))) {
+        try {
+            turns = nlohmann::json::parse(ReadFile(turns_path(job.job_id)));
+            if (!turns.is_array()) {
+                turns = nlohmann::json::array();
+            }
+        } catch (...) {
+            turns = nlohmann::json::array();
+        }
+    }
+
+    const auto now = IsoUtcNow();
+    AutoDevTurn turn;
+    turn.turn_id = NextTurnId(turns);
+    turn.job_id = job.job_id;
+    turn.task_id = task.task_id;
+    turn.adapter_kind = adapter_profile.adapter_kind;
+    turn.adapter_name = adapter_profile.adapter_name;
+    turn.continuity_mode = adapter_profile.continuity_mode;
+    turn.event_stream_mode = adapter_profile.event_stream_mode;
+    turn.session_id = "synthetic-" + turn.turn_id;
+    turn.status = "blocked";
+    turn.started_at = now;
+    turn.completed_at = now;
+    turn.duration_ms = 0;
+    turn.summary = "Execution preflight blocked before Codex was started";
+    turn.error_code = "execution_adapter_unavailable";
+    turn.error_message = reason;
+    turns.push_back(ToJson(turn));
+    WriteFileAtomically(turns_path(job.job_id), turns.dump(2) + "\n");
+
     append_event(job.job_id, nlohmann::json{
         {"type", "autodev.execution.blocked"},
         {"job_id", job.job_id},
@@ -1175,10 +1231,11 @@ void AutoDevStateStore::record_execution_blocked(
         {"current_activity", job.current_activity},
         {"task_id", task.task_id},
         {"task_status", task.status},
+        {"turn_id", turn.turn_id},
         {"adapter_profile", ToJson(adapter_profile)},
         {"reason", reason},
         {"next_action", job.next_action},
-        {"at", IsoUtcNow()},
+        {"at", now},
     });
 }
 
@@ -1249,6 +1306,47 @@ std::optional<std::vector<AutoDevTask>> AutoDevStateStore::load_tasks(
     } catch (const std::exception& e) {
         if (error_message) {
             *error_message = std::string("failed to read AutoDev tasks: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
+std::optional<std::vector<AutoDevTurn>> AutoDevStateStore::load_turns(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = turns_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev turns not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev turns: turns.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevTurn> turns;
+        for (const auto& turn_json : json) {
+            turns.push_back(AutoDevTurnFromJson(turn_json));
+        }
+        return turns;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev turns: ") + e.what();
         }
         return std::nullopt;
     }
