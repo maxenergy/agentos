@@ -665,6 +665,7 @@ void PrintUsage() {
         << "  agentos autodev acceptances job_id=<job_id>\n"
         << "  agentos autodev final-review job_id=<job_id>\n"
         << "  agentos autodev final-reviews job_id=<job_id>\n"
+        << "  agentos autodev complete-job job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n"
         << "  agentos cli-specs validate\n"

@@ -2141,6 +2141,63 @@ AutoDevFinalReviewResult AutoDevStateStore::final_review(const std::string& job_
     return result;
 }
 
+AutoDevCompleteJobResult AutoDevStateStore::complete_job(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevCompleteJobResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevCompleteJobResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (job.status != "pr_ready" || job.phase != "pr_ready") {
+        return fail(std::move(job), "job is not pr_ready");
+    }
+
+    const auto final_reviews = load_final_reviews(job_id, &load_error);
+    if (!final_reviews.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    if (final_reviews->empty()) {
+        return fail(std::move(job), "no final review records are available");
+    }
+    const auto latest_final_review = final_reviews->back();
+    if (!latest_final_review.passed) {
+        return fail(std::move(job), "latest final review did not pass");
+    }
+
+    job.status = "done";
+    job.phase = "done";
+    job.current_activity = "none";
+    job.approval_gate = "none";
+    job.next_action = "none";
+    job.blocker = std::nullopt;
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.job.completed"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"final_review_id", latest_final_review.final_review_id},
+        {"at", job.updated_at},
+    });
+
+    AutoDevCompleteJobResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.final_review = latest_final_review;
+    return result;
+}
+
 std::optional<AutoDevJob> AutoDevStateStore::load_job(
     const std::string& job_id,
     std::string* error_message) const {

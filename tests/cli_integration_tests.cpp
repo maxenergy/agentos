@@ -2919,6 +2919,11 @@ void TestAutoDevCommands() {
         "failed final review for unaccepted task should leave job running");
     Expect(failing_final_status.output.find("Phase: codex_execution") != std::string::npos,
         "failed final review for unaccepted task should not advance phase to pr_ready");
+    const auto failing_complete = RunAgentos(workspace, {"autodev", "mark-done", "job_id=" + failing_verify_job_id});
+    Expect(failing_complete.exit_code != 0,
+        "autodev mark-done should fail when job is not pr_ready");
+    Expect(failing_complete.output.find("job is not pr_ready") != std::string::npos,
+        "autodev mark-done should explain the pr_ready completion gate");
     const auto failing_verify_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + failing_verify_job_id});
     Expect(failing_verify_summary.exit_code == 0,
         "autodev summary should read failed verification facts");

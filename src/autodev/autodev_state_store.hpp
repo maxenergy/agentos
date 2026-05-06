@@ -108,6 +108,13 @@ struct AutoDevFinalReviewResult {
     std::filesystem::path final_review_report_path;
 };
 
+struct AutoDevCompleteJobResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    AutoDevFinalReview final_review;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -151,6 +158,7 @@ public:
     AutoDevDiffGuardResult diff_guard(const std::string& job_id, const std::string& task_id);
     AutoDevAcceptanceGateResult acceptance_gate(const std::string& job_id, const std::string& task_id);
     AutoDevFinalReviewResult final_review(const std::string& job_id);
+    AutoDevCompleteJobResult complete_job(const std::string& job_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
         const std::string& job_id,

@@ -54,6 +54,7 @@ void PrintUsage() {
         << "  agentos autodev acceptances job_id=<job_id>\n"
         << "  agentos autodev final-review job_id=<job_id>\n"
         << "  agentos autodev final-reviews job_id=<job_id>\n"
+        << "  agentos autodev complete-job job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -800,6 +801,35 @@ int RunFinalReviews(const std::filesystem::path& workspace, const int argc, char
     return 0;
 }
 
+int RunCompleteJob(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev complete-job failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev complete-job failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.complete_job(job_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev complete-job failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev job completed\n"
+              << "job_id:          " << result.job.job_id << '\n'
+              << "status:          " << result.job.status << '\n'
+              << "phase:           " << result.job.phase << '\n'
+              << "final_review_id: " << result.final_review.final_review_id << '\n'
+              << "final_review:    passed\n"
+              << "\nJob completion is controlled by AgentOS runtime facts, not Codex or Markdown summaries.\n";
+    return 0;
+}
+
 int RunSummary(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -1179,6 +1209,10 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "final-reviews" || subcommand == "final_reviews") {
         return RunFinalReviews(workspace, argc, argv);
+    }
+    if (subcommand == "complete-job" || subcommand == "complete_job" ||
+        subcommand == "mark-done" || subcommand == "mark_done") {
+        return RunCompleteJob(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);
