@@ -248,4 +248,36 @@ AutoDevVerification AutoDevVerificationFromJson(const nlohmann::json& json) {
     return verification;
 }
 
+nlohmann::json ToJson(const AutoDevDiffGuard& diff_guard) {
+    return nlohmann::json{
+        {"diff_id", diff_guard.diff_id},
+        {"job_id", diff_guard.job_id},
+        {"task_id", diff_guard.task_id},
+        {"spec_revision", diff_guard.spec_revision},
+        {"passed", diff_guard.passed},
+        {"changed_files", diff_guard.changed_files},
+        {"allowed_files", diff_guard.allowed_files},
+        {"blocked_files", diff_guard.blocked_files},
+        {"blocked_file_violations", diff_guard.blocked_file_violations},
+        {"outside_allowed_files", diff_guard.outside_allowed_files},
+        {"checked_at", diff_guard.checked_at},
+    };
+}
+
+AutoDevDiffGuard AutoDevDiffGuardFromJson(const nlohmann::json& json) {
+    AutoDevDiffGuard diff_guard;
+    diff_guard.diff_id = json.value("diff_id", std::string{});
+    diff_guard.job_id = json.value("job_id", std::string{});
+    diff_guard.task_id = json.value("task_id", std::string{});
+    diff_guard.spec_revision = json.value("spec_revision", std::string{});
+    diff_guard.passed = json.value("passed", false);
+    diff_guard.changed_files = ReadStringVector(json, "changed_files");
+    diff_guard.allowed_files = ReadStringVector(json, "allowed_files");
+    diff_guard.blocked_files = ReadStringVector(json, "blocked_files");
+    diff_guard.blocked_file_violations = ReadStringVector(json, "blocked_file_violations");
+    diff_guard.outside_allowed_files = ReadStringVector(json, "outside_allowed_files");
+    diff_guard.checked_at = json.value("checked_at", std::string{});
+    return diff_guard;
+}
+
 }  // namespace agentos

@@ -81,6 +81,15 @@ struct AutoDevVerifyTaskResult {
     std::filesystem::path verify_report_path;
 };
 
+struct AutoDevDiffGuardResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    AutoDevTask task;
+    AutoDevDiffGuard diff_guard;
+    std::filesystem::path diffs_path;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -94,6 +103,7 @@ public:
     [[nodiscard]] std::filesystem::path tasks_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path turns_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path verification_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path diffs_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path logs_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path artifacts_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path spec_revisions_dir(const std::string& job_id) const;
@@ -118,6 +128,7 @@ public:
         const std::string& job_id,
         const std::string& task_id,
         const std::optional<std::string>& related_turn_id = std::nullopt);
+    AutoDevDiffGuardResult diff_guard(const std::string& job_id, const std::string& task_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
         const std::string& job_id,
@@ -126,6 +137,9 @@ public:
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevVerification>> load_verifications(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevDiffGuard>> load_diffs(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<std::string>> load_event_lines(

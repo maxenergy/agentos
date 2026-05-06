@@ -684,7 +684,7 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
             {"task_id", "task-001"},
             {"title", "Execution blocked audit task"},
             {"allowed_files", nlohmann::json::array({"README.md"})},
-            {"blocked_files", nlohmann::json::array()},
+            {"blocked_files", nlohmann::json::array({"package.json"})},
             {"verify_command", "true"},
             {"acceptance", nlohmann::json::array({"preflight only"})},
         }
@@ -743,6 +743,39 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     const auto verifications = store.load_verifications(submit.job.job_id, &verifications_error);
     Expect(verifications.has_value() && verifications->size() == 1,
         "load_verifications should read recorded verification facts");
+    {
+        std::ofstream readme(approved.job.job_worktree_path / "README.md", std::ios::binary | std::ios::app);
+        readme << "allowed change\n";
+    }
+    const auto allowed_diff = store.diff_guard(submit.job.job_id, "task-001");
+    Expect(allowed_diff.success, "diff_guard should inspect job worktree changes");
+    Expect(allowed_diff.diff_guard.diff_id == "diff-001",
+        "first diff guard check should use diff-001");
+    Expect(allowed_diff.diff_guard.passed,
+        "diff_guard should pass when only allowed files changed");
+    Expect(!allowed_diff.diff_guard.changed_files.empty() &&
+               allowed_diff.diff_guard.changed_files.front() == "README.md",
+        "diff_guard should record changed file names");
+    Expect(std::filesystem::exists(store.diffs_path(submit.job.job_id)),
+        "diff_guard should write diffs.json under runtime store");
+    std::string diffs_error;
+    const auto diffs = store.load_diffs(submit.job.job_id, &diffs_error);
+    Expect(diffs.has_value() && diffs->size() == 1,
+        "load_diffs should read diff guard records");
+    {
+        std::ofstream blocked(approved.job.job_worktree_path / "package.json", std::ios::binary);
+        blocked << "{}\n";
+    }
+    const auto blocked_diff = store.diff_guard(submit.job.job_id, "task-001");
+    Expect(blocked_diff.success, "diff_guard should record violations as facts rather than failing command logic");
+    Expect(!blocked_diff.diff_guard.passed,
+        "diff_guard should fail when blocked files changed");
+    Expect(!blocked_diff.diff_guard.blocked_file_violations.empty() &&
+               blocked_diff.diff_guard.blocked_file_violations.front() == "package.json",
+        "diff_guard should record blocked file violations");
+    Expect(!blocked_diff.diff_guard.outside_allowed_files.empty() &&
+               blocked_diff.diff_guard.outside_allowed_files.front() == "package.json",
+        "diff_guard should record changes outside allowed files");
 
     Expect(std::filesystem::exists(store.turns_path(submit.job.job_id)),
         "recording execution blocked event should create turns.json");
@@ -798,6 +831,10 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record verification started event");
     Expect(events.find("\"type\":\"autodev.verification.completed\"") != std::string::npos,
         "events.ndjson should record verification completed event");
+    Expect(events.find("\"type\":\"autodev.diff_guard.started\"") != std::string::npos,
+        "events.ndjson should record diff guard started event");
+    Expect(events.find("\"type\":\"autodev.diff_guard.completed\"") != std::string::npos,
+        "events.ndjson should record diff guard completed event");
     Expect(events.find("\"verify_report_path\"") != std::string::npos,
         "verification completed event should link VERIFY.md report path");
     Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,

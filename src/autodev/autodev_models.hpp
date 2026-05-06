@@ -107,14 +107,30 @@ struct AutoDevVerification {
     std::optional<std::string> related_turn_id;
 };
 
+struct AutoDevDiffGuard {
+    std::string diff_id;
+    std::string job_id;
+    std::string task_id;
+    std::string spec_revision;
+    bool passed = false;
+    std::vector<std::string> changed_files;
+    std::vector<std::string> allowed_files;
+    std::vector<std::string> blocked_files;
+    std::vector<std::string> blocked_file_violations;
+    std::vector<std::string> outside_allowed_files;
+    std::string checked_at;
+};
+
 nlohmann::json ToJson(const AutoDevSkillPackBinding& binding);
 nlohmann::json ToJson(const AutoDevJob& job);
 nlohmann::json ToJson(const AutoDevTask& task);
 nlohmann::json ToJson(const AutoDevTurn& turn);
 nlohmann::json ToJson(const AutoDevVerification& verification);
+nlohmann::json ToJson(const AutoDevDiffGuard& diff_guard);
 AutoDevJob AutoDevJobFromJson(const nlohmann::json& json);
 AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json);
 AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json);
 AutoDevVerification AutoDevVerificationFromJson(const nlohmann::json& json);
+AutoDevDiffGuard AutoDevDiffGuardFromJson(const nlohmann::json& json);
 
 }  // namespace agentos

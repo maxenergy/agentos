@@ -658,6 +658,8 @@ void PrintUsage() {
         << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
+        << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev diffs job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n"
         << "  agentos cli-specs validate\n"

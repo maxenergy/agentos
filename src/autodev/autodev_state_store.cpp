@@ -413,6 +413,67 @@ std::string NextVerificationId(const nlohmann::json& verification_records) {
     return out.str();
 }
 
+std::string NextDiffId(const nlohmann::json& diff_records) {
+    int max_diff = 0;
+    if (diff_records.is_array()) {
+        static const std::regex pattern(R"(^diff-([0-9]{3})$)");
+        for (const auto& diff : diff_records) {
+            if (!diff.is_object() || !diff.contains("diff_id") || !diff.at("diff_id").is_string()) {
+                continue;
+            }
+            std::smatch match;
+            const auto diff_id = diff.at("diff_id").get<std::string>();
+            if (std::regex_match(diff_id, match, pattern)) {
+                max_diff = std::max(max_diff, std::stoi(match[1].str()));
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "diff-" << std::setw(3) << std::setfill('0') << (max_diff + 1);
+    return out.str();
+}
+
+std::vector<std::string> Lines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream input(text);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    return lines;
+}
+
+std::string GitStatusPath(const std::string& porcelain_line) {
+    if (porcelain_line.size() <= 3) {
+        return {};
+    }
+    auto path = porcelain_line.substr(3);
+    const auto rename_arrow = path.find(" -> ");
+    if (rename_arrow != std::string::npos) {
+        path = path.substr(rename_arrow + 4);
+    }
+    return path;
+}
+
+bool PathMatchesPolicyEntry(const std::string& path, const std::string& policy_entry) {
+    return path == policy_entry || path.rfind(policy_entry + "/", 0) == 0;
+}
+
+bool PathMatchesAnyPolicyEntry(const std::string& path, const std::vector<std::string>& policy_entries) {
+    return std::any_of(policy_entries.begin(), policy_entries.end(), [&path](const std::string& entry) {
+        return PathMatchesPolicyEntry(path, entry);
+    });
+}
+
+bool IsManagedGoalArtifactPath(const std::string& path) {
+    return path == "docs/goal" || path.rfind("docs/goal/", 0) == 0;
+}
+
 std::string TruncateForSummary(const std::string& value, const std::size_t max_chars = 4000) {
     if (value.size() <= max_chars) {
         return value;
@@ -648,6 +709,10 @@ std::filesystem::path AutoDevStateStore::turns_path(const std::string& job_id) c
 
 std::filesystem::path AutoDevStateStore::verification_path(const std::string& job_id) const {
     return job_dir(job_id) / "verification.json";
+}
+
+std::filesystem::path AutoDevStateStore::diffs_path(const std::string& job_id) const {
+    return job_dir(job_id) / "diffs.json";
 }
 
 std::filesystem::path AutoDevStateStore::logs_dir(const std::string& job_id) const {
@@ -1523,6 +1588,123 @@ AutoDevVerifyTaskResult AutoDevStateStore::verify_task(
     return result;
 }
 
+AutoDevDiffGuardResult AutoDevStateStore::diff_guard(const std::string& job_id, const std::string& task_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevDiffGuardResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevDiffGuardResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (task_id.empty()) {
+        return fail(std::move(job), "task_id is required");
+    }
+    if (job.isolation_status != "ready" || !std::filesystem::exists(job.job_worktree_path)) {
+        return fail(std::move(job), "workspace isolation is not ready");
+    }
+    if (!job.spec_revision.has_value() || !job.spec_hash.has_value()) {
+        return fail(std::move(job), "no approved frozen spec is recorded on the job");
+    }
+
+    auto maybe_tasks = load_tasks(job_id, &load_error);
+    if (!maybe_tasks.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    const auto task_it = std::find_if(maybe_tasks->begin(), maybe_tasks->end(), [&task_id](const AutoDevTask& task) {
+        return task.task_id == task_id;
+    });
+    if (task_it == maybe_tasks->end()) {
+        return fail(std::move(job), "AutoDev task not found: " + task_id);
+    }
+    AutoDevTask task = *task_it;
+
+    nlohmann::json diffs = nlohmann::json::array();
+    if (std::filesystem::exists(diffs_path(job_id))) {
+        try {
+            diffs = nlohmann::json::parse(ReadFile(diffs_path(job_id)));
+            if (!diffs.is_array()) {
+                diffs = nlohmann::json::array();
+            }
+        } catch (...) {
+            diffs = nlohmann::json::array();
+        }
+    }
+
+    AutoDevDiffGuard diff;
+    diff.diff_id = NextDiffId(diffs);
+    diff.job_id = job.job_id;
+    diff.task_id = task.task_id;
+    diff.spec_revision = task.spec_revision.empty() ? job.spec_revision.value_or("") : task.spec_revision;
+    diff.allowed_files = task.allowed_files;
+    diff.blocked_files = task.blocked_files;
+    diff.checked_at = IsoUtcNow();
+
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.diff_guard.started"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"diff_id", diff.diff_id},
+        {"at", diff.checked_at},
+    });
+
+    const auto status = GitCommand(job.job_worktree_path, "status --porcelain --untracked-files=all");
+    if (status.exit_code != 0) {
+        return fail(std::move(job), "could not inspect job worktree diff: " + Trim(status.output));
+    }
+    for (const auto& line : Lines(status.output)) {
+        const auto path = GitStatusPath(line);
+        if (!path.empty() && !IsManagedGoalArtifactPath(path)) {
+            diff.changed_files.push_back(path);
+        }
+    }
+    std::sort(diff.changed_files.begin(), diff.changed_files.end());
+    diff.changed_files.erase(std::unique(diff.changed_files.begin(), diff.changed_files.end()), diff.changed_files.end());
+
+    for (const auto& path : diff.changed_files) {
+        if (PathMatchesAnyPolicyEntry(path, diff.blocked_files)) {
+            diff.blocked_file_violations.push_back(path);
+        }
+        if (!diff.allowed_files.empty() && !PathMatchesAnyPolicyEntry(path, diff.allowed_files)) {
+            diff.outside_allowed_files.push_back(path);
+        }
+    }
+    diff.passed = diff.blocked_file_violations.empty() && diff.outside_allowed_files.empty();
+
+    diffs.push_back(ToJson(diff));
+    WriteFileAtomically(diffs_path(job.job_id), diffs.dump(2) + "\n");
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.diff_guard.completed"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"diff_id", diff.diff_id},
+        {"passed", diff.passed},
+        {"changed_files", diff.changed_files},
+        {"blocked_file_violations", diff.blocked_file_violations},
+        {"outside_allowed_files", diff.outside_allowed_files},
+        {"at", IsoUtcNow()},
+    });
+
+    AutoDevDiffGuardResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.task = std::move(task);
+    result.diff_guard = std::move(diff);
+    result.diffs_path = this->diffs_path(job_id);
+    return result;
+}
+
 std::optional<AutoDevJob> AutoDevStateStore::load_job(
     const std::string& job_id,
     std::string* error_message) const {
@@ -1672,6 +1854,47 @@ std::optional<std::vector<AutoDevVerification>> AutoDevStateStore::load_verifica
     } catch (const std::exception& e) {
         if (error_message) {
             *error_message = std::string("failed to read AutoDev verification records: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
+std::optional<std::vector<AutoDevDiffGuard>> AutoDevStateStore::load_diffs(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = diffs_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev diff records not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev diff records: diffs.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevDiffGuard> diffs;
+        for (const auto& diff_json : json) {
+            diffs.push_back(AutoDevDiffGuardFromJson(diff_json));
+        }
+        return diffs;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev diff records: ") + e.what();
         }
         return std::nullopt;
     }

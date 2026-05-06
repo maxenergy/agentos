@@ -2609,6 +2609,51 @@ void TestAutoDevCommands() {
         "autodev verifications should include verify-001");
     Expect(verifications_result.output.find("related_turn_id: turn-001") != std::string::npos,
         "autodev verifications should include related turn id");
+    {
+        std::ofstream readme(std::filesystem::path(executable_planned_path) / "README.md",
+            std::ios::binary | std::ios::app);
+        readme << "allowed cli change\n";
+    }
+    const auto diff_guard_pass = RunAgentos(workspace, {
+        "autodev",
+        "diff-guard",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(diff_guard_pass.exit_code == 0,
+        "autodev diff-guard should pass for allowed file changes");
+    Expect(diff_guard_pass.output.find("AutoDev diff guard checked") != std::string::npos,
+        "autodev diff-guard should print heading");
+    Expect(diff_guard_pass.output.find("diff_id: diff-001") != std::string::npos,
+        "autodev diff-guard should print diff id");
+    Expect(diff_guard_pass.output.find("passed:  true") != std::string::npos,
+        "autodev diff-guard should report passed=true for allowed file");
+    Expect(std::filesystem::exists(executable_job_dir / "diffs.json"),
+        "autodev diff-guard should write diffs.json under runtime store");
+    {
+        std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
+            std::ios::binary | std::ios::trunc);
+        blocked << "{}\n";
+    }
+    const auto diff_guard_fail = RunAgentos(workspace, {
+        "autodev",
+        "diff-guard",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(diff_guard_fail.exit_code != 0,
+        "autodev diff-guard should return nonzero when blocked file changes exist");
+    Expect(diff_guard_fail.output.find("passed:  false") != std::string::npos,
+        "autodev diff-guard should report failed diff guard");
+    Expect(diff_guard_fail.output.find("package.json") != std::string::npos,
+        "autodev diff-guard should print violating file");
+    const auto diffs_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id});
+    Expect(diffs_result.exit_code == 0,
+        "autodev diffs should list diff guard facts");
+    Expect(diffs_result.output.find("AutoDev diffs") != std::string::npos,
+        "autodev diffs should print heading");
+    Expect(diffs_result.output.find("diff_id: diff-001") != std::string::npos,
+        "autodev diffs should include first diff record");
+    Expect(diffs_result.output.find("diff_id: diff-002") != std::string::npos,
+        "autodev diffs should include second diff record");
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
         "autodev events should read execution preflight audit event");
@@ -2616,6 +2661,8 @@ void TestAutoDevCommands() {
         "autodev execute-next-task should append an execution blocked audit event");
     Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
         "autodev verify-task should append a verification completed event");
+    Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,
+        "autodev diff-guard should append a diff guard completed event");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

@@ -46,6 +46,8 @@ void PrintUsage() {
         << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
+        << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev diffs job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -558,6 +560,93 @@ int RunVerifications(const std::filesystem::path& workspace, const int argc, cha
     return 0;
 }
 
+void PrintStringList(const std::string& label, const std::vector<std::string>& values) {
+    std::cout << label;
+    if (values.empty()) {
+        std::cout << " none\n";
+        return;
+    }
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            std::cout << ",";
+        }
+        std::cout << " " << values[i];
+    }
+    std::cout << '\n';
+}
+
+int RunDiffGuard(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev diff-guard failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev diff-guard failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+    const auto task_id_it = options.find("task_id");
+    if (task_id_it == options.end() || task_id_it->second.empty()) {
+        std::cerr << "autodev diff-guard failed: task_id is required\n";
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.diff_guard(job_id_it->second, task_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev diff-guard failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev diff guard checked\n"
+              << "job_id:  " << result.diff_guard.job_id << '\n'
+              << "task_id: " << result.diff_guard.task_id << '\n'
+              << "diff_id: " << result.diff_guard.diff_id << '\n'
+              << "passed:  " << (result.diff_guard.passed ? "true" : "false") << '\n'
+              << "diffs:   " << result.diffs_path.string() << '\n';
+    PrintStringList("changed_files:           ", result.diff_guard.changed_files);
+    PrintStringList("blocked_file_violations:", result.diff_guard.blocked_file_violations);
+    PrintStringList("outside_allowed_files:  ", result.diff_guard.outside_allowed_files);
+    std::cout << "\nDiffGuard facts were recorded. AcceptanceGate was not run and task status was not changed.\n";
+    return result.diff_guard.passed ? 0 : 1;
+}
+
+int RunDiffs(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev diffs failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev diffs failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto diffs = store.load_diffs(job_id_it->second, &error);
+    if (!diffs.has_value()) {
+        std::cerr << "autodev diffs failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev diffs\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << diffs->size() << '\n';
+    for (const auto& diff : *diffs) {
+        std::cout << '\n'
+                  << "- diff_id: " << diff.diff_id << '\n'
+                  << "  task_id: " << diff.task_id << '\n'
+                  << "  passed:  " << (diff.passed ? "true" : "false") << '\n';
+        PrintStringList("  changed_files:           ", diff.changed_files);
+        PrintStringList("  blocked_file_violations:", diff.blocked_file_violations);
+        PrintStringList("  outside_allowed_files:  ", diff.outside_allowed_files);
+    }
+    return 0;
+}
+
 int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -789,6 +878,12 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "verifications") {
         return RunVerifications(workspace, argc, argv);
+    }
+    if (subcommand == "diff-guard" || subcommand == "diff_guard") {
+        return RunDiffGuard(workspace, argc, argv);
+    }
+    if (subcommand == "diffs") {
+        return RunDiffs(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);
