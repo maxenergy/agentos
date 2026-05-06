@@ -1,5 +1,7 @@
 # AutoDev Runtime State
 
+For an end-to-end operator workflow, see [AutoDev Cookbook](AUTODEV_COOKBOOK.md).
+
 AutoDev runtime facts live in the AgentOS workspace, not in the target repo or job worktree:
 
 ```text
