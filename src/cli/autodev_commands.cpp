@@ -550,6 +550,8 @@ void PrintUsage() {
     std::cerr
         << "Usage:\n"
         << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false] [worktree_cleanup_policy=keep_until_done|delete_on_done|keep_always]\n"
+        << "  agentos autodev jobs [format=text|json]\n"
+        << "  agentos autodev list [format=text|json]\n"
         << "  agentos autodev status job_id=<job_id>\n"
         << "  agentos autodev status job_id=<job_id> --watch [iterations=1] [interval_ms=1000]\n"
         << "  agentos autodev watch job_id=<job_id> [iterations=1] [interval_ms=1000]\n"
@@ -644,6 +646,92 @@ int RunSubmit(const std::filesystem::path& workspace, const int argc, char* argv
               << "job_json:           " << store.job_json_path(result.job.job_id).string() << '\n'
               << "events:             " << store.events_path(result.job.job_id).string() << '\n'
               << "\nWorkspace is not ready yet. No target files have been modified.\n";
+    return 0;
+}
+
+int RunJobsDashboard(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    AutoDevStateStore store(workspace);
+    std::vector<nlohmann::json> rows;
+    if (std::filesystem::exists(store.jobs_dir())) {
+        for (const auto& entry : std::filesystem::directory_iterator(store.jobs_dir())) {
+            if (!entry.is_directory()) {
+                continue;
+            }
+            const auto job_id = entry.path().filename().string();
+            if (!IsValidAutoDevJobId(job_id)) {
+                continue;
+            }
+            std::string error;
+            const auto job = store.load_job(job_id, &error);
+            if (!job.has_value()) {
+                rows.push_back(nlohmann::json{
+                    {"job_id", job_id},
+                    {"status", "unreadable"},
+                    {"phase", "unknown"},
+                    {"next_action", "inspect_runtime"},
+                    {"blocker", error},
+                    {"overall_percent", 0},
+                    {"tasks_passed", 0},
+                    {"tasks_total", 0},
+                    {"updated_at", ""},
+                    {"objective", ""},
+                });
+                continue;
+            }
+            const auto tasks = store.load_tasks(job_id, nullptr).value_or(std::vector<AutoDevTask>{});
+            const auto progress = ComputeProgress(*job, tasks);
+            rows.push_back(nlohmann::json{
+                {"job_id", job->job_id},
+                {"status", job->status},
+                {"phase", job->phase},
+                {"next_action", job->next_action},
+                {"blocker", job->blocker.value_or("")},
+                {"overall_percent", progress.overall_percent},
+                {"tasks_passed", progress.tasks_passed},
+                {"tasks_total", progress.tasks_total},
+                {"acceptance_passed", progress.acceptance_passed},
+                {"acceptance_total", progress.acceptance_total},
+                {"updated_at", job->updated_at},
+                {"objective", job->objective},
+            });
+        }
+    }
+    std::sort(rows.begin(), rows.end(), [](const nlohmann::json& left, const nlohmann::json& right) {
+        const auto left_updated = left.value("updated_at", std::string{});
+        const auto right_updated = right.value("updated_at", std::string{});
+        if (left_updated != right_updated) {
+            return left_updated > right_updated;
+        }
+        return left.value("job_id", std::string{}) < right.value("job_id", std::string{});
+    });
+
+    if (WantsJson(options)) {
+        PrintJson(nlohmann::json{
+            {"total", rows.size()},
+            {"jobs", rows},
+        });
+        return 0;
+    }
+
+    std::cout << "AutoDev jobs\n"
+              << "total: " << rows.size() << '\n';
+    for (const auto& row : rows) {
+        std::cout << '\n'
+                  << "- job_id:       " << row.value("job_id", std::string{}) << '\n'
+                  << "  status:       " << row.value("status", std::string{}) << '\n'
+                  << "  phase:        " << row.value("phase", std::string{}) << '\n'
+                  << "  progress:     " << row.value("overall_percent", 0) << "%\n"
+                  << "  tasks:        " << row.value("tasks_passed", 0) << "/"
+                  << row.value("tasks_total", 0) << '\n'
+                  << "  next_action:  " << row.value("next_action", std::string{}) << '\n'
+                  << "  updated_at:   " << row.value("updated_at", std::string{}) << '\n'
+                  << "  objective:    " << row.value("objective", std::string{}) << '\n';
+        const auto blocker = row.value("blocker", std::string{});
+        if (!blocker.empty()) {
+            std::cout << "  blocker:      " << blocker << '\n';
+        }
+    }
     return 0;
 }
 
@@ -2898,6 +2986,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "submit") {
         return RunSubmit(workspace, argc, argv);
+    }
+    if (subcommand == "jobs" || subcommand == "list") {
+        return RunJobsDashboard(workspace, argc, argv);
     }
     if (subcommand == "status" || subcommand == "watch") {
         return RunStatus(workspace, argc, argv);

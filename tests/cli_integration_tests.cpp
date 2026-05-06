@@ -3866,6 +3866,32 @@ void TestAutoDevCommands() {
         "autodev events format=json should support since filters");
     Expect(future_events_json.output.find("\"total\": 0") != std::string::npos,
         "autodev events since filter should return zero future events");
+    const auto jobs_dashboard = RunAgentos(workspace, {"autodev", "jobs"});
+    Expect(jobs_dashboard.exit_code == 0,
+        "autodev jobs should list all AutoDev jobs");
+    Expect(jobs_dashboard.output.find("AutoDev jobs") != std::string::npos,
+        "autodev jobs should print dashboard heading");
+    Expect(jobs_dashboard.output.find("job_id:       " + executable_job_id) != std::string::npos,
+        "autodev jobs should include executable fixture job");
+    Expect(jobs_dashboard.output.find("job_id:       " + failing_verify_job_id) != std::string::npos,
+        "autodev jobs should include failing fixture job");
+    Expect(jobs_dashboard.output.find("progress:") != std::string::npos,
+        "autodev jobs should show progress");
+    Expect(jobs_dashboard.output.find("next_action:") != std::string::npos,
+        "autodev jobs should show next actions");
+    Expect(jobs_dashboard.output.find("blocker:") != std::string::npos,
+        "autodev jobs should show blockers when present");
+    const auto jobs_json = RunAgentos(workspace, {"autodev", "list", "format=json"});
+    Expect(jobs_json.exit_code == 0,
+        "autodev list format=json should list all AutoDev jobs");
+    Expect(jobs_json.output.find("\"jobs\": [") != std::string::npos,
+        "autodev list format=json should include jobs array");
+    Expect(jobs_json.output.find("\"job_id\": \"" + executable_job_id + "\"") != std::string::npos,
+        "autodev list format=json should include job ids");
+    Expect(jobs_json.output.find("\"overall_percent\"") != std::string::npos,
+        "autodev list format=json should include progress");
+    Expect(jobs_json.output.find("\"next_action\"") != std::string::npos,
+        "autodev list format=json should include next actions");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");
