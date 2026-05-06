@@ -1,5 +1,6 @@
 #pragma once
 
+#include "autodev/autodev_execution_adapter.hpp"
 #include "autodev/autodev_models.hpp"
 
 #include <filesystem>
@@ -95,6 +96,11 @@ public:
         const std::string& job_id,
         const std::string& spec_hash,
         const std::optional<std::string>& spec_revision = std::nullopt);
+    void record_execution_blocked(
+        const AutoDevJob& job,
+        const AutoDevTask& task,
+        const AutoDevExecutionAdapterProfile& adapter_profile,
+        const std::string& reason);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
         const std::string& job_id,

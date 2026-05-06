@@ -470,6 +470,8 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
 
     const CodexCliAutoDevAdapter adapter;
     const auto profile = adapter.profile();
+    constexpr const char* blocked_reason = "Codex CLI AutoDev execution is not implemented in this build";
+    store.record_execution_blocked(*job, *pending_task, profile, blocked_reason);
     std::cout << "AutoDev execution preflight\n"
               << "job_id:             " << job->job_id << '\n'
               << "status:             " << job->status << '\n'
@@ -500,7 +502,7 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
               << "  healthy:                     " << (adapter.healthy() ? "true" : "false") << '\n'
               << "  risk_level:                  " << profile.risk_level << '\n'
               << '\n'
-              << "Execution was not started. Codex CLI AutoDev execution is not implemented in this build.\n"
+              << "Execution was not started. " << blocked_reason << ".\n"
               << "Task status and job completion remain controlled by AgentOS runtime facts.\n";
     return 1;
 }

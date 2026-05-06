@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include <nlohmann/json_fwd.hpp>
+
 namespace agentos {
 
 struct AutoDevExecutionAdapterProfile {
@@ -32,6 +34,7 @@ public:
     [[nodiscard]] bool healthy() const override;
 };
 
+[[nodiscard]] nlohmann::json ToJson(const AutoDevExecutionAdapterProfile& profile);
 AutoDevExecutionAdapterProfile CodexCliAutoDevAdapterProfile();
 
 }  // namespace agentos

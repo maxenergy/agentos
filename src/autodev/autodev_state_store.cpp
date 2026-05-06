@@ -1162,6 +1162,26 @@ AutoDevApproveSpecResult AutoDevStateStore::approve_spec(
     return result;
 }
 
+void AutoDevStateStore::record_execution_blocked(
+    const AutoDevJob& job,
+    const AutoDevTask& task,
+    const AutoDevExecutionAdapterProfile& adapter_profile,
+    const std::string& reason) {
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.execution.blocked"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"current_activity", job.current_activity},
+        {"task_id", task.task_id},
+        {"task_status", task.status},
+        {"adapter_profile", ToJson(adapter_profile)},
+        {"reason", reason},
+        {"next_action", job.next_action},
+        {"at", IsoUtcNow()},
+    });
+}
+
 std::optional<AutoDevJob> AutoDevStateStore::load_job(
     const std::string& job_id,
     std::string* error_message) const {

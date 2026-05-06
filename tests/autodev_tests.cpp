@@ -119,6 +119,13 @@ void TestCodexCliExecutionAdapterProfileIsTransitional() {
         "Codex CLI AutoDev profile should not claim same-thread repair");
     Expect(!profile.production_final_executor,
         "Codex CLI AutoDev profile should not claim final production executor status");
+    const auto profile_json = agentos::ToJson(profile);
+    Expect(profile_json["adapter_kind"] == "codex_cli",
+        "Codex CLI AutoDev profile JSON should record adapter kind");
+    Expect(profile_json["continuity_mode"] == "best_effort_context",
+        "Codex CLI AutoDev profile JSON should record continuity mode");
+    Expect(profile_json["event_stream_mode"] == "synthetic",
+        "Codex CLI AutoDev profile JSON should record event stream mode");
     const agentos::CodexCliAutoDevAdapter adapter;
     Expect(adapter.profile().adapter_kind == "codex_cli",
         "Codex CLI AutoDev adapter should expose its profile through the adapter interface");
@@ -648,6 +655,72 @@ void TestApproveSpecFreezesHashBoundRevision() {
         "load_event_lines should return runtime event lines");
 }
 
+void TestRecordExecutionBlockedAppendsAuditEventOnly() {
+    const auto workspace = FreshWorkspace("execution_blocked_event");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Record execution blocked",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before execution blocked event should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace before execution blocked event should succeed");
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(loaded.success, "load_skill_pack before execution blocked event should succeed");
+    const auto generated = store.generate_goal_docs(submit.job.job_id);
+    Expect(generated.success, "generate_goal_docs before execution blocked event should succeed");
+
+    const auto spec_path = prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json";
+    auto spec = nlohmann::json::parse(ReadFile(spec_path));
+    spec["tasks"] = nlohmann::json::array({
+        {
+            {"task_id", "task-001"},
+            {"title", "Execution blocked audit task"},
+            {"allowed_files", nlohmann::json::array({"README.md"})},
+            {"blocked_files", nlohmann::json::array()},
+            {"verify_command", "true"},
+            {"acceptance", nlohmann::json::array({"preflight only"})},
+        }
+    });
+    {
+        std::ofstream output(spec_path, std::ios::binary | std::ios::trunc);
+        output << spec.dump(2) << '\n';
+    }
+
+    const auto validated = store.validate_spec(submit.job.job_id);
+    Expect(validated.success, "validate_spec before execution blocked event should succeed");
+    const auto approved = store.approve_spec(submit.job.job_id, validated.spec_hash);
+    Expect(approved.success, "approve_spec before execution blocked event should succeed");
+    std::string tasks_error;
+    const auto tasks = store.load_tasks(submit.job.job_id, &tasks_error);
+    Expect(tasks.has_value() && tasks->size() == 1,
+        "execution blocked event fixture should have one materialized task");
+
+    const auto profile = agentos::CodexCliAutoDevAdapterProfile();
+    store.record_execution_blocked(approved.job, tasks->front(), profile, "adapter not implemented");
+
+    const auto events = ReadFile(store.events_path(submit.job.job_id));
+    Expect(events.find("\"type\":\"autodev.execution.blocked\"") != std::string::npos,
+        "events.ndjson should record execution blocked event");
+    Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,
+        "execution blocked event should record adapter kind");
+    Expect(events.find("\"event_stream_mode\":\"synthetic\"") != std::string::npos,
+        "execution blocked event should record adapter event stream mode");
+    const auto persisted_tasks = nlohmann::json::parse(ReadFile(store.tasks_path(submit.job.job_id)));
+    Expect(persisted_tasks[0]["status"] == "pending",
+        "recording execution blocked event should not change task status");
+    const auto persisted_job = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
+    Expect(persisted_job["status"] == "running",
+        "recording execution blocked event should not change job status");
+}
+
 }  // namespace
 
 int main() {
@@ -667,6 +740,7 @@ int main() {
     TestValidateSpecBlocksUnsupportedSchema();
     TestApproveSpecRequiresNonEmptyTasks();
     TestApproveSpecFreezesHashBoundRevision();
+    TestRecordExecutionBlockedAppendsAuditEventOnly();
 
     if (failures != 0) {
         std::cerr << failures << " AutoDev test assertion(s) failed\n";

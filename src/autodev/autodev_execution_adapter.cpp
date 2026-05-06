@@ -1,6 +1,24 @@
 #include "autodev/autodev_execution_adapter.hpp"
 
+#include <nlohmann/json.hpp>
+
 namespace agentos {
+
+[[nodiscard]] nlohmann::json ToJson(const AutoDevExecutionAdapterProfile& profile) {
+    return nlohmann::json{
+        {"adapter_kind", profile.adapter_kind},
+        {"adapter_name", profile.adapter_name},
+        {"supports_persistent_session", profile.supports_persistent_session},
+        {"supports_native_event_stream", profile.supports_native_event_stream},
+        {"supports_interrupt", profile.supports_interrupt},
+        {"supports_realtime_diff", profile.supports_realtime_diff},
+        {"supports_same_thread_repair", profile.supports_same_thread_repair},
+        {"continuity_mode", profile.continuity_mode},
+        {"event_stream_mode", profile.event_stream_mode},
+        {"risk_level", profile.risk_level},
+        {"production_final_executor", profile.production_final_executor},
+    };
+}
 
 AutoDevExecutionAdapterProfile CodexCliAutoDevAdapterProfile() {
     return AutoDevExecutionAdapterProfile{

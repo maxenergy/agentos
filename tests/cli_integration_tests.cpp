@@ -2551,6 +2551,11 @@ void TestAutoDevCommands() {
     const auto executable_tasks = ReadTextFile(executable_job_dir / "tasks.json");
     Expect(executable_tasks.find("\"status\": \"pending\"") != std::string::npos,
         "failed-closed execute-next-task should leave runtime task status pending");
+    const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
+    Expect(executable_events.exit_code == 0,
+        "autodev events should read execution preflight audit event");
+    Expect(executable_events.output.find("autodev.execution.blocked") != std::string::npos,
+        "autodev execute-next-task should append an execution blocked audit event");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");
