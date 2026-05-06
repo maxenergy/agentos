@@ -2570,11 +2570,42 @@ void TestAutoDevCommands() {
         "execute-next-task should write prompt artifact under AgentOS runtime store");
     Expect(std::filesystem::exists(executable_job_dir / "responses" / "turn-001.md"),
         "execute-next-task should write response artifact under AgentOS runtime store");
+    const auto verify_task = RunAgentos(workspace, {
+        "autodev",
+        "verify-task",
+        "job_id=" + executable_job_id,
+        "task_id=task-001",
+        "related_turn_id=turn-001"});
+    Expect(verify_task.exit_code == 0,
+        "autodev verify-task should run task verify_command in job worktree");
+    Expect(verify_task.output.find("AutoDev task verified") != std::string::npos,
+        "autodev verify-task should print success heading");
+    Expect(verify_task.output.find("verification_id: verify-001") != std::string::npos,
+        "autodev verify-task should print verification id");
+    Expect(verify_task.output.find("passed:          true") != std::string::npos,
+        "autodev verify-task should report passed=true for true command");
+    Expect(verify_task.output.find("AcceptanceGate was not run") != std::string::npos,
+        "autodev verify-task should state that AcceptanceGate was not run");
+    Expect(std::filesystem::exists(executable_job_dir / "verification.json"),
+        "autodev verify-task should write verification.json under runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "logs" / "verify-001.output.txt"),
+        "autodev verify-task should write command output log under runtime store");
+    const auto verifications_result = RunAgentos(workspace, {"autodev", "verifications", "job_id=" + executable_job_id});
+    Expect(verifications_result.exit_code == 0,
+        "autodev verifications should list recorded verification facts");
+    Expect(verifications_result.output.find("AutoDev verifications") != std::string::npos,
+        "autodev verifications should print heading");
+    Expect(verifications_result.output.find("verification_id: verify-001") != std::string::npos,
+        "autodev verifications should include verify-001");
+    Expect(verifications_result.output.find("related_turn_id: turn-001") != std::string::npos,
+        "autodev verifications should include related turn id");
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
         "autodev events should read execution preflight audit event");
     Expect(executable_events.output.find("autodev.execution.blocked") != std::string::npos,
         "autodev execute-next-task should append an execution blocked audit event");
+    Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
+        "autodev verify-task should append a verification completed event");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

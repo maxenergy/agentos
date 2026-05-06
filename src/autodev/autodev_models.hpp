@@ -90,12 +90,31 @@ struct AutoDevTurn {
     std::optional<std::string> error_message;
 };
 
+struct AutoDevVerification {
+    std::string verification_id;
+    std::string job_id;
+    std::string task_id;
+    std::string spec_revision;
+    std::string command;
+    std::filesystem::path cwd;
+    int exit_code = -1;
+    bool passed = false;
+    int duration_ms = 0;
+    std::string started_at;
+    std::string finished_at;
+    std::optional<std::filesystem::path> output_log_path;
+    std::optional<std::string> output_summary;
+    std::optional<std::string> related_turn_id;
+};
+
 nlohmann::json ToJson(const AutoDevSkillPackBinding& binding);
 nlohmann::json ToJson(const AutoDevJob& job);
 nlohmann::json ToJson(const AutoDevTask& task);
 nlohmann::json ToJson(const AutoDevTurn& turn);
+nlohmann::json ToJson(const AutoDevVerification& verification);
 AutoDevJob AutoDevJobFromJson(const nlohmann::json& json);
 AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json);
 AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json);
+AutoDevVerification AutoDevVerificationFromJson(const nlohmann::json& json);
 
 }  // namespace agentos

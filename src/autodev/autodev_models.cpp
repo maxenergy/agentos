@@ -210,4 +210,42 @@ AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json) {
     return turn;
 }
 
+nlohmann::json ToJson(const AutoDevVerification& verification) {
+    return nlohmann::json{
+        {"verification_id", verification.verification_id},
+        {"job_id", verification.job_id},
+        {"task_id", verification.task_id},
+        {"spec_revision", verification.spec_revision},
+        {"command", verification.command},
+        {"cwd", verification.cwd.string()},
+        {"exit_code", verification.exit_code},
+        {"passed", verification.passed},
+        {"duration_ms", verification.duration_ms},
+        {"started_at", verification.started_at},
+        {"finished_at", verification.finished_at},
+        {"output_log_path", OptionalPath(verification.output_log_path)},
+        {"output_summary", OptionalString(verification.output_summary)},
+        {"related_turn_id", OptionalString(verification.related_turn_id)},
+    };
+}
+
+AutoDevVerification AutoDevVerificationFromJson(const nlohmann::json& json) {
+    AutoDevVerification verification;
+    verification.verification_id = json.value("verification_id", std::string{});
+    verification.job_id = json.value("job_id", std::string{});
+    verification.task_id = json.value("task_id", std::string{});
+    verification.spec_revision = json.value("spec_revision", std::string{});
+    verification.command = json.value("command", std::string{});
+    verification.cwd = json.value("cwd", std::string{});
+    verification.exit_code = json.value("exit_code", -1);
+    verification.passed = json.value("passed", false);
+    verification.duration_ms = json.value("duration_ms", 0);
+    verification.started_at = json.value("started_at", std::string{});
+    verification.finished_at = json.value("finished_at", std::string{});
+    verification.output_log_path = ReadOptionalPath(json, "output_log_path");
+    verification.output_summary = ReadOptionalString(json, "output_summary");
+    verification.related_turn_id = ReadOptionalString(json, "related_turn_id");
+    return verification;
+}
+
 }  // namespace agentos

@@ -705,6 +705,31 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
 
     const auto profile = agentos::CodexCliAutoDevAdapterProfile();
     store.record_execution_blocked(approved.job, tasks->front(), profile, "adapter not implemented");
+    const auto verified = store.verify_task(submit.job.job_id, "task-001", "turn-001");
+    Expect(verified.success, "verify_task should run the materialized task verify_command");
+    Expect(verified.verification.verification_id == "verify-001",
+        "first verification should use verify-001");
+    Expect(verified.verification.task_id == "task-001",
+        "verification should record task id");
+    Expect(verified.verification.command == "true",
+        "verification should record verify command");
+    Expect(verified.verification.cwd == approved.job.job_worktree_path,
+        "verification should run in job worktree");
+    Expect(verified.verification.exit_code == 0,
+        "verification should record command exit code");
+    Expect(verified.verification.passed,
+        "verification should record passed=true for exit code zero");
+    Expect(verified.verification.related_turn_id == "turn-001",
+        "verification should link to related turn id when provided");
+    Expect(std::filesystem::exists(store.verification_path(submit.job.job_id)),
+        "verify_task should write verification.json under runtime store");
+    Expect(verified.verification.output_log_path.has_value() &&
+               std::filesystem::exists(*verified.verification.output_log_path),
+        "verify_task should write command output log under runtime store");
+    std::string verifications_error;
+    const auto verifications = store.load_verifications(submit.job.job_id, &verifications_error);
+    Expect(verifications.has_value() && verifications->size() == 1,
+        "load_verifications should read recorded verification facts");
 
     Expect(std::filesystem::exists(store.turns_path(submit.job.job_id)),
         "recording execution blocked event should create turns.json");
@@ -756,13 +781,17 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "execution blocked event should link to prompt artifact");
     Expect(events.find("\"response_artifact\"") != std::string::npos,
         "execution blocked event should link to response artifact");
+    Expect(events.find("\"type\":\"autodev.verification.started\"") != std::string::npos,
+        "events.ndjson should record verification started event");
+    Expect(events.find("\"type\":\"autodev.verification.completed\"") != std::string::npos,
+        "events.ndjson should record verification completed event");
     Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,
         "execution blocked event should record adapter kind");
     Expect(events.find("\"event_stream_mode\":\"synthetic\"") != std::string::npos,
         "execution blocked event should record adapter event stream mode");
     const auto persisted_tasks = nlohmann::json::parse(ReadFile(store.tasks_path(submit.job.job_id)));
     Expect(persisted_tasks[0]["status"] == "pending",
-        "recording execution blocked event should not change task status");
+        "recording execution and verification facts should not change task status");
     const auto persisted_job = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
     Expect(persisted_job["status"] == "running",
         "recording execution blocked event should not change job status");

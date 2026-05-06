@@ -391,6 +391,35 @@ std::string NextTurnId(const nlohmann::json& turn_records) {
     return out.str();
 }
 
+std::string NextVerificationId(const nlohmann::json& verification_records) {
+    int max_verification = 0;
+    if (verification_records.is_array()) {
+        static const std::regex pattern(R"(^verify-([0-9]{3})$)");
+        for (const auto& verification : verification_records) {
+            if (!verification.is_object() ||
+                !verification.contains("verification_id") ||
+                !verification.at("verification_id").is_string()) {
+                continue;
+            }
+            std::smatch match;
+            const auto verification_id = verification.at("verification_id").get<std::string>();
+            if (std::regex_match(verification_id, match, pattern)) {
+                max_verification = std::max(max_verification, std::stoi(match[1].str()));
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "verify-" << std::setw(3) << std::setfill('0') << (max_verification + 1);
+    return out.str();
+}
+
+std::string TruncateForSummary(const std::string& value, const std::size_t max_chars = 4000) {
+    if (value.size() <= max_chars) {
+        return value;
+    }
+    return value.substr(0, max_chars) + "\n[truncated]\n";
+}
+
 std::string BlockedExecutionPromptArtifact(
     const AutoDevJob& job,
     const AutoDevTask& task,
@@ -568,6 +597,14 @@ std::filesystem::path AutoDevStateStore::tasks_path(const std::string& job_id) c
 
 std::filesystem::path AutoDevStateStore::turns_path(const std::string& job_id) const {
     return job_dir(job_id) / "turns.json";
+}
+
+std::filesystem::path AutoDevStateStore::verification_path(const std::string& job_id) const {
+    return job_dir(job_id) / "verification.json";
+}
+
+std::filesystem::path AutoDevStateStore::logs_dir(const std::string& job_id) const {
+    return job_dir(job_id) / "logs";
 }
 
 std::filesystem::path AutoDevStateStore::artifacts_dir(const std::string& job_id) const {
@@ -1314,6 +1351,122 @@ void AutoDevStateStore::record_execution_blocked(
     });
 }
 
+AutoDevVerifyTaskResult AutoDevStateStore::verify_task(
+    const std::string& job_id,
+    const std::string& task_id,
+    const std::optional<std::string>& related_turn_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevVerifyTaskResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevVerifyTaskResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (task_id.empty()) {
+        return fail(std::move(job), "task_id is required");
+    }
+    if (job.isolation_status != "ready" || !std::filesystem::exists(job.job_worktree_path)) {
+        return fail(std::move(job), "workspace isolation is not ready");
+    }
+    if (!job.spec_revision.has_value() || !job.spec_hash.has_value()) {
+        return fail(std::move(job), "no approved frozen spec is recorded on the job");
+    }
+
+    auto maybe_tasks = load_tasks(job_id, &load_error);
+    if (!maybe_tasks.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    const auto task_it = std::find_if(maybe_tasks->begin(), maybe_tasks->end(), [&task_id](const AutoDevTask& task) {
+        return task.task_id == task_id;
+    });
+    if (task_it == maybe_tasks->end()) {
+        return fail(std::move(job), "AutoDev task not found: " + task_id);
+    }
+    AutoDevTask task = *task_it;
+    if (!task.verify_command.has_value() || task.verify_command->empty()) {
+        return fail(std::move(job), "task has no verify_command");
+    }
+
+    nlohmann::json verifications = nlohmann::json::array();
+    if (std::filesystem::exists(verification_path(job_id))) {
+        try {
+            verifications = nlohmann::json::parse(ReadFile(verification_path(job_id)));
+            if (!verifications.is_array()) {
+                verifications = nlohmann::json::array();
+            }
+        } catch (...) {
+            verifications = nlohmann::json::array();
+        }
+    }
+
+    AutoDevVerification verification;
+    verification.verification_id = NextVerificationId(verifications);
+    verification.job_id = job.job_id;
+    verification.task_id = task.task_id;
+    verification.spec_revision = task.spec_revision.empty() ? job.spec_revision.value_or("") : task.spec_revision;
+    verification.command = *task.verify_command;
+    verification.cwd = job.job_worktree_path;
+    verification.related_turn_id = related_turn_id;
+    verification.started_at = IsoUtcNow();
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.verification.started"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"verification_id", verification.verification_id},
+        {"command", verification.command},
+        {"cwd", verification.cwd.string()},
+        {"at", verification.started_at},
+    });
+
+    const auto start = std::chrono::steady_clock::now();
+    const auto command = "cd " + ShellQuote(job.job_worktree_path.string()) + " && " + verification.command;
+    const auto command_result = RunCommand(command);
+    const auto end = std::chrono::steady_clock::now();
+
+    verification.finished_at = IsoUtcNow();
+    verification.duration_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
+    verification.exit_code = command_result.exit_code;
+    verification.passed = command_result.exit_code == 0;
+    verification.output_log_path = logs_dir(job.job_id) / (verification.verification_id + ".output.txt");
+    verification.output_summary = TruncateForSummary(command_result.output);
+    WriteFileAtomically(*verification.output_log_path, command_result.output);
+
+    verifications.push_back(ToJson(verification));
+    WriteFileAtomically(verification_path(job.job_id), verifications.dump(2) + "\n");
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.verification.completed"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"verification_id", verification.verification_id},
+        {"exit_code", verification.exit_code},
+        {"passed", verification.passed},
+        {"duration_ms", verification.duration_ms},
+        {"output_log_path", verification.output_log_path->string()},
+        {"at", verification.finished_at},
+    });
+
+    AutoDevVerifyTaskResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.task = std::move(task);
+    result.verification = std::move(verification);
+    result.verification_path = this->verification_path(job_id);
+    return result;
+}
+
 std::optional<AutoDevJob> AutoDevStateStore::load_job(
     const std::string& job_id,
     std::string* error_message) const {
@@ -1422,6 +1575,47 @@ std::optional<std::vector<AutoDevTurn>> AutoDevStateStore::load_turns(
     } catch (const std::exception& e) {
         if (error_message) {
             *error_message = std::string("failed to read AutoDev turns: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
+std::optional<std::vector<AutoDevVerification>> AutoDevStateStore::load_verifications(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = verification_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev verification records not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev verification records: verification.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevVerification> verifications;
+        for (const auto& verification_json : json) {
+            verifications.push_back(AutoDevVerificationFromJson(verification_json));
+        }
+        return verifications;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev verification records: ") + e.what();
         }
         return std::nullopt;
     }

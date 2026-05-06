@@ -71,6 +71,15 @@ struct AutoDevApproveSpecResult {
     std::filesystem::path tasks_path;
 };
 
+struct AutoDevVerifyTaskResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    AutoDevTask task;
+    AutoDevVerification verification;
+    std::filesystem::path verification_path;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -83,6 +92,8 @@ public:
     [[nodiscard]] std::filesystem::path events_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path tasks_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path turns_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path verification_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path logs_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path artifacts_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path spec_revisions_dir(const std::string& job_id) const;
 
@@ -102,11 +113,18 @@ public:
         const AutoDevTask& task,
         const AutoDevExecutionAdapterProfile& adapter_profile,
         const std::string& reason);
+    AutoDevVerifyTaskResult verify_task(
+        const std::string& job_id,
+        const std::string& task_id,
+        const std::optional<std::string>& related_turn_id = std::nullopt);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTurn>> load_turns(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevVerification>> load_verifications(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<std::string>> load_event_lines(

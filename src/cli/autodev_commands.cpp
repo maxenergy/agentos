@@ -44,6 +44,8 @@ void PrintUsage() {
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
         << "  agentos autodev turns job_id=<job_id>\n"
+        << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
+        << "  agentos autodev verifications job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -468,6 +470,93 @@ int RunTurns(const std::filesystem::path& workspace, const int argc, char* argv[
     return 0;
 }
 
+int RunVerifyTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev verify-task failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev verify-task failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+    const auto task_id_it = options.find("task_id");
+    if (task_id_it == options.end() || task_id_it->second.empty()) {
+        std::cerr << "autodev verify-task failed: task_id is required\n";
+        return 1;
+    }
+    std::optional<std::string> related_turn_id;
+    if (const auto it = options.find("related_turn_id"); it != options.end() && !it->second.empty()) {
+        related_turn_id = it->second;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.verify_task(job_id_it->second, task_id_it->second, related_turn_id);
+    if (!result.success) {
+        std::cerr << "autodev verify-task failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev task verified\n"
+              << "job_id:          " << result.verification.job_id << '\n'
+              << "task_id:         " << result.verification.task_id << '\n'
+              << "verification_id: " << result.verification.verification_id << '\n'
+              << "passed:          " << (result.verification.passed ? "true" : "false") << '\n'
+              << "exit_code:       " << result.verification.exit_code << '\n'
+              << "duration_ms:     " << result.verification.duration_ms << '\n'
+              << "command:         " << result.verification.command << '\n'
+              << "cwd:             " << result.verification.cwd.string() << '\n'
+              << "verification:    " << result.verification_path.string() << '\n';
+    if (result.verification.output_log_path.has_value()) {
+        std::cout << "output_log:      " << result.verification.output_log_path->string() << '\n';
+    }
+    std::cout << "\nVerification facts were recorded. AcceptanceGate was not run and task status was not changed.\n";
+    return result.verification.passed ? 0 : 1;
+}
+
+int RunVerifications(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev verifications failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev verifications failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto verifications = store.load_verifications(job_id_it->second, &error);
+    if (!verifications.has_value()) {
+        std::cerr << "autodev verifications failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev verifications\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << verifications->size() << '\n';
+    for (const auto& verification : *verifications) {
+        std::cout << '\n'
+                  << "- verification_id: " << verification.verification_id << '\n'
+                  << "  task_id:         " << verification.task_id << '\n'
+                  << "  passed:          " << (verification.passed ? "true" : "false") << '\n'
+                  << "  exit_code:       " << verification.exit_code << '\n'
+                  << "  duration_ms:     " << verification.duration_ms << '\n'
+                  << "  command:         " << verification.command << '\n'
+                  << "  cwd:             " << verification.cwd.string() << '\n';
+        if (verification.output_log_path.has_value()) {
+            std::cout << "  output_log:      " << verification.output_log_path->string() << '\n';
+        }
+        if (verification.related_turn_id.has_value()) {
+            std::cout << "  related_turn_id: " << *verification.related_turn_id << '\n';
+        }
+    }
+    return 0;
+}
+
 int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -693,6 +782,12 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "turns") {
         return RunTurns(workspace, argc, argv);
+    }
+    if (subcommand == "verify-task" || subcommand == "verify_task") {
+        return RunVerifyTask(workspace, argc, argv);
+    }
+    if (subcommand == "verifications") {
+        return RunVerifications(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);
