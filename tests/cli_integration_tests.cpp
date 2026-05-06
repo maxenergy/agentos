@@ -37,6 +37,25 @@ std::filesystem::path FreshWorkspace(const std::string& name) {
     return workspace;
 }
 
+void CreateAutoDevSkillPackFixture(const std::filesystem::path& root) {
+    const std::vector<std::string> steps = {
+        "00-understand-system",
+        "01-grill-requirements",
+        "02-spec-freeze",
+        "03-impact-analysis",
+        "04-task-slice",
+        "05-goal-pack",
+        "07-verify-loop",
+        "08-goal-review",
+    };
+    for (const auto& step : steps) {
+        const auto dir = root / step;
+        std::filesystem::create_directories(dir);
+        std::ofstream skill(dir / "SKILL.md", std::ios::binary);
+        skill << "---\nname: " << step << "\n---\n# " << step << "\n";
+    }
+}
+
 std::string QuoteShellArg(const std::string& value) {
 #ifdef _WIN32
     if (value.find_first_of(" \t\n\"&<>|^") == std::string::npos) {
@@ -2284,7 +2303,7 @@ void TestAutoDevCommands() {
     const auto target = workspace / "target_app";
     std::filesystem::create_directories(target);
     const auto skill_pack = workspace / "skills";
-    std::filesystem::create_directories(skill_pack);
+    CreateAutoDevSkillPackFixture(skill_pack);
 
     const auto submit = RunAgentos(workspace, {
         "autodev",
@@ -2351,6 +2370,24 @@ void TestAutoDevCommands() {
     Expect(status.output.find("agentos autodev prepare_workspace job_id=" + job_id) != std::string::npos ||
                status.output.find("agentos autodev prepare-workspace job_id=" + job_id) != std::string::npos,
         "autodev status should print prepare workspace next action");
+
+    const auto load_skill_pack = RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + job_id});
+    Expect(load_skill_pack.exit_code == 0, "autodev load-skill-pack should succeed for complete fixture");
+    Expect(load_skill_pack.output.find("AutoDev skill pack loaded") != std::string::npos,
+        "autodev load-skill-pack should print success heading");
+    Expect(load_skill_pack.output.find("skill_pack_status:  loaded") != std::string::npos,
+        "autodev load-skill-pack should report loaded status");
+    Expect(std::filesystem::exists(job_dir / "artifacts" / "skill_pack.snapshot.json"),
+        "autodev load-skill-pack should write runtime skill pack snapshot");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "autodev load-skill-pack should not generate docs/goal in target repo");
+
+    const auto loaded_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(loaded_status.exit_code == 0, "autodev status should read loaded skill pack job");
+    Expect(loaded_status.output.find("status: loaded") != std::string::npos,
+        "autodev status should show loaded skill pack");
+    Expect(loaded_status.output.find("hash:") != std::string::npos,
+        "autodev status should show skill pack manifest hash");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

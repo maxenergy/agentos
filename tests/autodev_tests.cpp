@@ -7,6 +7,7 @@
 #include <optional>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -66,6 +67,26 @@ void InitGitRepo(const std::filesystem::path& repo) {
         "test fixture should stage initial file");
     Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " commit -m initial >/dev/null 2>&1") == 0,
         "test fixture should commit initial file");
+}
+
+void CreateAutoDevSkillPackFixture(const std::filesystem::path& root, const bool complete = true) {
+    const std::vector<std::string> steps = {
+        "00-understand-system",
+        "01-grill-requirements",
+        "02-spec-freeze",
+        "03-impact-analysis",
+        "04-task-slice",
+        "05-goal-pack",
+        "07-verify-loop",
+        "08-goal-review",
+    };
+    const auto limit = complete ? steps.size() : steps.size() - 1;
+    for (std::size_t i = 0; i < limit; ++i) {
+        const auto dir = root / steps[i];
+        std::filesystem::create_directories(dir);
+        std::ofstream skill(dir / "SKILL.md", std::ios::binary);
+        skill << "---\nname: " << steps[i] << "\n---\n# " << steps[i] << "\n";
+    }
 }
 
 void TestJobIdValidation() {
@@ -241,6 +262,71 @@ void TestPrepareWorkspaceBlocksDirtyTarget() {
         "dirty prepare should not create worktree");
 }
 
+void TestLoadSkillPackRecordsSnapshotOnly() {
+    const auto workspace = FreshWorkspace("load_skill_pack");
+    const auto target = workspace / "target_app";
+    std::filesystem::create_directories(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Load skills",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before load_skill_pack should succeed");
+
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(loaded.success, "load_skill_pack should succeed for complete fixture");
+    Expect(loaded.job.skill_pack.status == "loaded", "load_skill_pack should mark skill pack loaded");
+    Expect(loaded.job.skill_pack.manifest_hash.has_value() && !loaded.job.skill_pack.manifest_hash->empty(),
+        "load_skill_pack should record manifest hash");
+    Expect(std::filesystem::exists(loaded.snapshot_path),
+        "load_skill_pack should write skill pack snapshot to runtime artifacts");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "load_skill_pack should not generate docs/goal in target repo");
+    Expect(!std::filesystem::exists(submit.job.job_worktree_path),
+        "load_skill_pack should not create planned worktree");
+
+    const auto snapshot = nlohmann::json::parse(ReadFile(loaded.snapshot_path));
+    Expect(snapshot["required_steps"].size() == 8,
+        "skill pack snapshot should record required AutoDev steps");
+    Expect(snapshot["manifest_hash"] == *loaded.job.skill_pack.manifest_hash,
+        "skill pack snapshot hash should match job binding hash");
+
+    const auto events = ReadFile(store.events_path(submit.job.job_id));
+    Expect(events.find("\"type\":\"autodev.skill_pack.loaded\"") != std::string::npos,
+        "events.ndjson should record skill pack loaded event");
+}
+
+void TestLoadSkillPackBlocksMissingSteps() {
+    const auto workspace = FreshWorkspace("load_skill_pack_missing_step");
+    const auto target = workspace / "target_app";
+    std::filesystem::create_directories(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack, false);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Load broken skills",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before broken load_skill_pack should succeed");
+
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(!loaded.success, "load_skill_pack should fail when required steps are missing");
+    Expect(loaded.job.status == "blocked", "failed skill pack load should block job");
+    Expect(loaded.job.skill_pack.status == "validation_failed",
+        "missing required step should mark validation_failed");
+    Expect(loaded.job.blocker.has_value() &&
+               loaded.job.blocker->find("missing required AutoDev step") != std::string::npos,
+        "failed skill pack load should explain missing required step");
+}
+
 }  // namespace
 
 int main() {
@@ -251,6 +337,8 @@ int main() {
     TestLoadRejectsInvalidJobId();
     TestPrepareWorkspaceCreatesGitWorktree();
     TestPrepareWorkspaceBlocksDirtyTarget();
+    TestLoadSkillPackRecordsSnapshotOnly();
+    TestLoadSkillPackBlocksMissingSteps();
 
     if (failures != 0) {
         std::cerr << failures << " AutoDev test assertion(s) failed\n";

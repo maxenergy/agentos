@@ -1,6 +1,7 @@
 #include "autodev/autodev_state_store.hpp"
 
 #include "autodev/autodev_job_id.hpp"
+#include "autodev/autodev_skill_pack_loader.hpp"
 #include "utils/atomic_file.hpp"
 
 #include <chrono>
@@ -162,6 +163,34 @@ nlohmann::json WorkspaceBlockedEvent(const AutoDevJob& job) {
     };
 }
 
+nlohmann::json SkillPackLoadedEvent(const AutoDevJob& job, const std::filesystem::path& snapshot_path) {
+    return nlohmann::json{
+        {"type", "autodev.skill_pack.loaded"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"skill_pack_status", job.skill_pack.status},
+        {"skill_pack_path", job.skill_pack.local_path.has_value() ? job.skill_pack.local_path->string() : ""},
+        {"manifest_hash", job.skill_pack.manifest_hash.value_or("")},
+        {"snapshot_path", snapshot_path.string()},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
+    };
+}
+
+nlohmann::json SkillPackBlockedEvent(const AutoDevJob& job) {
+    return nlohmann::json{
+        {"type", "autodev.skill_pack.blocked"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"skill_pack_status", job.skill_pack.status},
+        {"blocker", job.blocker.value_or("")},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
+    };
+}
+
 }  // namespace
 
 AutoDevStateStore::AutoDevStateStore(std::filesystem::path agentos_workspace)
@@ -189,6 +218,10 @@ std::filesystem::path AutoDevStateStore::job_json_path(const std::string& job_id
 
 std::filesystem::path AutoDevStateStore::events_path(const std::string& job_id) const {
     return job_dir(job_id) / "events.ndjson";
+}
+
+std::filesystem::path AutoDevStateStore::artifacts_dir(const std::string& job_id) const {
+    return job_dir(job_id) / "artifacts";
 }
 
 AutoDevSubmitResult AutoDevStateStore::submit(const AutoDevSubmitRequest& request) {
@@ -426,6 +459,104 @@ AutoDevPrepareWorkspaceResult AutoDevStateStore::prepare_workspace(const std::st
     AutoDevPrepareWorkspaceResult result;
     result.success = true;
     result.job = std::move(job);
+    return result;
+}
+
+AutoDevLoadSkillPackResult AutoDevStateStore::load_skill_pack(
+    const std::string& job_id,
+    const std::optional<std::filesystem::path>& override_path) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevLoadSkillPackResult result;
+        result.error_message = load_error;
+        return result;
+    }
+
+    AutoDevJob job = std::move(*maybe_job);
+    if (override_path.has_value() && !override_path->empty()) {
+        job.skill_pack.source_type = "local_path";
+        job.skill_pack.local_path = AbsoluteNormalized(*override_path);
+        job.skill_pack.status = "declared";
+        job.skill_pack.error = std::nullopt;
+    }
+    if (!job.skill_pack.local_path.has_value() || job.skill_pack.local_path->empty()) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.skill_pack.status = "missing";
+        job.skill_pack.error = "skill_pack_path is required";
+        job.blocker = "skill_pack_path is required";
+        job.next_action = "declare_skill_pack";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, SkillPackBlockedEvent(job));
+
+        AutoDevLoadSkillPackResult result;
+        result.error_message = *job.blocker;
+        result.job = std::move(job);
+        return result;
+    }
+
+    job.status = "running";
+    job.current_activity = "loading_skill_pack";
+    job.skill_pack.status = "loading";
+    job.skill_pack.error = std::nullopt;
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.skill_pack.loading"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"skill_pack_path", job.skill_pack.local_path->string()},
+        {"at", job.updated_at},
+    });
+
+    const AutoDevSkillPackLoader loader;
+    const auto loaded = loader.load_local_path(*job.skill_pack.local_path);
+    if (!loaded.success) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.skill_pack.status = loaded.error_message.find("does not exist") != std::string::npos
+            ? "missing"
+            : "validation_failed";
+        job.skill_pack.error = loaded.error_message;
+        job.blocker = loaded.error_message;
+        job.next_action = "fix_skill_pack";
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, SkillPackBlockedEvent(job));
+
+        AutoDevLoadSkillPackResult result;
+        result.error_message = loaded.error_message;
+        result.job = std::move(job);
+        return result;
+    }
+
+    const auto snapshot_dir = artifacts_dir(job.job_id);
+    std::filesystem::create_directories(snapshot_dir);
+    const auto snapshot_path = snapshot_dir / "skill_pack.snapshot.json";
+    WriteFileAtomically(snapshot_path, loaded.snapshot.dump(2) + "\n");
+
+    job.status = job.isolation_status == "ready" ? "running" : "submitted";
+    job.current_activity = "none";
+    job.skill_pack.name = "maxenergy/skills";
+    job.skill_pack.source_type = "local_path";
+    job.skill_pack.commit = loaded.commit.empty() ? std::nullopt : std::optional<std::string>(loaded.commit);
+    job.skill_pack.status = "loaded";
+    job.skill_pack.loaded_at = IsoUtcNow();
+    job.skill_pack.manifest_hash = loaded.manifest_hash;
+    job.skill_pack.error = std::nullopt;
+    job.blocker = std::nullopt;
+    job.next_action = job.isolation_status == "ready" ? "generate_goal_docs" : "prepare_workspace";
+    job.updated_at = *job.skill_pack.loaded_at;
+    save_job(job);
+    append_event(job.job_id, SkillPackLoadedEvent(job, snapshot_path));
+
+    AutoDevLoadSkillPackResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.snapshot_path = snapshot_path;
     return result;
 }
 

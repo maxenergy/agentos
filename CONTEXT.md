@@ -285,6 +285,7 @@ _Avoid_: sandbox mode, workspace path, checkout type
 - Submit may record a skill pack name, local path, source URI, ref, or version, but in MVP it records only `not_loaded` or `declared` binding status.
 - SkillPackLoader begins after MVP submit/status and is responsible for loading, validating, compatibility checks, required AutoDev step discovery, and manifest hashing.
 - The docs pipeline cannot run until the AutoDev Skill Pack Binding is loaded and required AutoDev steps are validated.
+- Loading a skill pack is a runtime-only AutoDev activity that may write a Skill Pack Snapshot under the AutoDev Job Directory but must not generate Goal Documents or touch the Target Repo Path.
 - A job's AutoDev Skill Pack Binding and an AutoDev Spec's generation provenance are related but distinct.
 - Each AutoDev Spec Snapshot records the **Skill Pack Snapshot** used to generate that spec revision, not merely the job's declared binding.
 - Loading a skill pack never implies that a Candidate Spec exists, that a Spec Freeze happened, or that code execution is approved.

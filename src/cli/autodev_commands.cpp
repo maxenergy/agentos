@@ -32,7 +32,8 @@ void PrintUsage() {
         << "Usage:\n"
         << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false]\n"
         << "  agentos autodev status job_id=<job_id>\n"
-        << "  agentos autodev prepare-workspace job_id=<job_id>\n";
+        << "  agentos autodev prepare-workspace job_id=<job_id>\n"
+        << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -124,6 +125,50 @@ int RunPrepareWorkspace(const std::filesystem::path& workspace, const int argc, 
     return 0;
 }
 
+int RunLoadSkillPack(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev load-skill-pack failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev load-skill-pack failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    std::optional<std::filesystem::path> skill_pack_path;
+    if (const auto it = options.find("skill_pack_path"); it != options.end() && !it->second.empty()) {
+        skill_pack_path = std::filesystem::path(it->second);
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.load_skill_pack(job_id_it->second, skill_pack_path);
+    if (!result.success) {
+        std::cerr << "autodev load-skill-pack failed: " << result.error_message << '\n';
+        if (!result.job.job_id.empty()) {
+            std::cerr << "status:            " << result.job.status << '\n'
+                      << "skill_pack_status: " << result.job.skill_pack.status << '\n'
+                      << "next_action:       " << result.job.next_action << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "AutoDev skill pack loaded\n"
+              << "job_id:             " << result.job.job_id << '\n'
+              << "status:             " << result.job.status << '\n'
+              << "phase:              " << result.job.phase << '\n'
+              << "skill_pack_status:  " << result.job.skill_pack.status << '\n'
+              << "skill_pack_path:    "
+              << (result.job.skill_pack.local_path.has_value() ? result.job.skill_pack.local_path->string() : "")
+              << '\n'
+              << "manifest_hash:      " << result.job.skill_pack.manifest_hash.value_or("") << '\n'
+              << "snapshot:           " << result.snapshot_path.string() << '\n'
+              << "next_action:        " << result.job.next_action << '\n'
+              << "\nNo docs/goal files were generated and no Codex execution was started.\n";
+    return 0;
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -168,6 +213,12 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
     if (job->skill_pack.local_path.has_value()) {
         std::cout << "  path:   " << job->skill_pack.local_path->string() << '\n';
     }
+    if (job->skill_pack.manifest_hash.has_value()) {
+        std::cout << "  hash:   " << *job->skill_pack.manifest_hash << '\n';
+    }
+    if (job->skill_pack.error.has_value()) {
+        std::cout << "  error:  " << *job->skill_pack.error << '\n';
+    }
     std::cout << '\n'
               << "Next action:\n"
               << "  agentos autodev "
@@ -198,6 +249,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "prepare-workspace" || subcommand == "prepare_workspace") {
         return RunPrepareWorkspace(workspace, argc, argv);
+    }
+    if (subcommand == "load-skill-pack" || subcommand == "load_skill_pack") {
+        return RunLoadSkillPack(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';
