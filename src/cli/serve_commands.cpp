@@ -43,6 +43,53 @@ std::vector<std::string> SplitCommaList(const std::string& value) {
     return items;
 }
 
+#ifdef _WIN32
+class ConsoleCodePageGuard {
+public:
+    ConsoleCodePageGuard() {
+        DWORD mode = 0;
+        const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+        output_is_console_ = output != INVALID_HANDLE_VALUE && output != nullptr &&
+                             GetConsoleMode(output, &mode) != 0;
+        input_is_console_ = input != INVALID_HANDLE_VALUE && input != nullptr &&
+                            GetConsoleMode(input, &mode) != 0;
+        if (!output_is_console_ && !input_is_console_) {
+            return;
+        }
+
+        original_output_cp_ = GetConsoleOutputCP();
+        original_input_cp_ = GetConsoleCP();
+        if (output_is_console_) {
+            SetConsoleOutputCP(CP_UTF8);
+        }
+        if (input_is_console_) {
+            SetConsoleCP(CP_UTF8);
+        }
+    }
+
+    ~ConsoleCodePageGuard() {
+        if (output_is_console_ && original_output_cp_ != 0) {
+            SetConsoleOutputCP(original_output_cp_);
+        }
+        if (input_is_console_ && original_input_cp_ != 0) {
+            SetConsoleCP(original_input_cp_);
+        }
+    }
+
+    ConsoleCodePageGuard(const ConsoleCodePageGuard&) = delete;
+    ConsoleCodePageGuard& operator=(const ConsoleCodePageGuard&) = delete;
+
+private:
+    UINT original_output_cp_ = 0;
+    UINT original_input_cp_ = 0;
+    bool output_is_console_ = false;
+    bool input_is_console_ = false;
+};
+#else
+class ConsoleCodePageGuard {};
+#endif
+
 std::map<std::string, std::string> ParseOptionsFromArgs(const int argc, char* argv[], const int start_index) {
     std::map<std::string, std::string> options;
     for (int index = start_index; index < argc; ++index) {
@@ -324,10 +371,7 @@ int RunServeCommand(
     // ── Start server ────────────────────────────────────────────────────
     auto cancel = InstallSignalCancellation();
 
-#ifdef _WIN32
-    SetConsoleOutputCP(65001);
-    SetConsoleCP(65001);
-#endif
+    const ConsoleCodePageGuard console_code_page_guard;
 
     std::cout
         << "\n"

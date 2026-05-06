@@ -1,0 +1,11 @@
+# skill_name|aliases|triggers|stopwords|default_args_json
+# Project-level runtime routing hints. The C++ loop loads this file dynamically;
+# keep domain vocabulary here or in runtime/skill_routes.tsv, not in core code.
+opencli|opencli,OpenCLI,小红书,xiaohongshu,XiaoHongShu,xhs,XHS,rednote,RedNote|用,使用,调用,通过,借助,获得,获取,收集,搜索,查找,找,打开,解析,热门,热搜,话题,榜单,排行,top,search,find,get,fetch,collect,trending,hot,popular|你帮我,帮我,请,用,使用,通过,借助,调用,打开,解析,搜索,查找,找,获取,获得,收集,一下,的,opencli,OpenCLI,小红书,xiaohongshu,XiaoHongShu,xhs,XHS,rednote,RedNote|{"site":"xiaohongshu"}
+opencli|opencli,OpenCLI,google,Google,谷歌|用,使用,调用,通过,借助,搜索,查找,找,打开,解析,search,find,get,fetch|你帮我,帮我,请,用,使用,通过,借助,调用,打开,解析,搜索,查找,找,一下,的,opencli,OpenCLI,google,Google,谷歌|{"site":"google"}
+opencli|opencli,OpenCLI,github,GitHub|用,使用,调用,通过,借助,搜索,查找,找,打开,解析,search,find,get,fetch|你帮我,帮我,请,用,使用,通过,借助,调用,打开,解析,搜索,查找,找,一下,的,opencli,OpenCLI,github,GitHub|{"site":"github"}
+opencli|opencli,OpenCLI,youtube,YouTube|用,使用,调用,通过,借助,搜索,查找,找,打开,解析,search,find,get,fetch|你帮我,帮我,请,用,使用,通过,借助,调用,打开,解析,搜索,查找,找,一下,的,opencli,OpenCLI,youtube,YouTube|{"site":"youtube"}
+opencli|opencli,OpenCLI,wikipedia,Wikipedia,维基|用,使用,调用,通过,借助,搜索,查找,找,打开,解析,search,find,get,fetch|你帮我,帮我,请,用,使用,通过,借助,调用,打开,解析,搜索,查找,找,一下,的,opencli,OpenCLI,wikipedia,Wikipedia,维基|{"site":"wikipedia"}
+opencli|opencli,OpenCLI,stackoverflow,StackOverflow,Stack Overflow|用,使用,调用,通过,借助,搜索,查找,找,打开,解析,search,find,get,fetch|你帮我,帮我,请,用,使用,通过,借助,调用,打开,解析,搜索,查找,找,一下,的,opencli,OpenCLI,stackoverflow,StackOverflow,Stack Overflow|{"site":"stackoverflow"}
+opencli|opencli,OpenCLI,reddit,Reddit|用,使用,调用,通过,借助,搜索,查找,找,打开,解析,search,find,get,fetch|你帮我,帮我,请,用,使用,通过,借助,调用,打开,解析,搜索,查找,找,一下,的,opencli,OpenCLI,reddit,Reddit|{"site":"reddit"}
+xiaohongshu_search|小红书,xiaohongshu,XiaoHongShu,xhs,XHS,rednote,RedNote|搜索,查找,找,获取,获得,收集,热门,热搜,话题,榜单,排行,top,search,find,get,fetch,collect,trending,hot,popular|你帮我,帮我,请,用,使用,通过,借助,调用,搜索,查找,找,获取,获得,收集,一下,的,小红书,xiaohongshu,XiaoHongShu,xhs,XHS,rednote,RedNote|{}

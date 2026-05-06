@@ -116,7 +116,7 @@ Status: 🚧 Partial
 Delivered:
 
 - `IAgentAdapter`
-- `local_planner` local deterministic planning adapter with session tracking and structured plan output
+- `local_planner` local deterministic planning adapter with session tracking, structured plan output, and role-annotated decomposition plan steps
 - `codex_cli`
 - `gemini` authenticated `generateContent` adapter through existing auth sessions/default profile mapping
 - `anthropic` authenticated Messages adapter plus Claude CLI passthrough execution
@@ -127,9 +127,9 @@ Delivered:
 - Agent health listing
 - Router selection by health and basic historical score
 - WorkspaceSession abstraction
-- session-aware agent execution helper
+- session-aware Agent Dispatch helper
 - deterministic per-agent subtask objectives via `subtasks=role_or_agent=objective;...` or `subtask_<agent|role>=...`
-- `auto_decompose=true` subagent orchestration path that calls a decomposition-capable planner, extracts `plan_steps[].action`, and maps generated actions into deterministic subtask objectives
+- `auto_decompose=true` subagent orchestration path that calls a decomposition-capable planner, extracts `plan_steps[].action`, and maps generated actions into deterministic subtask objectives, with optional `plan_steps[].role` / `plan_steps[].agent` targeting
 - subagent step-level structured output/artifact retention and top-level `agent_outputs[].normalized` aggregation for normalized provider fields beyond plain summary text
 
 Remaining:
@@ -317,17 +317,17 @@ Delivered:
 - `stdio-json-v0` and `json-rpc-v0` process protocols backed by existing cwd/timeout/env/output controls
 - successful `stdio-json-v0` plugin runs must emit JSON-object-shaped stdout
 - successful `json-rpc-v0` plugin runs must emit JSON-RPC 2.0 responses with JSON-object `result`; error responses are rejected
-- successful plugin stdout is embedded as structured `plugin_output` while raw stdout/stderr are retained
-- `output_schema_json.required` is validated against successful plugin output
-- `output_schema_json.properties.*.type` is validated for basic plugin output field types
-- string `const` and `enum` constraints are validated for plugin output fields
-- string length and pattern constraints are validated for plugin output fields
-- `additionalProperties:false` is validated for plugin output fields
-- `propertyNames`, `minProperties`, and `maxProperties` are validated for plugin output fields
-- `dependentRequired`, legacy array-valued `dependencies`, and object-level `not.required` are validated for plugin output fields
-- basic `if` / `then` / `else` required-branch constraints are validated for plugin output fields
-- numeric range and multipleOf constraints are validated for plugin output fields
-- `allOf` / `anyOf` / `oneOf` required-branch constraints are validated for plugin output fields
+- normalized protocol output is embedded as structured Capability Output while raw stdout/stderr are retained
+- `output_schema_json.required` is validated against successful Capability Output
+- `output_schema_json.properties.*.type` is validated for basic Capability Output field types
+- string `const` and `enum` constraints are validated for Capability Output fields
+- string length and pattern constraints are validated for Capability Output fields
+- `additionalProperties:false` is validated for Capability Output fields
+- `propertyNames`, `minProperties`, and `maxProperties` are validated for Capability Output fields
+- `dependentRequired`, legacy array-valued `dependencies`, and object-level `not.required` are validated for Capability Output fields
+- basic `if` / `then` / `else` required-branch constraints are validated for Capability Output fields
+- numeric range and multipleOf constraints are validated for Capability Output fields
+- `allOf` / `anyOf` / `oneOf` required-branch constraints are validated for Capability Output fields
 - plugin spec health validation for manifest version, protocol, name, binary, and command availability
 - structured plugin health reporting through `CheckPluginHealth`
 - `agentos plugins` command for listing loaded plugin specs and health
@@ -351,14 +351,13 @@ Delivered:
 - plugin manifest resource limit pass-through to the underlying CLI host
 - plugin manifest `sandbox_mode=workspace|none`, with default workspace mode denying path-like runtime arguments that resolve outside the active workspace
 - plugin manifest lifecycle fields `lifecycle_mode=oneshot|persistent`, `startup_timeout_ms`, and `idle_timeout_ms` for TSV/JSON manifests and CLI reporting; `persistent` is restricted to `json-rpc-v0`
-- persistent `json-rpc-v0` plugin sessions with stdin/stdout JSON-RPC round-trips, request IDs, timeout handling, stderr capture, failed-session eviction/restart, destructor shutdown, lifecycle-aware health round-trips, lifecycle event output, active-session counting, manual close, idle-timeout restart, workspace-configurable `runtime/plugin_host.tsv` max persistent session cap with LRU eviction, and persistent success/timeout/crash-restart/malformed-response/session-close/idle-restart/pool-eviction coverage
+- persistent `json-rpc-v0` Plugin Sessions with stdin/stdout JSON-RPC round-trips, request IDs, timeout handling, stderr capture, failed-session eviction/restart, destructor shutdown, lifecycle-aware health round-trips, lifecycle event output, active-session counting, manual close, idle-timeout restart, workspace-configurable `runtime/plugin_host.tsv` max persistent session cap with per-plugin/workspace/binary LRU eviction, process-scope admin diagnostics, unsupported-scope failures, and persistent success/timeout/crash-restart/malformed-response/session-close/idle-restart/pool-eviction coverage
 - plugin smoke test
 - shared spec parsing unit coverage
 
 Remaining:
 
-- richer runtime session admin UX
-- deeper process-pool policy beyond session count capping
+- future daemon-scope Plugin Session administration, if a durable cross-process need emerges
 
 ---
 

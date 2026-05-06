@@ -287,7 +287,7 @@ AgentRouter 负责根据任务特征选择最合适代理。
 - Router 可基于健康状态、历史评分与 lessons 选择单一默认 agent
 - SubagentManager 支持显式 agent 列表的 `sequential` / `parallel` 编排
 - SubagentManager 在 agents 为空时可基于 enabled、capability、历史统计与 lessons 自动选择候选
-- SubagentManager 支持 `auto_decompose=true`，先调用具备 `decomposition` capability 的规划 agent，将其 `plan_steps[].action` 映射到各 role / agent 的 subtask objective
+- SubagentManager 支持 `auto_decompose=true`，先调用具备 `decomposition` capability 的规划 agent，将其 `plan_steps[].action` 映射到各 role / agent 的 subtask objective；planner 也可在 `plan_steps[]` 上提供可选 `role` / `agent` 字段来定向分派，默认 `local_planner` 会从 decomposition context 中读取 roles 并标注到 plan steps
 - Codex CLI、Gemini、Anthropic、OpenAI、Qwen 与 local_planner adapter 会输出 `agent_result.v1` normalized result，包含 `summary`、`content`、`model`、`artifacts`、`metrics`、`tool_calls`、`provider_metadata` 与 `raw_output`
 - SubagentManager 会在每个 `TaskStepRecord` 保留 agent 的 structured output / artifacts，并在整体 `output_json.agent_outputs[].normalized` 聚合各 agent 的 normalized output
 - SubagentManager 复用 `PolicyEngine`、`AuditLogger`、`MemoryManager`

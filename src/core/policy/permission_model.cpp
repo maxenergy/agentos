@@ -15,12 +15,13 @@ bool StartsWith(const std::string_view value, const std::string_view prefix) {
     return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
 
-constexpr std::array<std::string_view, 6> kKnownPermissions{
+constexpr std::array<std::string_view, 7> kKnownPermissions{
     PermissionNames::FilesystemRead,
     PermissionNames::FilesystemWrite,
     PermissionNames::ProcessSpawn,
     PermissionNames::NetworkAccess,
     PermissionNames::AgentInvoke,
+    PermissionNames::AgentDispatch,
     PermissionNames::TaskSubmit,
 };
 

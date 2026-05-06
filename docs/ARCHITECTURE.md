@@ -284,8 +284,8 @@ agentos/
 
 仍未实现：
 
-- Plugin Host deeper process-pool policy and fuller lifecycle admin UX
-- SQLite 或其他事务型存储后端（当前以 `ADR-STORAGE-001` 决策记录推迟，迁移前需先抽象 StorageBackend interface 并保留 TSV import 兼容路径）
+- Future daemon-scope Plugin Session administration, if a durable cross-process need emerges
+- SQLite 或其他事务型存储后端（当前以 `ADR-STORAGE-001` 决策记录推迟；TSV-backed StorageBackend interface 已存在，迁移时仍需保留 TSV import 兼容路径）
 
 WorkflowStore 当前已作为 `src/memory/` 下的持久化组件落地，写入 `runtime/memory/workflows.tsv`；暂未拆成独立 `workflow/` 目录。
 

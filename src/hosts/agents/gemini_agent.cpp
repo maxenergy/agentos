@@ -119,13 +119,18 @@ void GeminiAgent::close_session(const std::string& session_id) {
 AgentResult GeminiAgent::run_task(const AgentTask& task) {
     const auto started_at = std::chrono::steady_clock::now();
 
-    const auto workspace_path = NormalizeWorkspaceRoot(task.workspace_path.empty() ? workspace_root_ : task.workspace_path);
-    if (!IsPathInsideWorkspace(workspace_root_, workspace_path)) {
+    const auto requested_workspace = task.workspace_path.empty()
+        ? workspace_root_
+        : std::filesystem::path(task.workspace_path);
+    const auto workspace_path = NormalizeWorkspaceRoot(requested_workspace);
+    std::error_code workspace_ec;
+    if (!std::filesystem::exists(workspace_path, workspace_ec) ||
+        !std::filesystem::is_directory(workspace_path, workspace_ec)) {
         return {
             .success = false,
             .duration_ms = ElapsedMs(started_at),
-            .error_code = "WorkspaceEscapeDenied",
-            .error_message = "agent workspace must stay inside the configured root",
+            .error_code = "InvalidWorkspace",
+            .error_message = "agent workspace must be an existing directory",
         };
     }
 

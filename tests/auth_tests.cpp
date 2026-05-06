@@ -328,6 +328,12 @@ void TestAuthApiKeySession(const std::filesystem::path& workspace) {
     Expect(token_store.ref_available(managed_ref), "secure token store should report managed Windows credentials as available");
     Expect(token_store.delete_ref(managed_ref), "secure token store should delete managed Windows credentials");
     Expect(!token_store.ref_available(managed_ref), "deleted managed Windows credentials should no longer be available");
+#elif defined(AGENTOS_HAVE_LIBSECRET)
+    Expect(token_store_status.backend_name == "linux-secret-service",
+        "secure token store should report Linux Secret Service backend when libsecret is available");
+    Expect(token_store_status.system_keychain_backed,
+        "secure token store should claim system credential support when libsecret is available");
+    Expect(!token_store_status.dev_only, "Linux Secret Service credential store should not be marked dev-only");
 #else
     Expect(token_store_status.backend_name == "env-ref-only", "secure token store should report env-ref-only MVP backend");
     Expect(!token_store_status.system_keychain_backed, "secure token store should not claim system keychain support");
@@ -366,7 +372,13 @@ void TestAuthLoginFlowModulesWithFixtureStores(const std::filesystem::path& work
     SetEnvForTest("AGENTOS_FLOW_TEST_KEY", "flow-secret");
 
     agentos::SessionStore session_store(isolated_workspace / "sessions.tsv");
-    agentos::SecureTokenStore token_store;
+    agentos::SecureTokenStore token_store(agentos::SecureTokenStore::MakeInMemoryBackendForTesting());
+    const auto bin_dir = isolated_workspace / "bin";
+    std::filesystem::create_directories(bin_dir);
+    const auto curl_args_file = isolated_workspace / "flow_curl_args.txt";
+    WriteOAuthCurlFixture(bin_dir, curl_args_file);
+    ScopedEnvOverride path_override("PATH", PrependPathForTest(bin_dir));
+    agentos::CliHost cli_host;
     const agentos::AuthProviderDescriptor descriptor{
         .provider = agentos::AuthProviderId::gemini,
         .provider_name = "gemini",
@@ -386,6 +398,7 @@ void TestAuthLoginFlowModulesWithFixtureStores(const std::filesystem::path& work
         .descriptor = descriptor,
         .session_store = session_store,
         .token_store = token_store,
+        .cli_host = &cli_host,
         .workspace_path = isolated_workspace,
         .default_api_key_env = "AGENTOS_FLOW_TEST_KEY",
         .probe_cli_session = []() {
@@ -432,6 +445,29 @@ void TestAuthLoginFlowModulesWithFixtureStores(const std::filesystem::path& work
     Expect(browser_session.profile_name == "browser",
         "Auth Login Flow browser module should apply the requested profile");
 
+    const auto native_browser_session = agentos::LoginWithBrowserOAuthPkce(
+        context,
+        "native-browser",
+        {
+            {"callback_url", "http://127.0.0.1:48177/callback?code=native-code&state=native-state"},
+            {"state", "native-state"},
+            {"code_verifier", "native-verifier-secret"},
+            {"redirect_uri", "http://127.0.0.1:48177/callback"},
+            {"client_id", "native-client"},
+            {"token_endpoint", "https://oauth2.example.test/token"},
+            {"account_label", "native@example.test"},
+        });
+    Expect(native_browser_session.mode == agentos::AuthMode::browser_oauth,
+        "Auth Login Flow browser module should complete native PKCE sessions when callback options are injected");
+    Expect(native_browser_session.managed_by_agentos,
+        "Auth Login Flow native PKCE sessions should be AgentOS managed");
+    Expect(token_store.read_ref(native_browser_session.access_token_ref) == "curl-access",
+        "Auth Login Flow native PKCE session should store the exchanged access token in the injected token store");
+    Expect(token_store.read_ref(native_browser_session.refresh_token_ref) == "curl-refresh",
+        "Auth Login Flow native PKCE session should store the exchanged refresh token in the injected token store");
+    Expect(native_browser_session.metadata.at("credential_source") == "oauth_pkce",
+        "Auth Login Flow native PKCE session should record the credential source");
+
     const auto adc_session = agentos::LoginWithCloudAdc(context, "adc");
     Expect(adc_session.mode == agentos::AuthMode::cloud_adc,
         "Auth Login Flow ADC module should create cloud_adc sessions when availability is injected");
@@ -446,6 +482,12 @@ void TestAuthLoginFlowModulesWithFixtureStores(const std::filesystem::path& work
         "Auth Login Flow refresh module should refresh non-native sessions through the static fallback");
     Expect(refreshed.expires_at > refreshable.expires_at,
         "Auth Login Flow refresh module should advance the expiry");
+
+    const auto native_refreshed = agentos::RefreshAuthLoginFlow(context, native_browser_session);
+    Expect(native_refreshed.metadata.at("refreshed_by") == "oauth_refresh_token",
+        "Auth Login Flow refresh module should route native PKCE sessions through OAuth refresh");
+    Expect(token_store.read_ref(native_refreshed.access_token_ref) == "curl-access",
+        "Auth Login Flow native refresh should store the refreshed access token in the injected token store");
 }
 
 void TestSecureRandomBytesContract(const std::filesystem::path& workspace) {

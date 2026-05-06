@@ -405,37 +405,40 @@ PluginRunResult PluginHost::run(const PluginRunRequest& request) const {
         };
     }
 
-    if (plugin_result.success && request.spec.protocol == "stdio-json-v0" && !IsLikelyJsonObjectString(plugin_result.stdout_text)) {
-        return {
-            .success = false,
-            .exit_code = plugin_result.exit_code,
-            .timed_out = plugin_result.timed_out,
-            .duration_ms = plugin_result.duration_ms,
-            .stdout_text = plugin_result.stdout_text,
-            .stderr_text = plugin_result.stderr_text,
-            .error_code = "InvalidPluginOutput",
-            .error_message = "stdio-json-v0 plugin stdout must be a JSON object",
-        };
-    }
-    if (plugin_result.success && request.spec.protocol == "json-rpc-v0") {
-        if (const auto json_rpc_error = JsonRpcOutputError(plugin_result.stdout_text); !json_rpc_error.empty()) {
-            return {
-                .success = false,
-                .exit_code = plugin_result.exit_code,
-                .timed_out = plugin_result.timed_out,
-                .duration_ms = plugin_result.duration_ms,
-                .stdout_text = plugin_result.stdout_text,
-                .stderr_text = plugin_result.stderr_text,
-                .error_code = "InvalidPluginOutput",
-                .error_message = json_rpc_error,
-            };
-        }
-    }
     if (plugin_result.success) {
-        const auto plugin_output_json = request.spec.protocol == "json-rpc-v0"
-            ? JsonRpcResultObject(plugin_result.stdout_text).value_or("{}")
-            : plugin_result.stdout_text;
-        if (const auto schema_error = PluginOutputSchemaError(request.spec, plugin_output_json); !schema_error.empty()) {
+        if (request.spec.protocol == "stdio-json-v0") {
+            if (!IsLikelyJsonObjectString(plugin_result.stdout_text)) {
+                return {
+                    .success = false,
+                    .exit_code = plugin_result.exit_code,
+                    .timed_out = plugin_result.timed_out,
+                    .duration_ms = plugin_result.duration_ms,
+                    .stdout_text = plugin_result.stdout_text,
+                    .stderr_text = plugin_result.stderr_text,
+                    .error_code = "InvalidPluginOutput",
+                    .error_message = "stdio-json-v0 plugin stdout must be a JSON object",
+                };
+            }
+            plugin_result.structured_output_json = plugin_result.stdout_text;
+        } else if (request.spec.protocol == "json-rpc-v0") {
+            if (const auto json_rpc_error = JsonRpcOutputError(plugin_result.stdout_text); !json_rpc_error.empty()) {
+                return {
+                    .success = false,
+                    .exit_code = plugin_result.exit_code,
+                    .timed_out = plugin_result.timed_out,
+                    .duration_ms = plugin_result.duration_ms,
+                    .stdout_text = plugin_result.stdout_text,
+                    .stderr_text = plugin_result.stderr_text,
+                    .error_code = "InvalidPluginOutput",
+                    .error_message = json_rpc_error,
+                };
+            }
+            plugin_result.structured_output_json = JsonRpcResultObject(plugin_result.stdout_text).value_or("{}");
+        }
+
+        if (const auto schema_error = PluginOutputSchemaError(
+                request.spec, plugin_result.structured_output_json);
+            !schema_error.empty()) {
             return {
                 .success = false,
                 .exit_code = plugin_result.exit_code,

@@ -4,6 +4,7 @@
 #include "utils/cancellation.hpp"
 
 #include <chrono>
+#include <sstream>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -30,6 +31,18 @@ bool EmitEvent(const AgentEventCallback& on_event, AgentEvent event) {
         return true;
     }
     return on_event(event);
+}
+
+std::vector<std::string> SplitCommaList(const std::string& value) {
+    std::vector<std::string> items;
+    std::stringstream input(value);
+    std::string item;
+    while (std::getline(input, item, ',')) {
+        if (!item.empty()) {
+            items.push_back(std::move(item));
+        }
+    }
+    return items;
 }
 
 }  // namespace
@@ -149,11 +162,19 @@ AgentResult LocalPlanningAgent::invoke(const AgentInvocation& invocation,
         return MakeCancelledResult(elapsed_ms());
     }
 
+    std::vector<std::string> target_roles;
+    if (const auto roles_it = invocation.context.find("roles"); roles_it != invocation.context.end()) {
+        target_roles = SplitCommaList(roles_it->second);
+    }
+
     nlohmann::json step_array = nlohmann::json::array();
     for (std::size_t index = 0; index < steps.size(); ++index) {
         nlohmann::json step;
         step["order"] = static_cast<int>(index + 1);
         step["action"] = steps[index];
+        if (!target_roles.empty()) {
+            step["role"] = target_roles[index % target_roles.size()];
+        }
         step_array.push_back(std::move(step));
     }
 

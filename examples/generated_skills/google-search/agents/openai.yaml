@@ -1,0 +1,4 @@
+interface:
+  display_name: "Google Search"
+  short_description: "Use Google web search URLs from AgentOS."
+  default_prompt: "Search Google for the provided query."

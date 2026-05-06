@@ -1,0 +1,4 @@
+# failed_skills|repair_skill|failure_markers|repair_args_json|retry_count
+# Generic external repair declarations. The C++ core only reads this table;
+# tool-specific knowledge lives here and in the repair skill implementation.
+xiaohongshu_search,xiaohongshu_note,xiaohongshu_comments,xiaohongshu_user,xiaohongshu_download,xiaohongshu_creator_notes,xiaohongshu_creator_note_detail,xiaohongshu_creator_stats|opencli_setup|opencli_not_found,BROWSER_CONNECT,Browser Bridge extension not connected,browser_bridge_missing|{"action":"bootstrap"}|1

@@ -5,10 +5,12 @@
 #include "utils/secret_redaction.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
@@ -73,6 +75,24 @@ std::string ClipOutput(const std::string& value, const std::size_t limit) {
     return value.substr(0, limit) + "\n[agentos: output truncated]";
 }
 
+std::string ReadFileClipped(const std::filesystem::path& path, const std::size_t limit) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return {};
+    }
+    std::string output;
+    std::array<char, 4096> buffer{};
+    while (input && output.size() < limit) {
+        input.read(buffer.data(), static_cast<std::streamsize>(
+            std::min<std::size_t>(buffer.size(), limit - output.size())));
+        const auto count = input.gcount();
+        if (count > 0) {
+            output.append(buffer.data(), static_cast<std::size_t>(count));
+        }
+    }
+    return ClipOutput(output, limit);
+}
+
 std::string ToUpper(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
         return static_cast<char>(std::toupper(ch));
@@ -116,6 +136,31 @@ std::vector<std::string> EffectiveEnvironmentAllowlist(const CliSpec& spec) {
 
 #ifdef _WIN32
 
+std::wstring StringToWide(const std::string& value) {
+    if (value.empty()) {
+        return {};
+    }
+
+    int length = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    UINT code_page = CP_UTF8;
+    DWORD flags = MB_ERR_INVALID_CHARS;
+    if (length <= 0) {
+        code_page = CP_ACP;
+        flags = 0;
+        length = MultiByteToWideChar(
+            code_page, flags, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    }
+    if (length <= 0) {
+        return {};
+    }
+
+    std::wstring output(static_cast<std::size_t>(length), L'\0');
+    MultiByteToWideChar(
+        code_page, flags, value.data(), static_cast<int>(value.size()), output.data(), length);
+    return output;
+}
+
 bool IsBatchFile(const std::filesystem::path& path) {
     auto extension = path.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(), [](const unsigned char ch) {
@@ -135,7 +180,7 @@ std::string BuildWindowsProcessCommandLine(const std::string& binary, const std:
     return target_command;
 }
 
-std::vector<char> BuildWindowsEnvironmentBlock(const CliSpec& spec) {
+std::vector<wchar_t> BuildWindowsEnvironmentBlock(const CliSpec& spec) {
     std::map<std::string, std::pair<std::string, std::string>> values;
 
     for (const auto& name : EffectiveEnvironmentAllowlist(spec)) {
@@ -148,14 +193,15 @@ std::vector<char> BuildWindowsEnvironmentBlock(const CliSpec& spec) {
         }
     }
 
-    std::vector<char> block;
+    std::vector<wchar_t> block;
     for (const auto& [unused_key, entry] : values) {
         (void)unused_key;
         const auto line = entry.first + "=" + entry.second;
-        block.insert(block.end(), line.begin(), line.end());
-        block.push_back('\0');
+        const auto wide_line = StringToWide(line);
+        block.insert(block.end(), wide_line.begin(), wide_line.end());
+        block.push_back(L'\0');
     }
-    block.push_back('\0');
+    block.push_back(L'\0');
     return block;
 }
 
@@ -224,27 +270,42 @@ CliRunResult RunProcessWindows(
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
     HANDLE stdin_read = nullptr;
+    const auto temp_stem = std::string("agentos-cli-") +
+        std::to_string(GetCurrentProcessId()) + "-" +
+        std::to_string(GetTickCount64());
+    const auto stdout_path = std::filesystem::temp_directory_path() / (temp_stem + "-stdout.txt");
+    const auto stderr_path = std::filesystem::temp_directory_path() / (temp_stem + "-stderr.txt");
+    const auto stdout_path_w = StringToWide(stdout_path.string());
+    const auto stderr_path_w = StringToWide(stderr_path.string());
 
-    if (!CreatePipe(&stdout_read, &stdout_write, &security_attributes, 0) ||
-        !CreatePipe(&stderr_read, &stderr_write, &security_attributes, 0)) {
+    stdout_write = CreateFileW(
+        stdout_path_w.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        &security_attributes,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_TEMPORARY,
+        nullptr);
+    stderr_write = CreateFileW(
+        stderr_path_w.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        &security_attributes,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_TEMPORARY,
+        nullptr);
+    if (stdout_write == INVALID_HANDLE_VALUE || stderr_write == INVALID_HANDLE_VALUE) {
+        CloseIfOpen(stdout_write);
+        CloseIfOpen(stderr_write);
         return {
             .success = false,
             .duration_ms = ElapsedMs(started_at),
             .error_code = "PipeCreateFailed",
-            .error_message = "failed to create process output pipes",
+            .error_message = "failed to create process output capture files",
         };
     }
-
-    // Read-end handles must NOT be inherited by the child — only the write
-    // ends should reach into the child's stdout/stderr. (Inheritance race
-    // diagnosed in the cli_plugin_tests flake: when this test runs under
-    // CTest's pipe-captured stdout/stderr, an inherited read-end handle
-    // could keep the pipe open past the child's death and confuse the
-    // outer reader.)
-    SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
-    stdin_read = CreateFileA(
-        "NUL",
+    stdin_read = CreateFileW(
+        L"NUL",
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         &security_attributes,
@@ -290,8 +351,8 @@ CliRunResult RunProcessWindows(
         }
     }
 
-    STARTUPINFOEXA startup_info{};
-    startup_info.StartupInfo.cb = sizeof(STARTUPINFOEXA);
+    STARTUPINFOEXW startup_info{};
+    startup_info.StartupInfo.cb = sizeof(STARTUPINFOEXW);
     startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup_info.StartupInfo.hStdOutput = stdout_write;
     startup_info.StartupInfo.hStdError = stderr_write;
@@ -303,15 +364,15 @@ CliRunResult RunProcessWindows(
     PROCESS_INFORMATION process_info{};
     auto command_display = BuildCommandLine(request.spec.binary, args);
     auto process_command_line = BuildWindowsProcessCommandLine(request.spec.binary, args);
-    auto mutable_command_line = process_command_line;
-    auto cwd_string = cwd.string();
+    auto mutable_command_line = StringToWide(process_command_line);
+    auto cwd_string = StringToWide(cwd.string());
     auto environment_block = BuildWindowsEnvironmentBlock(request.spec);
-    DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
+    DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
     if (attribute_list_initialized) {
         creation_flags |= EXTENDED_STARTUPINFO_PRESENT;
     }
 
-    const BOOL created = CreateProcessA(
+    const BOOL created = CreateProcessW(
         nullptr,
         mutable_command_line.data(),
         nullptr,
@@ -320,15 +381,17 @@ CliRunResult RunProcessWindows(
         creation_flags,
         environment_block.data(),
         cwd_string.c_str(),
-        reinterpret_cast<LPSTARTUPINFOA>(&startup_info),
+        reinterpret_cast<LPSTARTUPINFOW>(&startup_info),
         &process_info);
 
     if (attribute_list_initialized) {
         DeleteProcThreadAttributeList(attribute_list);
     }
 
-    CloseHandle(stdout_write);
-    CloseHandle(stderr_write);
+    CloseIfOpen(stdout_write);
+    stdout_write = nullptr;
+    CloseIfOpen(stderr_write);
+    stderr_write = nullptr;
 
     if (!created) {
         CloseIfOpen(stdout_read);
@@ -380,11 +443,6 @@ CliRunResult RunProcessWindows(
         };
     }
 
-    std::string stdout_text;
-    std::string stderr_text;
-    std::thread stdout_thread(ReadPipeToString, stdout_read, std::ref(stdout_text), request.spec.output_limit_bytes);
-    std::thread stderr_thread(ReadPipeToString, stderr_read, std::ref(stderr_text), request.spec.output_limit_bytes);
-
     const DWORD wait_result = WaitForSingleObject(process_info.hProcess, static_cast<DWORD>(request.spec.timeout_ms));
     bool timed_out = false;
     if (wait_result == WAIT_TIMEOUT) {
@@ -398,13 +456,16 @@ CliRunResult RunProcessWindows(
 
     CloseIfOpen(process_info.hThread);
     CloseIfOpen(process_info.hProcess);
+    CloseIfOpen(stdout_write);
+    stdout_write = nullptr;
+    CloseIfOpen(stderr_write);
+    stderr_write = nullptr;
 
-    if (stdout_thread.joinable()) {
-        stdout_thread.join();
-    }
-    if (stderr_thread.joinable()) {
-        stderr_thread.join();
-    }
+    const auto stdout_text = ReadFileClipped(stdout_path, request.spec.output_limit_bytes);
+    const auto stderr_text = ReadFileClipped(stderr_path, request.spec.output_limit_bytes);
+    std::error_code remove_ec;
+    std::filesystem::remove(stdout_path, remove_ec);
+    std::filesystem::remove(stderr_path, remove_ec);
 
     CloseIfOpen(stdout_read);
     CloseIfOpen(stderr_read);

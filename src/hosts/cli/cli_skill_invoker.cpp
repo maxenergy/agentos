@@ -43,7 +43,8 @@ SkillResult CliSkillInvoker::execute(const SkillCall& call) {
     output_json["stderr"] = result.stderr_text;
     return {
         .success = result.success,
-        .json_output = output_json.dump(),
+        .json_output = output_json.dump(
+            -1, ' ', false, nlohmann::json::error_handler_t::replace),
         .error_code = result.error_code,
         .error_message = result.error_message,
         .duration_ms = result.duration_ms,

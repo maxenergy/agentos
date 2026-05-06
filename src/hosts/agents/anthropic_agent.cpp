@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <optional>
@@ -45,6 +46,66 @@ constexpr char kDefaultClaudeModel[] = "claude-3-5-sonnet-20240620";
 int ElapsedMs(const std::chrono::steady_clock::time_point started_at) {
     return static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
+}
+
+bool StringTrue(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+std::optional<std::string> TaskContextValue(const AgentTask& task, const std::string& key) {
+    if (task.context_json.empty()) {
+        return std::nullopt;
+    }
+    try {
+        const auto context = nlohmann::json::parse(task.context_json);
+        if (context.is_object() && context.contains(key) && context[key].is_string()) {
+            return context[key].get<std::string>();
+        }
+    } catch (const nlohmann::json::exception&) {
+    }
+    return std::nullopt;
+}
+
+bool AllowsWorkspaceWrites(const AgentTask& task) {
+    const auto value = TaskContextValue(task, "allow_writes");
+    return value.has_value() && StringTrue(*value);
+}
+
+bool AllowsWorkspaceWrites(const AgentInvocation& invocation) {
+    const auto it = invocation.context.find("allow_writes");
+    return it != invocation.context.end() && StringTrue(it->second);
+}
+
+std::string ReadEnvVarLocal(const std::string& name) {
+    if (name.empty()) {
+        return {};
+    }
+#ifdef _WIN32
+    char* raw = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&raw, &size, name.c_str()) == 0 && raw != nullptr) {
+        std::string value(raw, size > 0 ? size - 1 : 0);
+        std::free(raw);
+        return value;
+    }
+    return {};
+#else
+    if (const char* raw = std::getenv(name.c_str()); raw != nullptr) {
+        return raw;
+    }
+    return {};
+#endif
+}
+
+std::string ResolveClaudePermissionMode(const bool allow_writes) {
+    const auto configured = ReadEnvVarLocal("AGENTOS_CLAUDE_PERMISSION_MODE");
+    if (!configured.empty()) {
+        return configured;
+    }
+    return allow_writes ? "bypassPermissions" : "";
 }
 
 // ---- SSE streaming subprocess helpers (Phase 4.4) ------------------------
@@ -503,13 +564,18 @@ void AnthropicAgent::close_session(const std::string& session_id) {
 AgentResult AnthropicAgent::run_task(const AgentTask& task) {
     const auto started_at = std::chrono::steady_clock::now();
 
-    const auto workspace_path = NormalizeWorkspaceRoot(task.workspace_path.empty() ? workspace_root_ : task.workspace_path);
-    if (!IsPathInsideWorkspace(workspace_root_, workspace_path)) {
+    const auto requested_workspace = task.workspace_path.empty()
+        ? workspace_root_
+        : std::filesystem::path(task.workspace_path);
+    const auto workspace_path = NormalizeWorkspaceRoot(requested_workspace);
+    std::error_code workspace_ec;
+    if (!std::filesystem::exists(workspace_path, workspace_ec) ||
+        !std::filesystem::is_directory(workspace_path, workspace_ec)) {
         return {
             .success = false,
             .duration_ms = ElapsedMs(started_at),
-            .error_code = "WorkspaceEscapeDenied",
-            .error_message = "agent workspace must stay inside the configured root",
+            .error_code = "InvalidWorkspace",
+            .error_message = "agent workspace must be an existing directory",
         };
     }
 
@@ -686,20 +752,28 @@ AgentResult AnthropicAgent::run_task_with_cli_session(
     }
 
     const auto model = model_name(task);
+    const bool allow_writes = AllowsWorkspaceWrites(task);
+    const auto permission_mode = ResolveClaudePermissionMode(allow_writes);
     const CliSpec spec{
         .name = "anthropic_cli_agent",
-        .description = "Run Claude CLI in non-interactive mode using its external session.",
+        .description = "Run Claude Code in non-interactive print mode using its external session.",
         .binary = "claude",
         .args_template = {
-            "prompt",
+            "--print",
+            "--output-format",
+            "text",
+            "{{permission_mode_flag}}",
+            "{{permission_mode}}",
             "{{prompt}}",
         },
-        .required_args = {"prompt"},
+        .required_args = {"prompt", "permission_mode_flag", "permission_mode"},
         .input_schema_json = R"({"type":"object","required":["prompt"]})",
         .output_schema_json = R"({"type":"object","required":["stdout","stderr","exit_code"]})",
         .parse_mode = "text",
         .risk_level = "medium",
-        .permissions = {"process.spawn", "network.access"},
+        .permissions = allow_writes
+            ? std::vector<std::string>{"process.spawn", "network.access", "filesystem.write", "filesystem.read"}
+            : std::vector<std::string>{"process.spawn", "network.access", "filesystem.read"},
         .timeout_ms = task.timeout_ms > 0 ? task.timeout_ms : 120000,
         .output_limit_bytes = 1024 * 1024,
         .env_allowlist = {
@@ -718,6 +792,8 @@ AgentResult AnthropicAgent::run_task_with_cli_session(
         .spec = spec,
         .arguments = {
             {"prompt", BuildPrompt(task)},
+            {"permission_mode_flag", !permission_mode.empty() ? "--permission-mode" : ""},
+            {"permission_mode", permission_mode},
         },
         .workspace_path = workspace_path,
     });
@@ -779,12 +855,14 @@ AgentResult AnthropicAgent::invoke(
 
     const auto workspace_path = NormalizeWorkspaceRoot(
         invocation.workspace_path.empty() ? workspace_root_ : invocation.workspace_path);
-    if (!IsPathInsideWorkspace(workspace_root_, workspace_path)) {
+    std::error_code workspace_ec;
+    if (!std::filesystem::exists(workspace_path, workspace_ec) ||
+        !std::filesystem::is_directory(workspace_path, workspace_ec)) {
         return {
             .success = false,
             .duration_ms = ElapsedMs(started_at),
-            .error_code = "WorkspaceEscapeDenied",
-            .error_message = "agent workspace must stay inside the configured root",
+            .error_code = "InvalidWorkspace",
+            .error_message = "agent workspace must be an existing directory",
         };
     }
 
@@ -1165,13 +1243,48 @@ std::string AnthropicAgent::BuildPrompt(const AgentTask& task) {
     }
 
     std::ostringstream prompt;
+    if (AllowsWorkspaceWrites(task)) {
+        prompt
+            << "Implement this user request now by editing files in the workspace.\n\n"
+            << "USER REQUEST:\n"
+            << task.objective << "\n\n"
+            << "REQUIREMENTS:\n"
+            << "- Do not only acknowledge the request.\n"
+            << "- Do not stop after explaining your role.\n"
+            << "- Create or modify the files needed to satisfy the request.\n"
+            << "- If the user did not specify an exact file, choose a reasonable path in this workspace.\n"
+            << "- At the end, list changed files and how to build or run the result.\n\n";
+        if (const auto contract = TaskContextValue(task, "contract_instructions");
+            contract.has_value() && !contract->empty()) {
+            prompt << "ACCEPTANCE CONTRACT:\n" << *contract << "\n";
+            if (const auto manifest = TaskContextValue(task, "deliverables_manifest");
+                manifest.has_value() && !manifest->empty()) {
+                prompt << "Write the deliverables manifest exactly here: " << *manifest << "\n"
+                       << "Manifest JSON schema:\n"
+                       << "{\n"
+                       << "  \"status\": \"complete|partial|blocked\",\n"
+                       << "  \"deliverables\": [\n"
+                       << "    {\"path\": \"workspace-relative-or-absolute\", \"type\": \"inferred\", "
+                          "\"description\": \"what was delivered\", \"verification\": \"passed|not_applicable|failed\"}\n"
+                       << "  ],\n"
+                       << "  \"verification\": [{\"command\": \"command run or manual check\", \"success\": true, "
+                          "\"notes\": \"result\"}],\n"
+                       << "  \"blockers\": []\n"
+                       << "}\n";
+            }
+            prompt << "\n";
+        }
+    } else {
+        prompt
+            << "You are running as a model provider agent inside AgentOS.\n"
+            << "Return a concise, useful answer for the requested task.\n"
+            << "If the objective asks for an exact phrase or exact output, return only that exact content.\n\n"
+            << "Objective: " << task.objective << "\n";
+    }
+
     prompt
-        << "You are running as a model provider agent inside AgentOS.\n"
-        << "Return a concise, useful answer for the requested task.\n"
-        << "If the objective asks for an exact phrase or exact output, return only that exact content.\n\n"
         << "Task id: " << task.task_id << "\n"
         << "Task type: " << task.task_type << "\n"
-        << "Objective: " << task.objective << "\n"
         << "Workspace: " << task.workspace_path << "\n";
 
     if (!task.context_json.empty()) {
@@ -1191,12 +1304,47 @@ std::string AnthropicAgent::BuildPromptV2(const AgentInvocation& invocation) {
     }
 
     std::ostringstream prompt;
+    if (AllowsWorkspaceWrites(invocation)) {
+        prompt
+            << "Implement this user request now by editing files in the workspace.\n\n"
+            << "USER REQUEST:\n"
+            << invocation.objective << "\n\n"
+            << "REQUIREMENTS:\n"
+            << "- Do not only acknowledge the request.\n"
+            << "- Do not stop after explaining your role.\n"
+            << "- Create or modify the files needed to satisfy the request.\n"
+            << "- If the user did not specify an exact file, choose a reasonable path in this workspace.\n"
+            << "- At the end, list changed files and how to build or run the result.\n\n";
+        const auto contract = invocation.context.find("contract_instructions");
+        if (contract != invocation.context.end() && !contract->second.empty()) {
+            prompt << "ACCEPTANCE CONTRACT:\n" << contract->second << "\n";
+            const auto manifest = invocation.context.find("deliverables_manifest");
+            if (manifest != invocation.context.end() && !manifest->second.empty()) {
+                prompt << "Write the deliverables manifest exactly here: " << manifest->second << "\n"
+                       << "Manifest JSON schema:\n"
+                       << "{\n"
+                       << "  \"status\": \"complete|partial|blocked\",\n"
+                       << "  \"deliverables\": [\n"
+                       << "    {\"path\": \"workspace-relative-or-absolute\", \"type\": \"inferred\", "
+                          "\"description\": \"what was delivered\", \"verification\": \"passed|not_applicable|failed\"}\n"
+                       << "  ],\n"
+                       << "  \"verification\": [{\"command\": \"command run or manual check\", \"success\": true, "
+                          "\"notes\": \"result\"}],\n"
+                       << "  \"blockers\": []\n"
+                       << "}\n";
+            }
+            prompt << "\n";
+        }
+    } else {
+        prompt
+            << "You are running as a model provider agent inside AgentOS.\n"
+            << "Return a concise, useful answer for the requested task.\n"
+            << "If the objective asks for an exact phrase or exact output, return only that exact content.\n\n"
+            << "Objective: " << invocation.objective << "\n";
+    }
+
     prompt
-        << "You are running as a model provider agent inside AgentOS.\n"
-        << "Return a concise, useful answer for the requested task.\n"
-        << "If the objective asks for an exact phrase or exact output, return only that exact content.\n\n"
         << "Task id: " << invocation.task_id << "\n"
-        << "Objective: " << invocation.objective << "\n"
         << "Workspace: " << invocation.workspace_path.string() << "\n";
 
     if (!invocation.context.empty()) {

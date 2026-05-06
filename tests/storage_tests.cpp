@@ -22,6 +22,11 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 int failures = 0;
@@ -354,6 +359,73 @@ void TestTsvStorageBackendCoreCapabilities(const std::filesystem::path& workspac
     Expect(compact.success, "TSV StorageBackend compact seam should be callable");
     Expect(!compact.diagnostics.empty() && compact.diagnostics.front().code == "CompactionDelegated",
         "TSV StorageBackend compact seam should explain delegated compaction");
+}
+
+void TestTsvStorageBackendCrossProcessAppend(const std::filesystem::path& workspace) {
+#ifdef _WIN32
+    (void)workspace;
+#else
+    const auto isolated_workspace = workspace / "storage_backend_cross_process";
+    const auto events_path = isolated_workspace / "runtime" / "backend" / "events.log";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(events_path.parent_path());
+
+    constexpr int process_count = 6;
+    constexpr int lines_per_process = 15;
+    std::vector<pid_t> children;
+    for (int process_index = 0; process_index < process_count; ++process_index) {
+        const pid_t pid = fork();
+        if (pid == 0) {
+            try {
+                agentos::TsvStorageBackend backend(isolated_workspace);
+                for (int line_index = 0; line_index < lines_per_process; ++line_index) {
+                    backend.append_line(
+                        events_path,
+                        "process-" + std::to_string(process_index) + "-line-" + std::to_string(line_index));
+                }
+            } catch (...) {
+                _exit(1);
+            }
+            _exit(0);
+        }
+        Expect(pid > 0, "TSV StorageBackend cross-process append should fork child writers");
+        if (pid > 0) {
+            children.push_back(pid);
+        }
+    }
+
+    for (const pid_t child : children) {
+        int status = 0;
+        const pid_t waited = waitpid(child, &status, 0);
+        Expect(waited == child, "TSV StorageBackend cross-process append should wait for child writer");
+        Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+            "TSV StorageBackend child writer should exit successfully");
+    }
+
+    std::ifstream input(events_path, std::ios::binary);
+    std::string line;
+    std::set<std::string> lines;
+    while (std::getline(input, line)) {
+        lines.insert(line);
+    }
+
+    Expect(lines.size() == static_cast<std::size_t>(process_count * lines_per_process),
+        "TSV StorageBackend cross-process append should persist every unique line exactly once");
+    for (int process_index = 0; process_index < process_count; ++process_index) {
+        for (int line_index = 0; line_index < lines_per_process; ++line_index) {
+            const auto expected = "process-" + std::to_string(process_index) + "-line-" + std::to_string(line_index);
+            Expect(lines.contains(expected), "TSV StorageBackend cross-process append should not lose lines");
+        }
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(events_path.parent_path())) {
+        const auto name = entry.path().filename().string();
+        Expect(name.find(".lock") == std::string::npos,
+            "TSV StorageBackend cross-process append should not leave lock files");
+        Expect(name.find(".append.tmp.") == std::string::npos,
+            "TSV StorageBackend cross-process append should not leave recovery intents");
+    }
+#endif
 }
 
 void TestStorageVersionStorePersistsManifest(const std::filesystem::path& workspace) {
@@ -823,8 +895,10 @@ void TestAuditLoggerMergesMixedRecoveredTimeline(const std::filesystem::path& wo
     {
         std::ofstream audit(audit_path, std::ios::binary);
         audit << "{\"ts\":\"2026-01-01T00:00:00Z\",\"event\":\"trust\",\"action\":\"before\"}\n";
-        audit << "{\"ts\":\"2026-01-01T00:00:01Z\",\"event\":\"task_start\",\"task_id\":\"task-1\"}\n";
-        audit << "{\"ts\":\"2026-01-01T00:00:02Z\",\"event\":\"route\",\"task_id\":\"task-1\"}\n";
+        audit << "{\"ts\":\"2026-01-01T00:00:01Z\",\"event\":\"task_start\",\"task_id\":\"task-1\","
+              << "\"workspace\":\"/original/audit/evidence\"}\n";
+        audit << "{\"ts\":\"2026-01-01T00:00:02Z\",\"event\":\"route\",\"task_id\":\"task-1\","
+              << "\"rationale\":\"original route rationale\"}\n";
         audit << "{\"ts\":\"2026-01-01T00:00:03Z\",\"event\":\"policy\",\"task_id\":\"task-1\",\"decision\":\"allow\"}\n";
         audit << "{\"ts\":\"2026-01-01T00:00:04Z\",\"event\":\"step\",\"task_id\":\"task-1\"}\n";
         audit << "{\"ts\":\"2026-01-01T00:00:05Z\",\"event\":\"policy\",\"task_id\":\"orphan-task\",\"decision\":\"manual\"}\n";
@@ -858,6 +932,12 @@ void TestAuditLoggerMergesMixedRecoveredTimeline(const std::filesystem::path& wo
     Expect(task_end_index != std::string::npos, "audit mixed recovery should rebuild task_end");
     Expect(contents.find("\"schedule_id\":\"stale\"") == std::string::npos,
         "audit mixed recovery should replace stale scheduler_run events");
+    Expect(contents.find("/original/audit/evidence") == std::string::npos,
+        "audit mixed recovery is lossy: reconstructed task_start cannot recover original workspace evidence");
+    Expect(contents.find("original route rationale") == std::string::npos,
+        "audit mixed recovery is lossy: reconstructed route cannot recover original rationale");
+    Expect(contents.find("\"rationale\":\"recovered from runtime/memory logs\"") != std::string::npos,
+        "audit mixed recovery should mark reconstructed route lines as memory-log fallbacks");
 
     Expect(trust_index < task_start_index && task_start_index < route_index,
         "audit mixed recovery should keep global and task lifecycle ordering by timestamp");
@@ -885,6 +965,7 @@ int main() {
     TestStorageTransactionRecoversCommittedPrepare(workspace);
     TestStorageTransactionSkipsCorruptCommittedPrepare(workspace);
     TestTsvStorageBackendCoreCapabilities(workspace);
+    TestTsvStorageBackendCrossProcessAppend(workspace);
     TestStorageVersionStorePersistsManifest(workspace);
     TestStorageVersionStoreMigratesMissingManifest(workspace);
     TestStorageVersionStoreMigratesLegacyManifest(workspace);

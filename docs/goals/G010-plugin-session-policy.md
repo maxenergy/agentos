@@ -1,6 +1,6 @@
 # G010 Plugin Session Process-Pool Policy
 
-Status: blocked
+Status: done
 Depends on: G009
 
 ## Objective
@@ -51,3 +51,12 @@ ctest --test-dir build -R "agentos_cli_plugin_tests|agentos_cli_integration_test
 git diff --check
 ```
 
+Completed verification on 2026-05-06:
+
+```bash
+cmake --build build-codex-g014 --target agentos_cli_plugin_tests agentos_cli_integration_tests
+ctest --test-dir build-codex-g014 -R "agentos_cli_plugin_tests|agentos_cli_integration_tests" --output-on-failure
+git diff --check -- src/cli/plugins_commands.cpp tests/cli_plugin_tests.cpp tests/cli_integration_tests.cpp README.md docs/goals/G010-plugin-session-policy.md docs/goals/backlog.md docs/goals/decision-log.md
+```
+
+Focused `git diff --check` was used because repo-wide diff-check still reports pre-existing unrelated line-ending and whitespace diagnostics outside this goal's touched files.

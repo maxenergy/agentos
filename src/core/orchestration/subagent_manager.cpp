@@ -22,6 +22,12 @@ namespace agentos {
 
 namespace {
 
+struct DecompositionPlanStep {
+    std::string action;
+    std::optional<std::string> role;
+    std::optional<std::string> agent;
+};
+
 int ElapsedMs(const std::chrono::steady_clock::time_point started_at) {
     return static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count());
@@ -133,12 +139,12 @@ std::string SubtaskObjectiveFor(const TaskRequest& task, const std::string& agen
 // inject "x" as a subtask, so we require plan_steps to be an array of objects
 // with string `action` fields. The legacy `agent_result.v1` envelope nests the
 // raw planner payload under `raw_output`, so we accept either location.
-std::vector<std::string> ExtractPlanActionsFromArray(const nlohmann::json& steps) {
-    std::vector<std::string> actions;
+std::vector<DecompositionPlanStep> ExtractPlanStepsFromArray(const nlohmann::json& steps) {
+    std::vector<DecompositionPlanStep> plan_steps;
     if (!steps.is_array()) {
         return {};
     }
-    actions.reserve(steps.size());
+    plan_steps.reserve(steps.size());
     for (const auto& element : steps) {
         if (!element.is_object()) {
             return {};
@@ -147,12 +153,29 @@ std::vector<std::string> ExtractPlanActionsFromArray(const nlohmann::json& steps
         if (action_it == element.end() || !action_it->is_string()) {
             return {};
         }
-        actions.push_back(action_it->get<std::string>());
+        DecompositionPlanStep step{
+            .action = action_it->get<std::string>(),
+            .role = std::nullopt,
+            .agent = std::nullopt,
+        };
+        if (const auto role_it = element.find("role"); role_it != element.end()) {
+            if (!role_it->is_string()) {
+                return {};
+            }
+            step.role = role_it->get<std::string>();
+        }
+        if (const auto agent_it = element.find("agent"); agent_it != element.end()) {
+            if (!agent_it->is_string()) {
+                return {};
+            }
+            step.agent = agent_it->get<std::string>();
+        }
+        plan_steps.push_back(std::move(step));
     }
-    return actions;
+    return plan_steps;
 }
 
-std::vector<std::string> ExtractPlanActions(
+std::vector<DecompositionPlanStep> ExtractPlanSteps(
     const std::string& structured_output_json,
     AuditLogger& audit_logger,
     const std::string& task_id) {
@@ -172,23 +195,23 @@ std::vector<std::string> ExtractPlanActions(
         return {};
     }
 
-    const auto walk = [](const nlohmann::json& container) -> std::vector<std::string> {
+    const auto walk = [](const nlohmann::json& container) -> std::vector<DecompositionPlanStep> {
         const auto it = container.find("plan_steps");
         if (it == container.end()) {
             return {};
         }
-        return ExtractPlanActionsFromArray(*it);
+        return ExtractPlanStepsFromArray(*it);
     };
 
-    auto actions = walk(root);
-    if (!actions.empty()) {
-        return actions;
+    auto plan_steps = walk(root);
+    if (!plan_steps.empty()) {
+        return plan_steps;
     }
 
     if (const auto raw_it = root.find("raw_output"); raw_it != root.end() && raw_it->is_object()) {
-        actions = walk(*raw_it);
-        if (!actions.empty()) {
-            return actions;
+        plan_steps = walk(*raw_it);
+        if (!plan_steps.empty()) {
+            return plan_steps;
         }
     }
 
@@ -199,16 +222,49 @@ std::vector<std::string> ExtractPlanActions(
 }
 
 std::string BuildSubtasksFromPlanActions(
+    const std::vector<std::string>& agent_names,
     const std::vector<std::string>& roles,
-    const std::vector<std::string>& actions,
+    const std::vector<DecompositionPlanStep>& plan_steps,
     const std::string& fallback_objective) {
+    std::vector<bool> used(plan_steps.size(), false);
     std::ostringstream output;
     for (std::size_t index = 0; index < roles.size(); ++index) {
         if (index != 0) {
             output << ';';
         }
-        const auto action = index < actions.size() ? actions[index] : fallback_objective;
-        output << roles[index] << '=' << action;
+
+        std::optional<std::size_t> selected;
+        for (std::size_t step_index = 0; step_index < plan_steps.size(); ++step_index) {
+            if (used[step_index]) {
+                continue;
+            }
+            const auto& step = plan_steps[step_index];
+            if ((step.agent.has_value() && *step.agent == agent_names[index]) ||
+                (step.role.has_value() && *step.role == roles[index])) {
+                selected = step_index;
+                break;
+            }
+        }
+        if (!selected.has_value()) {
+            for (std::size_t step_index = 0; step_index < plan_steps.size(); ++step_index) {
+                if (!used[step_index] && !plan_steps[step_index].agent.has_value() && !plan_steps[step_index].role.has_value()) {
+                    selected = step_index;
+                    break;
+                }
+            }
+        }
+
+        std::string subtask_key = roles[index];
+        std::string action = fallback_objective;
+        if (selected.has_value()) {
+            used[*selected] = true;
+            const auto& step = plan_steps[*selected];
+            action = step.action;
+            if (step.agent.has_value()) {
+                subtask_key = agent_names[index];
+            }
+        }
+        output << subtask_key << '=' << action;
     }
     return output.str();
 }
@@ -567,11 +623,11 @@ TaskRunResult SubagentManager::run(
             return result;
         }
 
-        const auto actions = ExtractPlanActions(
+        const auto plan_steps = ExtractPlanSteps(
             decomposition_dispatch.structured_output_json,
             audit_logger_,
             task.task_id);
-        if (actions.empty()) {
+        if (plan_steps.empty()) {
             result.success = false;
             result.summary = "Decomposition agent did not return plan actions.";
             result.error_code = "DecompositionOutputInvalid";
@@ -580,7 +636,11 @@ TaskRunResult SubagentManager::run(
             FinalizeTaskRun(audit_logger_, memory_manager_, task, result);
             return result;
         }
-        effective_task.inputs["subtasks"] = BuildSubtasksFromPlanActions(subagent_roles, actions, task.objective);
+        effective_task.inputs["subtasks"] = BuildSubtasksFromPlanActions(
+            normalized_agent_names,
+            subagent_roles,
+            plan_steps,
+            task.objective);
     }
 
     if (normalized_agent_names.size() > max_subagents_) {

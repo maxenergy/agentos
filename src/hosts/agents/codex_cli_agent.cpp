@@ -49,6 +49,12 @@ std::string ReadTextFile(const std::filesystem::path& path) {
     return buffer.str();
 }
 
+void WriteTextFile(const std::filesystem::path& path, const std::string& content) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << content;
+}
+
 // ----- Streaming process runner (V2 path) -----------------------------------
 //
 // CliHost runs to completion before returning, so it cannot drive a streaming
@@ -137,6 +143,34 @@ std::string BuildWindowsCommandLine(const std::string& binary, const std::vector
 
 #endif
 
+bool StringTrue(const std::string& value) {
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return lower == "1" || lower == "true" || lower == "yes" || lower == "on";
+}
+
+bool AllowsWorkspaceWrites(const AgentTask& task) {
+    if (task.context_json.empty()) {
+        return false;
+    }
+    try {
+        const auto context = nlohmann::json::parse(task.context_json);
+        if (context.is_object() && context.contains("allow_writes") &&
+            context["allow_writes"].is_string()) {
+            return StringTrue(context["allow_writes"].get<std::string>());
+        }
+    } catch (const nlohmann::json::exception&) {
+    }
+    return false;
+}
+
+bool AllowsWorkspaceWrites(const AgentInvocation& invocation) {
+    const auto it = invocation.context.find("allow_writes");
+    return it != invocation.context.end() && StringTrue(it->second);
+}
+
 // Splits the running stdout buffer into complete lines and dispatches each to
 // `on_line`. Leaves any trailing partial line in `buffer` for the next chunk.
 void DrainLines(std::string& buffer, const std::function<void(const std::string&)>& on_line) {
@@ -164,6 +198,7 @@ void DrainLines(std::string& buffer, const std::function<void(const std::string&
 StreamProcessResult RunStreamingProcess(
     const std::string& binary,
     const std::vector<std::string>& args,
+    const std::string& stdin_text,
     const std::filesystem::path& cwd,
     int timeout_ms,
     const std::shared_ptr<CancellationToken>& cancel,
@@ -189,32 +224,33 @@ StreamProcessResult RunStreamingProcess(
     HANDLE stdout_write = nullptr;
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
+    HANDLE stdin_read = nullptr;
+    HANDLE stdin_write = nullptr;
 
     if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) ||
-        !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
+        !CreatePipe(&stderr_read, &stderr_write, &sa, 0) ||
+        !CreatePipe(&stdin_read, &stdin_write, &sa, 0)) {
         result.error_code = "PipeCreateFailed";
         result.error_message = "failed to create stdio pipes";
+        if (stdout_read) CloseHandle(stdout_read);
+        if (stdout_write) CloseHandle(stdout_write);
+        if (stderr_read) CloseHandle(stderr_read);
+        if (stderr_write) CloseHandle(stderr_write);
+        if (stdin_read) CloseHandle(stdin_read);
+        if (stdin_write) CloseHandle(stdin_write);
         result.duration_ms = ElapsedMs(started_at);
         return result;
     }
     SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
-
-    HANDLE stdin_null = CreateFileA(
-        "NUL",
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        &sa,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
+    SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOA si{};
     si.cb = sizeof(STARTUPINFOA);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = stdout_write;
     si.hStdError = stderr_write;
-    si.hStdInput = stdin_null;
+    si.hStdInput = stdin_read;
 
     PROCESS_INFORMATION pi{};
     auto cmdline = BuildWindowsCommandLine(resolved->string(), args);
@@ -226,9 +262,8 @@ StreamProcessResult RunStreamingProcess(
         CloseHandle(stdout_write);
         CloseHandle(stderr_read);
         CloseHandle(stderr_write);
-        if (stdin_null != INVALID_HANDLE_VALUE) {
-            CloseHandle(stdin_null);
-        }
+        CloseHandle(stdin_read);
+        CloseHandle(stdin_write);
         result.error_code = "ResourceLimitSetupFailed";
         result.error_message = "failed to create job object";
         result.duration_ms = ElapsedMs(started_at);
@@ -252,13 +287,12 @@ StreamProcessResult RunStreamingProcess(
 
     CloseHandle(stdout_write);
     CloseHandle(stderr_write);
-    if (stdin_null != INVALID_HANDLE_VALUE) {
-        CloseHandle(stdin_null);
-    }
+    CloseHandle(stdin_read);
 
     if (!created) {
         CloseHandle(stdout_read);
         CloseHandle(stderr_read);
+        CloseHandle(stdin_write);
         CloseHandle(job);
         result.error_code = "ProcessStartFailed";
         result.error_message = "CreateProcess failed";
@@ -268,6 +302,11 @@ StreamProcessResult RunStreamingProcess(
     AssignProcessToJobObject(job, pi.hProcess);
     ResumeThread(pi.hThread);
     result.launched = true;
+    if (!stdin_text.empty()) {
+        DWORD written = 0;
+        WriteFile(stdin_write, stdin_text.data(), static_cast<DWORD>(stdin_text.size()), &written, nullptr);
+    }
+    CloseHandle(stdin_write);
 
     // stderr drained on a worker thread (small).
     std::string stderr_buf;
@@ -366,9 +405,14 @@ StreamProcessResult RunStreamingProcess(
 #else
     int out_pipe[2] = {-1, -1};
     int err_pipe[2] = {-1, -1};
-    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    int in_pipe[2] = {-1, -1};
+    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0 || pipe(in_pipe) != 0) {
         if (out_pipe[0] >= 0) close(out_pipe[0]);
         if (out_pipe[1] >= 0) close(out_pipe[1]);
+        if (err_pipe[0] >= 0) close(err_pipe[0]);
+        if (err_pipe[1] >= 0) close(err_pipe[1]);
+        if (in_pipe[0] >= 0) close(in_pipe[0]);
+        if (in_pipe[1] >= 0) close(in_pipe[1]);
         result.error_code = "PipeCreateFailed";
         result.error_message = "failed to create stdio pipes";
         result.duration_ms = ElapsedMs(started_at);
@@ -401,20 +445,34 @@ StreamProcessResult RunStreamingProcess(
     }
     if (pid == 0) {
         setpgid(0, 0);
+        dup2(in_pipe[0], STDIN_FILENO);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
+        close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
-        int devnull = open("/dev/null", O_RDONLY);
-        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
         if (chdir(cwd.string().c_str()) != 0) _exit(126);
         execv(argv_owned.front().c_str(), argv.data());
         _exit(127);
     }
     setpgid(pid, pid);
+    close(in_pipe[0]);
     close(out_pipe[1]);
     close(err_pipe[1]);
     result.launched = true;
+    if (!stdin_text.empty()) {
+        const char* data = stdin_text.data();
+        std::size_t remaining = stdin_text.size();
+        while (remaining > 0) {
+            const auto written = write(in_pipe[1], data, remaining);
+            if (written <= 0) {
+                break;
+            }
+            data += written;
+            remaining -= static_cast<std::size_t>(written);
+        }
+    }
+    close(in_pipe[1]);
 
     std::string stdout_buf;
     std::string stderr_buf;
@@ -567,14 +625,19 @@ void EmitFromCodexLine(
         if (!on_event(ev)) abort_flag = true;
     };
 
-    if (type == "system" || type == "session.created" || type == "system/init" || type == "session_init") {
+    if (type == "system" || type == "session.created" || type == "system/init" ||
+        type == "session_init" || type == "thread.started") {
         AgentEvent ev;
         ev.kind = AgentEvent::Kind::SessionInit;
         const auto sid = get_str(payload, "session_id");
+        const auto thread_id = get_str(payload, "thread_id");
         const auto model = get_str(payload, "model");
         if (!sid.empty()) {
             ev.fields["session_id"] = sid;
             session_id_out = sid;
+        } else if (!thread_id.empty()) {
+            ev.fields["session_id"] = thread_id;
+            session_id_out = thread_id;
         }
         if (!model.empty()) ev.fields["model"] = model;
         emit(ev);
@@ -617,13 +680,35 @@ void EmitFromCodexLine(
         ev.fields["success"] = payload.value("success", true) ? "true" : "false";
         ev.fields["output_json"] = payload.dump();
         emit(ev);
-    } else if (type == "usage" || type == "token_count" || type == "token_usage") {
+    } else if (type == "item.completed") {
+        if (parsed.contains("item") && parsed.at("item").is_object()) {
+            const auto& item = parsed.at("item");
+            const auto item_type = get_str(item, "type");
+            if (item_type == "agent_message") {
+                const auto text = get_str(item, "text");
+                if (!text.empty()) {
+                    AgentEvent ev;
+                    ev.kind = AgentEvent::Kind::TextDelta;
+                    ev.payload_text = text;
+                    assistant_text += text;
+                    final_text = text;
+                    emit(ev);
+                }
+            }
+        }
+    } else if (type == "usage" || type == "token_count" || type == "token_usage" ||
+               type == "turn.completed") {
         AgentEvent ev;
         ev.kind = AgentEvent::Kind::Usage;
-        const auto in_tokens = static_cast<int>(payload.value("input_tokens", 0));
-        const auto out_tokens = static_cast<int>(payload.value("output_tokens", 0));
-        const auto reasoning_tokens = static_cast<int>(payload.value("reasoning_tokens", 0));
-        const auto cost = payload.value("cost_usd", 0.0);
+        const auto& usage_payload =
+            (type == "turn.completed" && parsed.contains("usage") && parsed.at("usage").is_object())
+                ? parsed.at("usage")
+                : payload;
+        const auto in_tokens = static_cast<int>(usage_payload.value("input_tokens", 0));
+        const auto out_tokens = static_cast<int>(usage_payload.value("output_tokens", 0));
+        const auto reasoning_tokens = static_cast<int>(
+            usage_payload.value("reasoning_tokens", usage_payload.value("reasoning_output_tokens", 0)));
+        const auto cost = usage_payload.value("cost_usd", 0.0);
         ev.fields["input_tokens"] = std::to_string(in_tokens);
         ev.fields["output_tokens"] = std::to_string(out_tokens);
         ev.fields["reasoning_tokens"] = std::to_string(reasoning_tokens);
@@ -713,18 +798,24 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
         };
     }
 
-    const auto workspace_path = NormalizeWorkspaceRoot(task.workspace_path.empty() ? workspace_root_ : task.workspace_path);
-    if (!IsPathInsideWorkspace(workspace_root_, workspace_path)) {
+    const auto requested_workspace = task.workspace_path.empty()
+        ? workspace_root_
+        : std::filesystem::path(task.workspace_path);
+    const auto workspace_path = NormalizeWorkspaceRoot(requested_workspace);
+    std::error_code workspace_ec;
+    if (!std::filesystem::exists(workspace_path, workspace_ec) ||
+        !std::filesystem::is_directory(workspace_path, workspace_ec)) {
         return {
             .success = false,
-            .error_code = "WorkspaceEscapeDenied",
-            .error_message = "agent workspace must stay inside the configured root",
+            .error_code = "InvalidWorkspace",
+            .error_message = "agent workspace must be an existing directory",
         };
     }
 
-    const auto output_dir = workspace_path / "runtime" / "agents" / "codex_cli";
+    const auto output_dir = workspace_path / "runtime" / "agents" / "codex_cli" / SafeFileStem(task.task_id);
     std::filesystem::create_directories(output_dir);
-    const auto output_file = output_dir / (SafeFileStem(task.task_id) + "_last_message.txt");
+    const auto output_file = output_dir / "last_message.txt";
+    const bool allow_writes = AllowsWorkspaceWrites(task);
 
     CliSpec spec{
         .name = "codex_cli_agent",
@@ -733,7 +824,7 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
         .args_template = {
             "exec",
             "--sandbox",
-            "read-only",
+            allow_writes ? "workspace-write" : "read-only",
             "--skip-git-repo-check",
             "--color",
             "never",
@@ -743,7 +834,9 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
         .output_schema_json = R"({"type":"object","required":["stdout","stderr","exit_code"]})",
         .parse_mode = "text",
         .risk_level = "medium",
-        .permissions = {"filesystem.read", "process.spawn", "network.access"},
+        .permissions = allow_writes
+            ? std::vector<std::string>{"filesystem.read", "filesystem.write", "process.spawn", "network.access"}
+            : std::vector<std::string>{"filesystem.read", "process.spawn", "network.access"},
         .timeout_ms = task.timeout_ms > 0 ? task.timeout_ms : 120000,
         .output_limit_bytes = 1024 * 1024,
         .env_allowlist = {"USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HOME", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "CODEX_HOME"},
@@ -752,6 +845,9 @@ AgentResult CodexCliAgent::run_task(const AgentTask& task) {
     if (task.auth_profile.has_value() && !task.auth_profile->empty()) {
         spec.args_template.push_back("--profile");
         spec.args_template.push_back(*task.auth_profile);
+    }
+    if (allow_writes) {
+        spec.args_template.push_back("--full-auto");
     }
     spec.args_template.insert(spec.args_template.end(), {
         "--output-last-message",
@@ -843,13 +939,19 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
 
     auto requested_workspace = invocation.workspace_path.empty() ? workspace_root_ : invocation.workspace_path;
     auto workspace_path = NormalizeWorkspaceRoot(requested_workspace);
-    if (!IsPathInsideWorkspace(workspace_root_, workspace_path)) {
+    std::error_code workspace_ec;
+    if (!std::filesystem::exists(workspace_path, workspace_ec) ||
+        !std::filesystem::is_directory(workspace_path, workspace_ec)) {
         AgentResult r;
         r.success = false;
-        r.error_code = "WorkspaceEscapeDenied";
-        r.error_message = "agent workspace must stay inside the configured root";
+        r.error_code = "InvalidWorkspace";
+        r.error_message = "agent workspace must be an existing directory";
         return r;
     }
+    const auto output_dir = workspace_path / "runtime" / "agents" / "codex_cli" / SafeFileStem(invocation.task_id);
+    std::filesystem::create_directories(output_dir);
+    const auto output_file = output_dir / "last_message.txt";
+    const auto prompt_file = output_dir / "prompt.txt";
 
     // Argument layout. We assume the real Codex CLI supports `--json` (or
     // equivalent NDJSON) on `exec`, and `exec resume -- <id> <prompt>` for
@@ -857,36 +959,40 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
     // exercises the same argv shape so we get coverage without the real CLI.
     std::vector<std::string> args;
     const auto prompt = BuildPromptV2(invocation);
+    WriteTextFile(prompt_file, prompt);
+    const bool allow_writes = AllowsWorkspaceWrites(invocation);
     if (invocation.resume_session_id.has_value() && !invocation.resume_session_id->empty()) {
         args = {
             "exec",
             "resume",
             "--json",
             "--skip-git-repo-check",
-            "--color", "never",
-            "-C", workspace_path.string(),
+            "--output-last-message", output_file.string(),
         };
-        if (invocation.auth_profile.has_value() && !invocation.auth_profile->empty()) {
-            args.push_back("--profile");
-            args.push_back(*invocation.auth_profile);
+        if (allow_writes) {
+            args.push_back("--full-auto");
         }
         args.push_back("--");
         args.push_back(*invocation.resume_session_id);
-        args.push_back(prompt);
+        args.push_back("-");
     } else {
         args = {
             "exec",
             "--json",
-            "--sandbox", "read-only",
+            "--sandbox", allow_writes ? "workspace-write" : "read-only",
             "--skip-git-repo-check",
             "--color", "never",
+            "--output-last-message", output_file.string(),
             "-C", workspace_path.string(),
         };
         if (invocation.auth_profile.has_value() && !invocation.auth_profile->empty()) {
             args.push_back("--profile");
             args.push_back(*invocation.auth_profile);
         }
-        args.push_back(prompt);
+        if (allow_writes) {
+            args.push_back("--full-auto");
+        }
+        args.push_back("-");
     }
 
     bool abort_flag = false;
@@ -912,6 +1018,7 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
     const auto stream_result = RunStreamingProcess(
         "codex",
         args,
+        prompt,
         workspace_path,
         invocation.timeout_ms > 0 ? invocation.timeout_ms : 120000,
         invocation.cancel,
@@ -924,7 +1031,10 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
         agent_result.session_id = session_id_seen;
     }
 
-    const auto effective_text = !final_text.empty() ? final_text : assistant_text;
+    auto effective_text = !final_text.empty() ? final_text : assistant_text;
+    if (effective_text.empty()) {
+        effective_text = ReadTextFile(output_file);
+    }
 
     if (stream_result.cancelled) {
         agent_result.success = false;
@@ -962,6 +1072,8 @@ AgentResult CodexCliAgent::invoke(const AgentInvocation& invocation, const Agent
     legacy_output_json["command"] = stream_result.command_display;
     legacy_output_json["exit_code"] = stream_result.exit_code;
     legacy_output_json["event_count"] = event_count;
+    legacy_output_json["last_message_file"] = output_file.string();
+    legacy_output_json["prompt_file"] = prompt_file.string();
     legacy_output_json["session_id"] = session_id_seen;
     legacy_output_json["input_tokens"] = usage_acc.input_tokens;
     legacy_output_json["output_tokens"] = usage_acc.output_tokens;
@@ -989,13 +1101,55 @@ std::string CodexCliAgent::BuildPrompt(const AgentTask& task) {
     }
 
     std::ostringstream prompt;
+    if (AllowsWorkspaceWrites(task)) {
+        prompt
+            << "Implement this user request now by editing files in the workspace.\n\n"
+            << "USER REQUEST:\n"
+            << task.objective << "\n\n"
+            << "REQUIREMENTS:\n"
+            << "- Do not only acknowledge the request.\n"
+            << "- Do not stop after explaining your role.\n"
+            << "- Create or modify the files needed to satisfy the request.\n"
+            << "- If the user did not specify a path, choose a reasonable project/example path in this workspace.\n"
+            << "- At the end, list changed files and how to build or run the result.\n\n";
+        if (!task.context_json.empty()) {
+            try {
+                const auto context = nlohmann::json::parse(task.context_json);
+                if (context.is_object() && context.contains("contract_instructions") &&
+                    context["contract_instructions"].is_string()) {
+                    prompt << "ACCEPTANCE CONTRACT:\n"
+                           << context["contract_instructions"].get<std::string>() << "\n";
+                    if (context.contains("deliverables_manifest") &&
+                        context["deliverables_manifest"].is_string()) {
+                        prompt << "Write the deliverables manifest exactly here: "
+                               << context["deliverables_manifest"].get<std::string>() << "\n"
+                               << "Manifest JSON schema:\n"
+                               << "{\n"
+                               << "  \"status\": \"complete|partial|blocked\",\n"
+                               << "  \"deliverables\": [\n"
+                               << "    {\"path\": \"workspace-relative-or-absolute\", \"type\": \"inferred\", "
+                                  "\"description\": \"what was delivered\", \"verification\": \"passed|not_applicable|failed\"}\n"
+                               << "  ],\n"
+                               << "  \"verification\": [{\"command\": \"command run or manual check\", \"success\": true, "
+                                  "\"notes\": \"result\"}],\n"
+                               << "  \"blockers\": []\n"
+                               << "}\n";
+                    }
+                    prompt << "\n";
+                }
+            } catch (const nlohmann::json::exception&) {
+            }
+        }
+    } else {
+        prompt
+            << "You are running as a secondary expert agent inside AgentOS.\n"
+            << "Operate in read-only mode unless the invocation explicitly enables workspace writes.\n"
+            << "Return a concise structured summary with findings, suggested next steps, and risks.\n\n"
+            << "Objective: " << task.objective << "\n";
+    }
     prompt
-        << "You are running as a secondary expert agent inside AgentOS.\n"
-        << "Operate in read-only mode unless the objective explicitly asks for a patch.\n"
-        << "Return a concise structured summary with findings, suggested next steps, and risks.\n\n"
         << "Task id: " << task.task_id << "\n"
         << "Task type: " << task.task_type << "\n"
-        << "Objective: " << task.objective << "\n"
         << "Workspace: " << task.workspace_path << "\n";
 
     if (!task.context_json.empty()) {
@@ -1015,12 +1169,46 @@ std::string CodexCliAgent::BuildPromptV2(const AgentInvocation& invocation) {
     }
 
     std::ostringstream prompt;
+    if (AllowsWorkspaceWrites(invocation)) {
+        prompt
+            << "Implement this user request now by editing files in the workspace.\n\n"
+            << "USER REQUEST:\n"
+            << invocation.objective << "\n\n"
+            << "REQUIREMENTS:\n"
+            << "- Do not only acknowledge the request.\n"
+            << "- Do not stop after explaining your role.\n"
+            << "- Create or modify the files needed to satisfy the request.\n"
+            << "- If the user did not specify a path, choose a reasonable project/example path in this workspace.\n"
+            << "- At the end, list changed files and how to build or run the result.\n\n";
+        const auto contract_it = invocation.context.find("contract_instructions");
+        if (contract_it != invocation.context.end() && !contract_it->second.empty()) {
+            prompt << "ACCEPTANCE CONTRACT:\n" << contract_it->second << "\n";
+            const auto manifest_it = invocation.context.find("deliverables_manifest");
+            if (manifest_it != invocation.context.end() && !manifest_it->second.empty()) {
+                prompt << "Write the deliverables manifest exactly here: " << manifest_it->second << "\n"
+                       << "Manifest JSON schema:\n"
+                       << "{\n"
+                       << "  \"status\": \"complete|partial|blocked\",\n"
+                       << "  \"deliverables\": [\n"
+                       << "    {\"path\": \"workspace-relative-or-absolute\", \"type\": \"inferred\", "
+                          "\"description\": \"what was delivered\", \"verification\": \"passed|not_applicable|failed\"}\n"
+                       << "  ],\n"
+                       << "  \"verification\": [{\"command\": \"command run or manual check\", \"success\": true, "
+                          "\"notes\": \"result\"}],\n"
+                       << "  \"blockers\": []\n"
+                       << "}\n";
+            }
+            prompt << "\n";
+        }
+    } else {
+        prompt
+            << "You are running as a secondary expert agent inside AgentOS.\n"
+            << "Operate in read-only mode unless the invocation explicitly enables workspace writes.\n"
+            << "Return a concise structured summary with findings, suggested next steps, and risks.\n\n"
+            << "Objective: " << invocation.objective << "\n";
+    }
     prompt
-        << "You are running as a secondary expert agent inside AgentOS.\n"
-        << "Operate in read-only mode unless the objective explicitly asks for a patch.\n"
-        << "Return a concise structured summary with findings, suggested next steps, and risks.\n\n"
         << "Task id: " << invocation.task_id << "\n"
-        << "Objective: " << invocation.objective << "\n"
         << "Workspace: " << invocation.workspace_path.string() << "\n";
 
     if (!invocation.context.empty()) {

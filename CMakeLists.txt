@@ -37,6 +37,7 @@ add_library(agentos_core
     src/cli/memory_commands.cpp
     src/cli/plugins_commands.cpp
     src/cli/schedule_commands.cpp
+    src/cli/skill_reload.cpp
     src/cli/storage_commands.cpp
     src/cli/subagents_commands.cpp
     src/cli/trust_commands.cpp
@@ -119,7 +120,9 @@ add_library(agentos_core
     src/skills/builtin/file_read_skill.cpp
     src/skills/builtin/file_write_skill.cpp
     src/skills/builtin/file_patch_skill.cpp
+    src/skills/builtin/host_info_skill.cpp
     src/skills/builtin/http_fetch_skill.cpp
+    src/skills/builtin/learn_skill.cpp
     src/skills/builtin/research_skill.cpp
     src/skills/builtin/workflow_run_skill.cpp
     src/hosts/agents/local_planning_agent.cpp
@@ -128,7 +131,7 @@ add_library(agentos_core
 add_executable(agentos src/main.cpp)
 target_include_directories(agentos_core PUBLIC ${PROJECT_SOURCE_DIR}/src)
 if(WIN32)
-    target_link_libraries(agentos_core PUBLIC Advapi32 Ws2_32 Bcrypt)
+    target_link_libraries(agentos_core PUBLIC Advapi32 Ws2_32 Bcrypt Iphlpapi)
 endif()
 if(APPLE)
     # SecureTokenStore uses the macOS Security framework for the Keychain backend.
@@ -158,6 +161,10 @@ endif()
 target_link_libraries(agentos_core PUBLIC nlohmann_json::nlohmann_json)
 target_include_directories(agentos_core PUBLIC ${CMAKE_BINARY_DIR}/_deps/httplib-src)
 target_link_libraries(agentos PRIVATE agentos_core)
+if(MSVC)
+    target_compile_options(agentos_core PUBLIC /utf-8)
+    target_compile_options(agentos PRIVATE /utf-8)
+endif()
 
 enable_testing()
 
@@ -214,6 +221,22 @@ add_executable(agentos_file_skill_policy_tests tests/file_skill_policy_tests.cpp
 target_link_libraries(agentos_file_skill_policy_tests PRIVATE agentos_core)
 add_test(NAME agentos_file_skill_policy_tests COMMAND agentos_file_skill_policy_tests)
 
+add_executable(agentos_host_info_skill_tests tests/host_info_skill_tests.cpp)
+target_link_libraries(agentos_host_info_skill_tests PRIVATE agentos_core)
+add_test(NAME agentos_host_info_skill_tests COMMAND agentos_host_info_skill_tests)
+
+add_executable(agentos_learn_skill_tests tests/learn_skill_tests.cpp)
+target_link_libraries(agentos_learn_skill_tests PRIVATE agentos_core)
+add_test(NAME agentos_learn_skill_tests COMMAND agentos_learn_skill_tests)
+
+add_executable(agentos_chat_fallback_tests tests/chat_fallback_tests.cpp)
+target_link_libraries(agentos_chat_fallback_tests PRIVATE agentos_core)
+add_test(NAME agentos_chat_fallback_tests COMMAND agentos_chat_fallback_tests)
+
+add_executable(agentos_main_agent_prompt_tests tests/main_agent_prompt_tests.cpp)
+target_link_libraries(agentos_main_agent_prompt_tests PRIVATE agentos_core)
+add_test(NAME agentos_main_agent_prompt_tests COMMAND agentos_main_agent_prompt_tests)
+
 if(MSVC)
     target_compile_options(agentos_core PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos PRIVATE /W4 /permissive- /EHsc)
@@ -230,6 +253,10 @@ if(MSVC)
     target_compile_options(agentos_cli_plugin_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_spec_parsing_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_file_skill_policy_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_host_info_skill_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_learn_skill_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_chat_fallback_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_main_agent_prompt_tests PRIVATE /W4 /permissive- /EHsc)
 else()
     target_compile_options(agentos_core PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos PRIVATE -Wall -Wextra -Wpedantic)
@@ -246,4 +273,8 @@ else()
     target_compile_options(agentos_cli_plugin_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_spec_parsing_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_file_skill_policy_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_host_info_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_learn_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_chat_fallback_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_main_agent_prompt_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()

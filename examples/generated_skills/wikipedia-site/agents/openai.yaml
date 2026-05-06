@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wikipedia"
+  short_description: "Open Wikipedia articles and searches."
+  default_prompt: "Find the relevant Wikipedia article or search page."

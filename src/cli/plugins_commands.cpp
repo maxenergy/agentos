@@ -161,6 +161,10 @@ std::size_t EffectivePersistentPoolSize(const PluginSpec& spec, const std::size_
         : (std::min)(requested, max_persistent_sessions);
 }
 
+std::string PluginProcessPoolPolicy() {
+    return "per_plugin_workspace_binary_lru";
+}
+
 void PrintPluginHostConfigDiagnostics(const std::vector<PluginHostOptionsDiagnostic>& diagnostics) {
     for (const auto& diagnostic : diagnostics) {
         std::cout
@@ -206,6 +210,7 @@ void PrintPluginInspect(
         << "pool_size=" << spec.pool_size << '\n'
         << "max_persistent_sessions=" << max_persistent_sessions << '\n'
         << "effective_pool_size=" << effective_pool_size << '\n'
+        << "pool_policy=" << PluginProcessPoolPolicy() << '\n'
         << "source=" << spec.source_file.string() << '\n'
         << "line=" << spec.source_line_number << '\n'
         << "valid=" << (conflicts_with_registered_skill ? "false" : "true") << '\n';
@@ -300,6 +305,7 @@ int PrintPluginLifecycle(
             << " idle_timeout_ms=" << spec.idle_timeout_ms
             << " pool_size=" << spec.pool_size
             << " effective_pool_size=" << EffectivePersistentPoolSize(spec, host_options.options.max_persistent_sessions)
+            << " pool_policy=" << PluginProcessPoolPolicy()
             << " source=" << spec.source_file.string()
             << " line=" << spec.source_line_number
             << " valid=" << (conflicts_with_registered_skill ? "false" : "true");
@@ -319,6 +325,9 @@ int PrintPluginLifecycle(
         << " oneshot=" << oneshot_count
         << " persistent=" << persistent_count
         << " max_persistent_sessions=" << host_options.options.max_persistent_sessions
+        << " pool_policy=" << PluginProcessPoolPolicy()
+        << " scope=process"
+        << " persistence=none"
         << " diagnostics=" << loaded.diagnostics.size()
         << " config_diagnostics=" << host_options.diagnostics.size()
         << " conflicts=" << conflict_count
@@ -458,6 +467,8 @@ int RestartPluginSession(
         << " name=" << name
         << " restarted=" << restarted
         << " matched=" << (restarted > 0 ? "true" : "false")
+        << " scope=process"
+        << " persistence=none"
         << '\n';
     return 0;
 }
@@ -486,6 +497,8 @@ int ClosePluginSession(
         << " name=" << name
         << " closed=" << closed
         << " matched=" << (closed > 0 ? "true" : "false")
+        << " scope=process"
+        << " persistence=none"
         << '\n';
     return 0;
 }

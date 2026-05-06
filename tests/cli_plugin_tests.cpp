@@ -817,6 +817,16 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
         const auto probe_health = agentos::CheckPluginHealth(spec, cli_host, isolated_workspace);
         Expect(probe_health.healthy, "plugin health should run a successful declared health probe");
         Expect(probe_health.reason == "ok", "plugin health probe should explain a healthy plugin with ok");
+        const auto stdio_run = plugin_host.run(agentos::PluginRunRequest{
+            .spec = spec,
+            .arguments = {
+                {"message", "normalized"},
+            },
+            .workspace_path = isolated_workspace,
+        });
+        Expect(stdio_run.success, "plugin host should accept stdio-json-v0 object output");
+        Expect(stdio_run.structured_output_json.find("normalized") != std::string::npos,
+            "plugin host should normalize stdio-json-v0 stdout to structured output before invoker mapping");
     }
     Expect(json_spec_it != specs.end(), "plugin loader should parse JSON plugin manifests");
     if (json_spec_it != specs.end()) {
@@ -938,6 +948,8 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
         .workspace_path = isolated_workspace,
     });
     Expect(json_rpc_run.success, "plugin host should accept json-rpc-v0 response objects");
+    Expect(json_rpc_run.structured_output_json == R"({"message":"json-rpc-ok"})",
+        "plugin host should normalize json-rpc-v0 output to the result object before invoker mapping");
     agentos::PluginSkillInvoker json_rpc_invoker(json_rpc_spec, plugin_host);
     const auto json_rpc_skill = json_rpc_invoker.execute(agentos::SkillCall{
         .skill_name = "json_rpc_plugin",
@@ -1380,6 +1392,8 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
     Expect(!invalid_output_run.success, "plugin host should reject successful stdio-json-v0 runs with non-JSON stdout");
     Expect(invalid_output_run.error_code == "InvalidPluginOutput",
         "plugin host should return InvalidPluginOutput for non-JSON stdout");
+    Expect(invalid_output_run.structured_output_json.empty(),
+        "invalid plugin output should not carry normalized structured output");
     Expect(invalid_output_run.error_message.find("stdout must be a JSON object") != std::string::npos,
         "plugin host should explain stdio-json-v0 output shape failures");
     agentos::PluginSkillInvoker invalid_output_invoker(invalid_output_spec, plugin_host);
@@ -1416,6 +1430,8 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
         "plugin host should reject stdio-json-v0 output missing required output schema fields");
     Expect(schema_invalid_output_run.error_code == "PluginOutputSchemaValidationFailed",
         "plugin host should return PluginOutputSchemaValidationFailed for output schema failures");
+    Expect(schema_invalid_output_run.structured_output_json.empty(),
+        "schema-invalid plugin output should not carry normalized structured output");
     Expect(schema_invalid_output_run.error_message.find("missing required field: message") != std::string::npos,
         "plugin host should explain missing output schema fields");
 
@@ -3350,6 +3366,16 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
     Expect(filtered_sessions_cli.second.find("scope=process persistence=none") != std::string::npos,
         "plugins sessions should make filtered session summaries explicitly process-scoped");
 
+    const auto unsupported_scope_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "sessions", "scope=workspace"},
+        &host);
+    Expect(unsupported_scope_cli.first == 2,
+        "plugins sessions should reject unsupported future session scopes");
+    Expect(unsupported_scope_cli.second.find("plugin_sessions_unavailable scope=workspace supported_scope=process") !=
+               std::string::npos,
+        "unsupported session scopes should fail with a scriptable process-scope diagnostic");
+
     const auto filtered_missing_sessions_cli = RunPluginsCommandForTest(
         isolated_workspace,
         {"agentos", "plugins", "sessions", "name=does_not_exist"},
@@ -3437,6 +3463,8 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
         restart_cli.second.find("plugin_session_restart name=pool_admin_session restarted=2 matched=true")
             != std::string::npos,
         "plugins session-restart should report matched=true when live sessions are restarted");
+    Expect(restart_cli.second.find("scope=process persistence=none") != std::string::npos,
+        "plugins session-restart should make the process-only admin boundary explicit");
     const auto sessions_after_restart = host.list_sessions();
     Expect(sessions_after_restart.size() == 2,
         "host should still hold the same number of sessions after restart");
@@ -3453,6 +3481,17 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
     Expect(post_restart_run.stdout_text.find("pool-1") != std::string::npos,
         "post-restart session should resume the response counter from one");
 
+    const auto restart_missing_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "session-restart", "name=does_not_exist"},
+        &host);
+    Expect(restart_missing_cli.first == 0,
+        "plugins session-restart should succeed as a process-scope no-op when no session matches");
+    Expect(restart_missing_cli.second.find(
+               "plugin_session_restart name=does_not_exist restarted=0 matched=false scope=process persistence=none") !=
+               std::string::npos,
+        "plugins session-restart no-op should be scriptable");
+
     // session-close: forcibly close all sessions for the plugin.
     const auto close_cli = RunPluginsCommandForTest(
         isolated_workspace,
@@ -3464,8 +3503,21 @@ void TestPluginPoolPolicyAndAdmin(const std::filesystem::path& workspace) {
         close_cli.second.find("plugin_session_close name=pool_admin_session closed=2 matched=true")
             != std::string::npos,
         "plugins session-close should report matched=true when live sessions are closed");
+    Expect(close_cli.second.find("scope=process persistence=none") != std::string::npos,
+        "plugins session-close should make the process-only admin boundary explicit");
     Expect(host.active_session_count() == 0,
         "no sessions should remain after close_sessions_for_plugin");
+
+    const auto close_missing_cli = RunPluginsCommandForTest(
+        isolated_workspace,
+        {"agentos", "plugins", "session-close", "name=does_not_exist"},
+        &host);
+    Expect(close_missing_cli.first == 0,
+        "plugins session-close should succeed as a process-scope no-op when no session matches");
+    Expect(close_missing_cli.second.find(
+               "plugin_session_close name=does_not_exist closed=0 matched=false scope=process persistence=none") !=
+               std::string::npos,
+        "plugins session-close no-op should be scriptable");
 
     // close_sessions_for_plugin with an unknown plugin reports zero.
     Expect(host.close_sessions_for_plugin("does_not_exist") == 0,

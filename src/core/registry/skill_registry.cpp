@@ -1,5 +1,7 @@
 #include "core/registry/skill_registry.hpp"
 
+#include <algorithm>
+
 namespace agentos {
 
 bool SkillRegistry::register_skill(const std::shared_ptr<ISkillAdapter>& skill) {
@@ -12,6 +14,17 @@ bool SkillRegistry::register_skill(const std::shared_ptr<ISkillAdapter>& skill) 
         registration_order_.push_back(name);
     }
     skills_[name] = skill;
+    return true;
+}
+
+bool SkillRegistry::unregister_skill(const std::string& name) {
+    const auto erased = skills_.erase(name);
+    if (erased == 0) {
+        return false;
+    }
+    registration_order_.erase(
+        std::remove(registration_order_.begin(), registration_order_.end(), name),
+        registration_order_.end());
     return true;
 }
 

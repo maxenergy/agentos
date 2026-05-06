@@ -3,6 +3,7 @@
 #include "memory/memory_manager.hpp"
 #include "memory/workflow_validation.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <map>
 #include <sstream>

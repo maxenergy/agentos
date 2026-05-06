@@ -152,7 +152,7 @@ struct PersistentPluginSession {
 #ifndef _WIN32
     static void close_fd(const int fd) {
         if (fd != -1) {
-            close(fd);
+            ::close(fd);
         }
     }
 

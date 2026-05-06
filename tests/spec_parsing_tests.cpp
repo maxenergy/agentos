@@ -177,6 +177,47 @@ void TestCapabilityContractDeclarationFacade() {
         "unknown permission diagnostic should carry the unknown permission");
 }
 
+void TestCapabilityContractInputCoercionVsNativeOutput() {
+    auto manifest = BaseCapabilityManifest();
+    manifest.input_schema_json =
+        R"({"type":"object","properties":{"count":{"type":"integer","minimum":2},"enabled":{"type":"boolean"}},"required":["count","enabled"],"additionalProperties":false})";
+    manifest.output_schema_json = manifest.input_schema_json;
+
+    const auto valid_input = agentos::ValidateCapabilityInput(
+        manifest,
+        agentos::StringMap{
+            {"count", "3"},
+            {"enabled", "true"},
+        });
+    Expect(valid_input.valid, "Capability input should coerce string CLI arguments to schema scalar types");
+
+    const auto invalid_input = agentos::ValidateCapabilityInput(
+        manifest,
+        agentos::StringMap{
+            {"count", "three"},
+            {"enabled", "true"},
+        });
+    Expect(!invalid_input.valid, "Capability input should reject unparseable scalar strings");
+    Expect(invalid_input.error_message.find("count") != std::string::npos,
+        "Capability input coercion errors should name the unparseable field");
+
+    const auto valid_output = agentos::ValidateCapabilityOutput(
+        manifest,
+        R"({"count":3,"enabled":true})",
+        "capability output");
+    Expect(valid_output.valid, "Capability Output should accept native JSON scalar types");
+
+    const auto invalid_output = agentos::ValidateCapabilityOutput(
+        manifest,
+        R"({"count":"3","enabled":"true"})",
+        "capability output");
+    Expect(!invalid_output.valid, "Capability Output should not coerce native JSON strings");
+    Expect(invalid_output.error_code == "InvalidFieldType",
+        "Capability Output native type failures should be classified as InvalidFieldType");
+    Expect(!invalid_output.diagnostics.empty() && invalid_output.diagnostics.front().field == "count",
+        "Capability Output native type diagnostics should identify the first invalid field");
+}
+
 }  // namespace
 
 int main() {
@@ -187,6 +228,7 @@ int main() {
     TestCancellationToken();
     TestCapabilityContractJsonObjectFacade();
     TestCapabilityContractDeclarationFacade();
+    TestCapabilityContractInputCoercionVsNativeOutput();
 
     if (failures != 0) {
         std::cerr << failures << " spec parsing test assertion(s) failed\n";

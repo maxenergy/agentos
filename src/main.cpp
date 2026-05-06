@@ -44,7 +44,9 @@
 #include "skills/builtin/file_patch_skill.hpp"
 #include "skills/builtin/file_read_skill.hpp"
 #include "skills/builtin/file_write_skill.hpp"
+#include "skills/builtin/host_info_skill.hpp"
 #include "skills/builtin/http_fetch_skill.hpp"
+#include "skills/builtin/learn_skill.hpp"
 #include "skills/builtin/research_skill.hpp"
 #include "skills/builtin/workflow_run_skill.hpp"
 #include "storage/main_agent_store.hpp"
@@ -57,6 +59,7 @@
 #include "trust/pairing_invite_store.hpp"
 #include "trust/pairing_manager.hpp"
 #include "trust/trust_policy.hpp"
+#include "utils/command_utils.hpp"
 #include "utils/signal_cancellation.hpp"
 
 #include <algorithm>
@@ -574,6 +577,7 @@ std::set<std::string> BuiltinSkillNames() {
         "file_write",
         "file_patch",
         "http_fetch",
+        "host_info",
         "workflow_run",
         "rg_search",
         "git_status",
@@ -596,6 +600,14 @@ void RegisterExternalCliSpecs(Runtime& runtime, const std::filesystem::path& wor
                 spec.source_file,
                 spec.source_line_number,
                 CliSpecConflictReason(spec.name));
+            continue;
+        }
+        if (!CommandExists(spec.binary)) {
+            runtime.audit_logger.record_config_diagnostic(
+                "cli_spec",
+                spec.source_file,
+                spec.source_line_number,
+                "CLI spec binary is not available on this host: " + spec.binary);
             continue;
         }
         runtime.skill_registry.register_skill(std::make_shared<CliSkillInvoker>(spec, runtime.cli_host));
@@ -826,6 +838,10 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<FileWriteSkill>());
     runtime.skill_registry.register_skill(std::make_shared<FilePatchSkill>());
     runtime.skill_registry.register_skill(std::make_shared<HttpFetchSkill>(runtime.cli_host));
+    runtime.skill_registry.register_skill(std::make_shared<HostInfoSkill>());
+    runtime.skill_registry.register_skill(std::make_shared<LearnSkill>(
+        runtime.skill_registry, runtime.cli_host, runtime.plugin_host,
+        runtime.audit_logger, workspace));
     runtime.skill_registry.register_skill(std::make_shared<DevelopmentSkill>(
         runtime.agent_registry, runtime.loop, runtime.audit_logger, workspace));
     runtime.skill_registry.register_skill(std::make_shared<ResearchSkill>(
@@ -840,14 +856,16 @@ int main(int argc, char* argv[]) {
     RegisterExternalCliSpecs(runtime, workspace);
     RegisterPluginSpecs(runtime, workspace);
     runtime.agent_registry.register_agent(std::make_shared<MainAgent>(
-        runtime.cli_host, runtime.main_agent_store, workspace));
+        runtime.cli_host, runtime.main_agent_store, workspace,
+        runtime.skill_registry, runtime.agent_registry));
     runtime.agent_registry.register_agent(std::make_shared<LocalPlanningAgent>());
     runtime.agent_registry.register_agent(std::make_shared<GeminiAgent>(
         runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
     runtime.agent_registry.register_agent(std::make_shared<AnthropicAgent>(
         runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
     runtime.agent_registry.register_agent(std::make_shared<QwenAgent>(
-        runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
+        runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace,
+        &runtime.skill_registry, &runtime.agent_registry));
     runtime.agent_registry.register_agent(std::make_shared<OpenAiAgent>(
         runtime.cli_host, runtime.credential_broker, runtime.auth_profile_store, workspace));
     runtime.agent_registry.register_agent(std::make_shared<CodexCliAgent>(runtime.cli_host, workspace));

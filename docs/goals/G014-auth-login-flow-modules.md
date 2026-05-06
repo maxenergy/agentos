@@ -59,7 +59,7 @@ git diff --check
 
 Completed verification:
 
-- `cmake -S . -B build-codex-g014 -G Ninja -DAGENTOS_BUILD_RTSP_PLAYER=OFF`
+- `cmake -S . -B build-codex-g014 -G Ninja`
 - `cmake --build build-codex-g014 --target agentos_auth_tests agentos_agent_provider_tests agentos_cli_integration_tests`
 - `ctest --test-dir build-codex-g014 -R "agentos_auth_tests|agentos_agent_provider_tests|agentos_cli_integration_tests" --output-on-failure`
 - `git diff --check -- tests/auth_tests.cpp`

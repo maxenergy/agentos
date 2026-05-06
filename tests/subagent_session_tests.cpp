@@ -558,6 +558,49 @@ void TestSubagentManagerAutoDecomposeAcceptsRootPlanSteps(const std::filesystem:
         "second injected subtask should carry root plan_steps[1].action");
 }
 
+void TestSubagentManagerAutoDecomposeUsesPlanStepTargets(const std::filesystem::path& workspace) {
+    const auto isolated_workspace = workspace / "subagent_auto_decompose_targets_isolated";
+    std::filesystem::remove_all(isolated_workspace);
+    std::filesystem::create_directories(isolated_workspace);
+
+    TestRuntime runtime(isolated_workspace);
+    RegisterCore(runtime);
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("target_worker_a", "analysis"));
+    runtime.agent_registry.register_agent(std::make_shared<StaticTestAgent>("target_worker_b", "review"));
+    runtime.agent_registry.register_agent(std::make_shared<DecompositionTestAgent>(
+        "target_decomposer",
+        true,
+        R"({"plan_steps":[{"agent":"target_worker_b","action":"review targeted risk"},{"role":"planner","action":"draft targeted plan"}]})"));
+
+    agentos::SubagentManager manager(
+        runtime.agent_registry,
+        runtime.policy_engine,
+        runtime.audit_logger,
+        runtime.memory_manager);
+
+    const auto result = manager.run(
+        agentos::TaskRequest{
+            .task_id = "subagent-auto-decompose-targets",
+            .task_type = "analysis",
+            .objective = "coordinate targeted decomposition",
+            .workspace_path = isolated_workspace,
+            .inputs = {
+                {"roles", "target_worker_a:planner,target_worker_b:critic"},
+                {"auto_decompose", "true"},
+                {"decomposition_agent", "target_decomposer"},
+            },
+        },
+        {"target_worker_a", "target_worker_b"},
+        agentos::SubagentExecutionMode::sequential);
+
+    Expect(result.success, "targeted decomposition should succeed");
+    Expect(result.steps.size() == 2, "targeted decomposition should run both workers");
+    Expect(result.steps[0].summary.find("draft targeted plan") != std::string::npos,
+        "role-targeted plan step should route to the matching role instead of array position");
+    Expect(result.steps[1].summary.find("review targeted risk") != std::string::npos,
+        "agent-targeted plan step should route to the matching agent instead of array position");
+}
+
 // Each of these proves the substring-search injection vector is closed: the
 // planner output contains the literal text "action" but never as a typed
 // plan_steps[*].action field.
@@ -1033,7 +1076,7 @@ void TestLocalPlanningAgentV2Smoke(const std::filesystem::path& workspace) {
         .task_id = "v2-smoke",
         .objective = "exercise the V2 invoke path",
         .workspace_path = isolated_workspace,
-        .context = {{"task_type", "analysis"}},
+        .context = {{"task_type", "analysis"}, {"roles", "planner,critic"}},
         .cancel = cancel,
     };
 
@@ -1042,6 +1085,13 @@ void TestLocalPlanningAgentV2Smoke(const std::filesystem::path& workspace) {
     Expect(result.success, "V2 invoke should succeed for an offline planner");
     Expect(!result.summary.empty(), "V2 invoke should return a non-empty summary");
     Expect(result.usage.cost_usd == 0.0, "local planner V2 invoke should report zero cost");
+    const auto normalized = nlohmann::json::parse(result.structured_output_json);
+    Expect(normalized.contains("raw_output") && normalized["raw_output"].contains("plan_steps"),
+        "local planner normalized output should retain raw plan_steps");
+    Expect(normalized["raw_output"]["plan_steps"][0].value("role", "") == "planner",
+        "local planner should annotate plan steps with decomposition context roles");
+    Expect(normalized["raw_output"]["plan_steps"][1].value("role", "") == "critic",
+        "local planner should preserve role order when annotating plan steps");
 
     bool saw_status = false;
     bool saw_usage = false;
@@ -1397,6 +1447,7 @@ int main() {
     TestSubagentManagerAutoDecomposesWithPlanner(workspace);
     TestSubagentManagerRejectsInvalidDecompositionOutput(workspace);
     TestSubagentManagerAutoDecomposeAcceptsRootPlanSteps(workspace);
+    TestSubagentManagerAutoDecomposeUsesPlanStepTargets(workspace);
     TestSubagentManagerAutoDecomposeRejectsActionSubstringInjection(workspace);
     TestSubagentManagerAutoDecomposeRejectsNonArrayPlanSteps(workspace);
     TestSubagentManagerAutoDecomposeRejectsMissingActionField(workspace);

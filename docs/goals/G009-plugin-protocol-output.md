@@ -1,6 +1,6 @@
 # G009 Plugin Protocol Output Normalization
 
-Status: blocked
+Status: done
 Depends on: G006
 
 ## Objective
@@ -53,3 +53,11 @@ ctest --test-dir build -R agentos_cli_plugin_tests --output-on-failure
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g014 --target agentos_cli_plugin_tests`
+- `ctest --test-dir build-codex-g014 -R agentos_cli_plugin_tests --output-on-failure`
+- `rg -n "stdout_text|JsonRpcResultObject|JsonRpcOutputError|structured_output_json" src/hosts/plugin/plugin_skill_invoker.cpp src/hosts/plugin/plugin_execution.cpp src/hosts/plugin/plugin_host.hpp tests/cli_plugin_tests.cpp`
+- `git diff --check -- src/hosts/plugin/plugin_host.hpp src/hosts/plugin/plugin_execution.cpp src/hosts/plugin/plugin_skill_invoker.cpp tests/cli_plugin_tests.cpp docs/goals/G009-plugin-protocol-output.md docs/goals/backlog.md docs/goals/decision-log.md`
+
+Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so a focused diff check was used for this packet.

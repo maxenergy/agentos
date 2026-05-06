@@ -1,5 +1,6 @@
 #include "utils/secure_random.hpp"
 
+#include <cstring>
 #include <stdexcept>
 #include <string>
 

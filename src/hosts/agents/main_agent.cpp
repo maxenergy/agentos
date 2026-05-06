@@ -7,7 +7,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -110,6 +112,18 @@ OAuthFileContents ReadOAuthFile(const std::filesystem::path& path) {
     if (out.raw.contains("refresh_token") && out.raw["refresh_token"].is_string()) {
         out.refresh_token = out.raw["refresh_token"].get<std::string>();
     }
+    if (out.access_token.empty() && out.raw.contains("tokens") && out.raw["tokens"].is_object()) {
+        const auto& tokens = out.raw["tokens"];
+        if (tokens.contains("access_token") && tokens["access_token"].is_string()) {
+            out.access_token = tokens["access_token"].get<std::string>();
+        }
+        if (tokens.contains("refresh_token") && tokens["refresh_token"].is_string()) {
+            out.refresh_token = tokens["refresh_token"].get<std::string>();
+        }
+        if (out.raw.contains("last_refresh") && out.raw["last_refresh"].is_string()) {
+            out.raw["credential_source"] = "codex_cli_oauth";
+        }
+    }
     if (out.raw.contains("expiry_date") && out.raw["expiry_date"].is_number_integer()) {
         out.expiry_date_ms = out.raw["expiry_date"].get<long long>();
     }
@@ -159,13 +173,120 @@ bool ValidateOAuthFreshness(OAuthFileContents& contents) {
     return false;
 }
 
-// "Hello" -> "User: Hello" for chat-style task_type. Other task_types get
-// the agentos orchestration scaffolding so the main agent can also serve
-// as a generic provider when invoked through `agentos run target=main`.
-std::string BuildPromptText(const AgentTask& task) {
+// Render a compact one-line-per-entry catalog of skills/agents so the
+// chat preamble can ground the model in what AgentOS can actually do.
+// Capped at kMaxListed entries with a "… and N more" tail so a runtime
+// with hundreds of plugin skills can't blow up the prompt.
+constexpr std::size_t kMaxListed = 40;
+
+std::string FirstSentence(const std::string& text) {
+    if (text.empty()) return {};
+    const auto dot = text.find('.');
+    if (dot == std::string::npos) return text;
+    auto head = text.substr(0, dot);
+    while (!head.empty() && (head.back() == ' ' || head.back() == '\t')) {
+        head.pop_back();
+    }
+    if (head.empty()) return text;
+    return head;
+}
+
+std::string DerivedUseHint(const SkillManifest& m) {
+    for (const auto& cap : m.capabilities) {
+        if (cap == "filesystem") return "you need to read/write a workspace file";
+        if (cap == "network") return "you need to fetch external content";
+        if (cap == "introspection" || cap == "host") return "the user is asking about this machine";
+    }
+    return FirstSentence(m.description);
+}
+
+std::string ParseRequiredInputs(const std::string& input_schema_json) {
+    if (input_schema_json.empty()) return "(none)";
+    try {
+        const auto j = nlohmann::json::parse(input_schema_json);
+        if (!j.is_object() || !j.contains("required")) return "(none)";
+        const auto& req = j["required"];
+        if (!req.is_array() || req.empty()) return "(none)";
+        std::string out;
+        for (const auto& entry : req) {
+            if (!entry.is_string()) continue;
+            if (!out.empty()) out += ", ";
+            out += entry.get<std::string>();
+        }
+        return out.empty() ? std::string("(none)") : out;
+    } catch (...) {
+        return "(unknown)";
+    }
+}
+
+std::string FormatRegisteredSkills(const SkillRegistry* registry) {
+    if (registry == nullptr) return "  (skill registry unavailable)\n";
+    const auto skills = registry->list();
+    if (skills.empty()) return "  (none registered)\n";
+    std::ostringstream out;
+    const auto shown = std::min(skills.size(), kMaxListed);
+    for (std::size_t i = 0; i < shown; ++i) {
+        const auto& m = skills[i];
+        const auto risk = m.risk_level.empty() ? std::string("unknown") : m.risk_level;
+        const auto desc = FirstSentence(m.description);
+        out << "  " << m.name << " [risk=" << risk << "]";
+        if (!desc.empty()) out << " — " << desc;
+        out << "\n";
+        out << "      use when: " << DerivedUseHint(m) << "\n";
+        out << "      required: " << ParseRequiredInputs(m.input_schema_json) << "\n";
+    }
+    if (skills.size() > kMaxListed) {
+        out << "  ... and " << (skills.size() - kMaxListed) << " more\n";
+    }
+    return out.str();
+}
+
+std::string FormatRegisteredAgents(const AgentRegistry* registry) {
+    if (registry == nullptr) return "  (agent registry unavailable)\n";
+    const auto profiles = registry->list_profiles();
+    if (profiles.empty()) return "  (none registered)\n";
+    std::ostringstream out;
+    const auto shown = std::min(profiles.size(), kMaxListed);
+    for (std::size_t i = 0; i < shown; ++i) {
+        const auto& p = profiles[i];
+        out << "  " << p.agent_name
+            << " [cost=" << (p.cost_tier.empty() ? std::string("unknown") : p.cost_tier)
+            << ", streaming=" << (p.supports_streaming ? "true" : "false") << "]\n";
+    }
+    if (profiles.size() > kMaxListed) {
+        out << "  ... and " << (profiles.size() - kMaxListed) << " more\n";
+    }
+    return out.str();
+}
+
+std::string BuildPromptTextImpl(const AgentTask& task,
+                                const SkillRegistry* skill_registry,
+                                const AgentRegistry* agent_registry) {
     if (task.task_type == "chat") {
-        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " +
-               task.objective;
+        const auto skills_text = FormatRegisteredSkills(skill_registry);
+        const auto agents_text = FormatRegisteredAgents(agent_registry);
+        const auto skill_count = skill_registry ? skill_registry->list().size() : 0;
+        const auto agent_count = agent_registry ? agent_registry->list_profiles().size() : 0;
+        std::ostringstream out;
+        out << "You are the AgentOS local runtime assistant. You are running inside a C++ "
+               "AgentOS process on the user's own machine — you are NOT a cloud service, "
+               "you do not have your own IP, and you should not claim to be ChatGPT, "
+               "Qwen-as-cloud-product, or any vendor's hosted chatbot. The user is "
+               "interacting with you via an interactive REPL that dispatches free-form "
+               "text to you.\n\n"
+               "When users ask about your capabilities or skills, refer to the registered "
+               "AgentOS skills and agents listed below — these are what you can actually "
+               "invoke through this runtime. Do not invent skills you don't see in the "
+               "list.\n\n"
+               "When users ask about the host machine (IP, hostname, files, network), "
+               "explain that you can answer such questions by invoking the appropriate "
+               "registered skill (e.g. `host_info` if available), not by guessing.\n\n"
+            << "Registered skills (" << skill_count << "):\n"
+            << skills_text
+            << "\nRegistered agents (" << agent_count << "):\n"
+            << agents_text
+            << "\nUser: " << task.objective;
+        return out.str();
     }
     std::ostringstream out;
     out << "Task type: " << task.task_type << "\n"
@@ -284,6 +405,27 @@ std::string ExtractOpenAiContent(const std::string& response_json) {
     return {};
 }
 
+std::string TrimWhitespace(std::string value) {
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return {};
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+std::string StripLeadingThinkBlock(std::string value) {
+    value = TrimWhitespace(std::move(value));
+    constexpr const char* kOpen = "<think>";
+    constexpr const char* kClose = "</think>";
+    if (value.rfind(kOpen, 0) != 0) {
+        return value;
+    }
+    const auto close = value.find(kClose);
+    if (close == std::string::npos) {
+        return value;
+    }
+    return TrimWhitespace(value.substr(close + std::string(kClose).size()));
+}
+
 std::string ExtractAnthropicContent(const std::string& response_json) {
     try {
         const auto j = nlohmann::json::parse(response_json);
@@ -318,22 +460,32 @@ std::string ExtractGeminiContent(const std::string& response_json) {
 }
 
 std::string ExtractContent(const std::string& provider_kind, const std::string& response_json) {
-    if (provider_kind == "openai-chat") return ExtractOpenAiContent(response_json);
-    if (provider_kind == "anthropic-messages") return ExtractAnthropicContent(response_json);
+    if (provider_kind == "openai-chat") return StripLeadingThinkBlock(ExtractOpenAiContent(response_json));
+    if (provider_kind == "anthropic-messages") return StripLeadingThinkBlock(ExtractAnthropicContent(response_json));
     if (provider_kind == "gemini-generatecontent" || provider_kind == "vertex-gemini") {
-        return ExtractGeminiContent(response_json);
+        return StripLeadingThinkBlock(ExtractGeminiContent(response_json));
     }
     return {};
 }
 
 }  // namespace
 
+std::string BuildMainAgentPrompt(const AgentTask& task,
+                                 const SkillRegistry* skill_registry,
+                                 const AgentRegistry* agent_registry) {
+    return BuildPromptTextImpl(task, skill_registry, agent_registry);
+}
+
 MainAgent::MainAgent(const CliHost& cli_host,
                      MainAgentStore store,
-                     std::filesystem::path workspace_root)
+                     std::filesystem::path workspace_root,
+                     const SkillRegistry& skill_registry,
+                     const AgentRegistry& agent_registry)
     : cli_host_(cli_host),
       store_(std::move(store)),
-      workspace_root_(NormalizeWorkspaceRoot(std::move(workspace_root))) {}
+      workspace_root_(NormalizeWorkspaceRoot(std::move(workspace_root))),
+      skill_registry_(&skill_registry),
+      agent_registry_(&agent_registry) {}
 
 AgentProfile MainAgent::profile() const {
     return {
@@ -464,7 +616,7 @@ AgentResult MainAgent::run_task(const AgentTask& task) {
                 .error_message = token_resolution.error_message};
     }
 
-    const auto prompt = BuildPromptText(task);
+    const auto prompt = BuildMainAgentPrompt(task, skill_registry_, agent_registry_);
     PreparedRequest prepared;
     if (config.provider_kind == "openai-chat") {
         prepared = PrepareOpenAiChat(config, token_resolution.token, prompt);

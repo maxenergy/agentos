@@ -84,6 +84,7 @@ struct PluginRunResult {
     int duration_ms = 0;
     std::string stdout_text;
     std::string stderr_text;
+    std::string structured_output_json;
     std::string error_code;
     std::string error_message;
     std::string lifecycle_event;

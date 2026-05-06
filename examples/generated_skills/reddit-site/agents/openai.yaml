@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reddit"
+  short_description: "Open Reddit communities and searches."
+  default_prompt: "Search Reddit or open the relevant subreddit."

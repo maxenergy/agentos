@@ -1,0 +1,4 @@
+interface:
+  display_name: "Xiaohongshu"
+  short_description: "Use OpenCLI for Xiaohongshu workflows."
+  default_prompt: "Use $xiaohongshu-site to search Xiaohongshu notes or inspect a note URL."

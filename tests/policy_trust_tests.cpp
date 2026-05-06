@@ -227,6 +227,10 @@ void TestPermissionModelNamespaceWildcard(const std::filesystem::path& workspace
     Expect(decision.reason == "path escapes the active workspace", "filesystem.* should trigger workspace boundary checks");
     Expect(agentos::PermissionModel::has_permission({"filesystem.*"}, agentos::PermissionNames::FilesystemWrite),
         "permission model should match namespace wildcard permissions");
+    Expect(agentos::PermissionModel::unknown_permissions({"agent.dispatch"}).empty(),
+        "agent.dispatch should be a known orchestration permission");
+    Expect(agentos::PermissionModel::has_permission({"agent.*"}, agentos::PermissionNames::AgentDispatch),
+        "agent.* should grant agent.dispatch");
 }
 
 void TestRoleCatalogGrantsUserPermissions(const std::filesystem::path& workspace) {

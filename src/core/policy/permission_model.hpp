@@ -14,6 +14,7 @@ inline constexpr std::string_view FilesystemWrite = "filesystem.write";
 inline constexpr std::string_view ProcessSpawn = "process.spawn";
 inline constexpr std::string_view NetworkAccess = "network.access";
 inline constexpr std::string_view AgentInvoke = "agent.invoke";
+inline constexpr std::string_view AgentDispatch = "agent.dispatch";
 inline constexpr std::string_view TaskSubmit = "task.submit";
 
 }  // namespace PermissionNames

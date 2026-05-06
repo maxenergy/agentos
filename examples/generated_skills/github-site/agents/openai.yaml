@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub"
+  short_description: "Open and inspect GitHub repositories, issues, and code search."
+  default_prompt: "Open GitHub for this repository, issue, user, or search query."

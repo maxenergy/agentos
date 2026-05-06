@@ -12,11 +12,11 @@ modules into deeper modules with better locality, leverage, and test surfaces.
 - `plan.md` unfinished items:
   - Anthropic public PKCE endpoints are a Provider OAuth Defaults watch item until stable customer flows exist.
   - More advanced model-driven complex task decomposition remains open.
-  - Plugin process-pool policy and richer runtime session administration remain open.
-  - Storage still lacks a real `StorageBackend` seam, broader cross-format migration, and full-fidelity audit/state recovery.
-  - `learn_skill` builtin is planned but not complete.
-  - REPL dispatch into `development_request` / `research_request` is deferred.
-  - Route-hint consumption is missing for REPL dispatch; `runtime/skill_routes.tsv` should not be the default direction unless route hints need a separate lifecycle.
+  - Plugin Session administration is now explicitly process-scoped; richer daemon-level administration remains out of scope until a durable need exists.
+  - The Runtime Store now has a TSV-backed `StorageBackend` seam; broader cross-format migration and full-fidelity Audit History recovery remain open.
+  - `learn_skill` now validates learned Capability Declarations before writing and reloads through the shared capability reload helper.
+  - REPL free-form development/research routing now dispatches through the normal routed task path.
+  - Route Hint consumption now comes from loaded Capability Declarations rather than `runtime/skill_routes.tsv`.
 - Architecture review opportunities:
   1. Deepen Agent Dispatch.
   2. Deepen Capability Contract Validation.
@@ -27,9 +27,9 @@ modules into deeper modules with better locality, leverage, and test surfaces.
 ## Priority Order
 
 1. Agent Dispatch: it touches agent orchestration, REPL routing, future model-driven decomposition, and V2/V1 adapter behavior.
-2. Capability Contract Validation: it is the shared test surface for builtin Skill input, Plugin output, learned CLI specs, permissions/risk metadata, and Route Hints.
-3. Plugin Execution Protocol: it builds on Capability Contract Validation and reduces protocol leakage before deeper process-pool policy.
-4. StorageBackend: it is explicitly required before any SQLite or broader cross-format migration.
+2. Capability Contract Validation: it is the shared test surface for builtin Skill input, Capability Output, learned CLI specs, permissions/risk metadata, and Route Hints.
+3. Plugin Execution Protocol: it builds on Capability Contract Validation and reduces protocol leakage before Plugin Session policy changes.
+4. StorageBackend: it is the implementation seam required before any SQLite or broader cross-format migration.
 5. Auth Login Flow: most infrastructure exists; remaining provider-specific work should be isolated behind login-mode modules.
 
 ## 1. Deepen Agent Dispatch
@@ -68,17 +68,17 @@ Its implementation owns:
 
 ### Work Slices
 
-- [ ] Extract a shared Agent dispatch module from the duplicated paths in
+- [x] Extract a shared Agent dispatch module from the duplicated paths in
   `AgentLoop::run_agent_task` and `SubagentManager::run_one`.
-- [ ] Move AgentInvocation construction into that module, with explicit inputs
+- [x] Move AgentInvocation construction into that module, with explicit inputs
   for top-level agent run vs. subagent role run.
-- [ ] Return a Dispatch Result that carries a step candidate plus structured
+- [x] Return a Dispatch Result that carries a step candidate plus structured
   agent output needed by AgentLoop, Subagent Orchestration, and decomposition.
-- [ ] Route `auto_decompose=true` planner dispatch through the same module
+- [x] Route `auto_decompose=true` planner dispatch through the same module
   instead of direct `planner->run_task(...)`.
-- [ ] Wire REPL free-form classification to dispatch `development_request` and
+- [x] Wire REPL free-form classification to dispatch `development_request` and
   `research_request` through the normal Skill/Agent execution path.
-- [ ] Replace the deferred `runtime/skill_routes.tsv` test with a manifest
+- [x] Replace the deferred `runtime/skill_routes.tsv` test with a manifest
   Route Hint test unless a separate route-hint lifecycle becomes necessary.
 
 ### Acceptance
@@ -130,19 +130,19 @@ output native JSON rules internal.
 
 ### Work Slices
 
-- [ ] Introduce a single validation result shape used by Skill input, Plugin
+- [x] Introduce a single validation result shape used by Skill input, Plugin
   output, and metadata validation.
-- [ ] Keep the existing public error strings initially, but move callers to
+- [x] Keep the existing public error strings initially, but move callers to
   the new interface.
-- [ ] Add validation for Capability Declaration Route Hints used by REPL
+- [x] Add validation for Capability Declaration Route Hints used by REPL
   dispatch.
-- [ ] Make `learn_skill` validate generated specs through the shared schema
-  module before writing them.
-- [ ] Complete `learn_skill` registration/reload through a shared capability
+- [x] Make `learn_skill` validate generated specs through the shared
+  Capability Contract facade before writing them.
+- [x] Complete `learn_skill` registration/reload through a shared capability
   reload module, not through REPL-specific code.
-- [ ] Keep runtime authorization in PolicyEngine; Capability Contract
+- [x] Keep runtime authorization in PolicyEngine; Capability Contract
   Validation only decides whether declarations are well-formed.
-- [ ] Add focused schema module tests for input coercion vs. native JSON output
+- [x] Add focused schema module tests for input coercion vs. native JSON output
   semantics.
 
 ### Acceptance
@@ -178,19 +178,19 @@ maps protocol output into Skill-facing Capability Output.
 
 ### Work Slices
 
-- [ ] Change `PluginRunResult` to carry a normalized structured output object
+- [x] Change `PluginRunResult` to carry a normalized structured output object
   or serialized object owned by the protocol module.
-- [ ] Move protocol-specific stdout / JSON-RPC result parsing out of
+- [x] Move protocol-specific stdout / JSON-RPC result parsing out of
   `PluginSkillInvoker`; keep only the mapping from protocol output to
   Capability Output there.
-- [ ] Separate manifest description from runtime process-pool policy so
+- [x] Separate manifest description from runtime process-pool policy so
   process-pool changes do not widen the Skill-facing interface.
-- [ ] Define process-scope vs. future daemon-scope Plugin Session
+- [x] Define process-scope vs. future daemon-scope Plugin Session
   administration in a small Plugin Host interface with explicit
   unsupported-scope diagnostics.
-- [ ] Keep Plugin Session lifecycle separate from agent workspace sessions until
+- [x] Keep Plugin Session lifecycle separate from agent workspace sessions until
   another capability has the same lifecycle semantics.
-- [ ] Add tests for protocol normalization once, then keep PluginSkillInvoker
+- [x] Add tests for protocol normalization once, then keep PluginSkillInvoker
   tests focused on SkillResult mapping.
 
 ### Acceptance
@@ -239,14 +239,14 @@ capabilities in ADR-STORAGE-001:
 
 ### Work Slices
 
-- [ ] Define the `StorageBackend` interface and a TSV adapter that wraps the
+- [x] Define the `StorageBackend` interface and a TSV adapter that wraps the
   existing helpers.
-- [ ] Move manifest-managed file diagnostics behind the backend interface.
-- [ ] Route export/import/verify/migrate/compact through the backend interface.
-- [ ] Add cross-process concurrency tests for the TSV adapter where feasible.
-- [ ] Add Audit History recovery tests that cover full-fidelity reconstruction
+- [x] Move manifest-managed file diagnostics behind the backend interface.
+- [x] Route export/import/verify/migrate/compact through the backend interface.
+- [x] Add cross-process concurrency tests for the TSV adapter where feasible.
+- [x] Add Audit History recovery tests that cover full-fidelity reconstruction
   gaps and document any intentionally lossy cases.
-- [ ] Treat Audit History reconstruction as a recovery fallback, not semantic
+- [x] Treat Audit History reconstruction as a recovery fallback, not semantic
   equivalence with the original append-only evidence.
 - [ ] Revisit SQLite only after the TSV adapter satisfies the interface and the
   trigger conditions in ADR-STORAGE-001 are observed.
@@ -297,16 +297,16 @@ Credential Store owns token backend selection and platform fallback behavior.
 
 ### Work Slices
 
-- [ ] Extract login-mode implementations from `StaticAuthProviderAdapter`.
-- [ ] Keep provider adapters focused on descriptors, defaults, and probes.
-- [ ] Keep Credential Store backend selection outside Auth Login Flow modules;
+- [x] Extract login-mode implementations from `StaticAuthProviderAdapter`.
+- [x] Keep provider adapters focused on descriptors, defaults, and probes.
+- [x] Keep Credential Store backend selection outside Auth Login Flow modules;
   login modes should call token storage through the existing store seam.
-- [ ] Add an Auth Profile selection model that works across API key,
+- [x] Add an Auth Profile selection model that works across API key,
   OAuth, CLI passthrough, and cloud ADC sessions.
 - [ ] Keep Anthropic PKCE as `deferred` until stable public endpoints exist;
   when they do, promote Provider OAuth Defaults from stub to builtin and add
   interoperability tests in the Browser OAuth module.
-- [ ] Add tests that exercise each login mode through fixture providers and
+- [x] Add tests that exercise each login mode through fixture providers and
   stores, not through provider-specific branches.
 
 ### Acceptance
@@ -315,7 +315,6 @@ Credential Store owns token backend selection and platform fallback behavior.
   generic login branch structure.
 - `auth oauth-defaults`, `auth oauth-config-validate --all`, and
   `auth login-interactive` keep machine-readable endpoint status.
-- Multi-account behavior is documented and covered by reload/status/default
 - Auth Profile behavior is documented and covered by reload/status/default
   profile tests.
 
@@ -325,34 +324,34 @@ Credential Store owns token backend selection and platform fallback behavior.
   reviews use consistent terms for Agent Dispatch, Capability Declaration,
   Capability Contract, Capability Output, Plugin Session, Runtime Store, Audit
   History, Auth Profile, Auth Login Flow, and Credential Store.
-- [ ] Keep `CONTEXT.md` updated when a plan term is accepted, rejected, or
+- [x] Keep `CONTEXT.md` updated when a plan term is accepted, rejected, or
   renamed during implementation.
-- [ ] Prefer `CONTEXT.md` terms in new module names, test names, and docs unless
+- [x] Prefer `CONTEXT.md` terms in new module names, test names, and docs unless
   an existing implementation convention requires a lower-level name.
-- [ ] Flag implementation-only terms such as `StorageBackend` and
+- [x] Flag implementation-only terms such as `StorageBackend` and
   `schema_validator` as seams, not domain language.
-- [ ] Keep `docs/ARCH_ALIGNMENT.md`, `README.md`, and `plan.md` synchronized
+- [x] Keep `docs/ARCH_ALIGNMENT.md`, `README.md`, and `plan.md` synchronized
   when any item here lands.
 - [ ] When rejecting a deepening candidate for a durable reason, record it as
   an ADR so future reviews do not re-suggest it.
 
-## Suggested First PR
+## Completed Goal Batch
 
-Start with Agent Dispatch because it unlocks several visible unfinished items,
-but keep the first PR focused on the seam rather than REPL behavior:
+The `docs/goals` execution batch completed the following architecture slices:
 
-1. Add the shared Agent dispatch module.
-2. Move AgentLoop agent target execution onto it.
-3. Move SubagentManager single-agent execution onto it.
+1. Add the shared Agent Dispatch module.
+2. Move AgentLoop agent target dispatch onto it.
+3. Move SubagentManager single-agent dispatch onto it.
 4. Route decomposition planner dispatch through it.
-5. Add focused dispatch tests.
+5. Wire REPL development/research dispatch through the normal routed task path.
+6. Replace the deferred route-hints direction with Capability Declaration Route Hint coverage.
+7. Validate learned Capability Declarations before `learn_skill` writes specs.
+8. Normalize Plugin protocol output before Skill-facing Capability Output mapping.
+9. Add the TSV-backed Runtime Store `StorageBackend` seam.
+10. Document intentionally lossy Audit History reconstruction.
+11. Extract Auth Login Flow modules and define Auth Profile selection.
+12. Clarify process-scoped Plugin Session admin and process-pool policy.
 
-This gives immediate locality around V2/V1 adapter behavior and makes later
+This gives immediate locality around V2/V1 adapter behavior and keeps later
 model-driven decomposition a caller of a stable dispatch interface rather than
 another special path.
-
-Follow-up PR:
-
-1. Wire REPL development/research dispatch through existing Skill routing.
-2. Replace the deferred route-hints test with Capability Declaration Route Hint
-   coverage.

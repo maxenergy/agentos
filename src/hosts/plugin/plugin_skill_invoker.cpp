@@ -1,7 +1,5 @@
 #include "hosts/plugin/plugin_host.hpp"
 
-#include "hosts/plugin/plugin_json_rpc.hpp"
-
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
@@ -23,21 +21,12 @@ std::optional<nlohmann::ordered_json> ParseObject(const std::string& json_text) 
 }
 
 nlohmann::ordered_json PluginOutputValue(const PluginSpec& spec, const PluginRunResult& run_result) {
+    (void)spec;
     if (!run_result.success) {
         return nullptr;
     }
 
-    if (spec.protocol == "json-rpc-v0") {
-        const auto result_object = JsonRpcResultObject(run_result.stdout_text);
-        if (result_object.has_value()) {
-            if (auto parsed = ParseObject(*result_object); parsed.has_value()) {
-                return *parsed;
-            }
-        }
-        return nullptr;
-    }
-
-    if (auto parsed = ParseObject(run_result.stdout_text); parsed.has_value()) {
+    if (auto parsed = ParseObject(run_result.structured_output_json); parsed.has_value()) {
         return *parsed;
     }
     return nullptr;

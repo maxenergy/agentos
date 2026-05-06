@@ -1,0 +1,4 @@
+interface:
+  display_name: "YouTube"
+  short_description: "Build YouTube search, channel, and video URLs."
+  default_prompt: "Search YouTube for this topic or open this video/channel."

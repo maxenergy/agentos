@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stack Overflow"
+  short_description: "Search Stack Overflow questions and tags."
+  default_prompt: "Search Stack Overflow for this programming question."

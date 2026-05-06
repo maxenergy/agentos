@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -65,6 +66,78 @@ bool EmitEvent(const AgentEventCallback& on_event, AgentEvent event) {
         return true;
     }
     return on_event(std::move(event));
+}
+
+// Cap registry listings so a runtime with hundreds of plugin skills
+// can't blow up the chat preamble.
+constexpr std::size_t kMaxListedQwen = 40;
+
+std::string FormatRegisteredSkillsForChat(const SkillRegistry* registry) {
+    if (registry == nullptr) return "  (skill registry unavailable)\n";
+    const auto skills = registry->list();
+    if (skills.empty()) return "  (none registered)\n";
+    std::ostringstream out;
+    const auto shown = std::min(skills.size(), kMaxListedQwen);
+    for (std::size_t i = 0; i < shown; ++i) {
+        const auto& m = skills[i];
+        out << "  " << m.name
+            << " [risk=" << (m.risk_level.empty() ? std::string("unknown") : m.risk_level)
+            << ", idempotent=" << (m.idempotent ? "true" : "false") << "]\n";
+    }
+    if (skills.size() > kMaxListedQwen) {
+        out << "  ... and " << (skills.size() - kMaxListedQwen) << " more\n";
+    }
+    return out.str();
+}
+
+std::string FormatRegisteredAgentsForChat(const AgentRegistry* registry) {
+    if (registry == nullptr) return "  (agent registry unavailable)\n";
+    const auto profiles = registry->list_profiles();
+    if (profiles.empty()) return "  (none registered)\n";
+    std::ostringstream out;
+    const auto shown = std::min(profiles.size(), kMaxListedQwen);
+    for (std::size_t i = 0; i < shown; ++i) {
+        const auto& p = profiles[i];
+        out << "  " << p.agent_name
+            << " [cost=" << (p.cost_tier.empty() ? std::string("unknown") : p.cost_tier)
+            << ", streaming=" << (p.supports_streaming ? "true" : "false") << "]\n";
+    }
+    if (profiles.size() > kMaxListedQwen) {
+        out << "  ... and " << (profiles.size() - kMaxListedQwen) << " more\n";
+    }
+    return out.str();
+}
+
+// Builds the AgentOS-grounded chat preamble used by both BuildPrompt and
+// BuildPromptV2. The same wording appears in MainAgent — keep them in
+// sync if you reword either.
+std::string BuildAgentOsChatPrompt(const std::string& objective,
+                                   const SkillRegistry* skill_registry,
+                                   const AgentRegistry* agent_registry) {
+    const auto skills_text = FormatRegisteredSkillsForChat(skill_registry);
+    const auto agents_text = FormatRegisteredAgentsForChat(agent_registry);
+    const auto skill_count = skill_registry ? skill_registry->list().size() : 0;
+    const auto agent_count = agent_registry ? agent_registry->list_profiles().size() : 0;
+    std::ostringstream out;
+    out << "You are the AgentOS local runtime assistant. You are running inside a C++ "
+           "AgentOS process on the user's own machine — you are NOT a cloud service, "
+           "you do not have your own IP, and you should not claim to be ChatGPT, "
+           "Qwen-as-cloud-product, or any vendor's hosted chatbot. The user is "
+           "interacting with you via an interactive REPL that dispatches free-form "
+           "text to you.\n\n"
+           "When users ask about your capabilities or skills, refer to the registered "
+           "AgentOS skills and agents listed below — these are what you can actually "
+           "invoke through this runtime. Do not invent skills you don't see in the "
+           "list.\n\n"
+           "When users ask about the host machine (IP, hostname, files, network), "
+           "explain that you can answer such questions by invoking the appropriate "
+           "registered skill (e.g. `host_info` if available), not by guessing.\n\n"
+        << "Registered skills (" << skill_count << "):\n"
+        << skills_text
+        << "\nRegistered agents (" << agent_count << "):\n"
+        << agents_text
+        << "\nUser: " << objective;
+    return out.str();
 }
 
 // ---------------------------------------------------------------------------
@@ -423,11 +496,15 @@ QwenAgent::QwenAgent(
     const CliHost& cli_host,
     const CredentialBroker& credential_broker,
     const AuthProfileStore& profile_store,
-    std::filesystem::path workspace_root)
+    std::filesystem::path workspace_root,
+    const SkillRegistry* skill_registry,
+    const AgentRegistry* agent_registry)
     : cli_host_(cli_host),
       credential_broker_(credential_broker),
       profile_store_(profile_store),
-      workspace_root_(NormalizeWorkspaceRoot(std::move(workspace_root))) {}
+      workspace_root_(NormalizeWorkspaceRoot(std::move(workspace_root))),
+      skill_registry_(skill_registry),
+      agent_registry_(agent_registry) {}
 
 AgentProfile QwenAgent::profile() const {
     return {
@@ -475,13 +552,18 @@ void QwenAgent::close_session(const std::string& session_id) {
 AgentResult QwenAgent::run_task(const AgentTask& task) {
     const auto started_at = std::chrono::steady_clock::now();
 
-    const auto workspace_path = NormalizeWorkspaceRoot(task.workspace_path.empty() ? workspace_root_ : task.workspace_path);
-    if (!IsPathInsideWorkspace(workspace_root_, workspace_path)) {
+    const auto requested_workspace = task.workspace_path.empty()
+        ? workspace_root_
+        : std::filesystem::path(task.workspace_path);
+    const auto workspace_path = NormalizeWorkspaceRoot(requested_workspace);
+    std::error_code workspace_ec;
+    if (!std::filesystem::exists(workspace_path, workspace_ec) ||
+        !std::filesystem::is_directory(workspace_path, workspace_ec)) {
         return {
             .success = false,
             .duration_ms = ElapsedMs(started_at),
-            .error_code = "WorkspaceEscapeDenied",
-            .error_message = "agent workspace must stay inside the configured root",
+            .error_code = "InvalidWorkspace",
+            .error_message = "agent workspace must be an existing directory",
         };
     }
 
@@ -674,7 +756,9 @@ AgentResult QwenAgent::invoke(const AgentInvocation& invocation,
     // the orchestrator gets one consistent error path.
     const auto workspace_path = NormalizeWorkspaceRoot(
         invocation.workspace_path.empty() ? workspace_root_ : invocation.workspace_path);
-    if (!IsPathInsideWorkspace(workspace_root_, workspace_path)) {
+    std::error_code workspace_ec;
+    if (!std::filesystem::exists(workspace_path, workspace_ec) ||
+        !std::filesystem::is_directory(workspace_path, workspace_ec)) {
         return fallback_to_sync();
     }
     if (!CommandExists("curl") && !CommandExists("curl.exe")) {
@@ -941,12 +1025,12 @@ std::string QwenAgent::model_name_v2(const AgentInvocation& invocation) {
     return kDefaultQwenModel;
 }
 
-std::string QwenAgent::BuildPrompt(const AgentTask& task) {
+std::string QwenAgent::BuildPrompt(const AgentTask& task) const {
     if (StartsWithCaseInsensitive(task.objective, "return exactly:")) {
         return task.objective;
     }
     if (task.task_type == "chat") {
-        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + task.objective;
+        return BuildAgentOsChatPrompt(task.objective, skill_registry_, agent_registry_);
     }
 
     std::ostringstream prompt;
@@ -969,13 +1053,13 @@ std::string QwenAgent::BuildPrompt(const AgentTask& task) {
     return prompt.str();
 }
 
-std::string QwenAgent::BuildPromptV2(const AgentInvocation& invocation) {
+std::string QwenAgent::BuildPromptV2(const AgentInvocation& invocation) const {
     if (StartsWithCaseInsensitive(invocation.objective, "return exactly:")) {
         return invocation.objective;
     }
     if (const auto it = invocation.context.find("task_type");
         it != invocation.context.end() && it->second == "chat") {
-        return "You are a helpful chat assistant. Reply naturally and concisely.\n\nUser: " + invocation.objective;
+        return BuildAgentOsChatPrompt(invocation.objective, skill_registry_, agent_registry_);
     }
     std::ostringstream prompt;
     prompt
@@ -993,7 +1077,7 @@ std::string QwenAgent::BuildPromptV2(const AgentInvocation& invocation) {
     return prompt.str();
 }
 
-std::string QwenAgent::BuildRequestBody(const AgentTask& task) {
+std::string QwenAgent::BuildRequestBody(const AgentTask& task) const {
     nlohmann::ordered_json message;
     message["role"] = "user";
     message["content"] = BuildPrompt(task);
@@ -1004,7 +1088,7 @@ std::string QwenAgent::BuildRequestBody(const AgentTask& task) {
     return body.dump();
 }
 
-std::string QwenAgent::BuildRequestBodyV2(const AgentInvocation& invocation, bool stream) {
+std::string QwenAgent::BuildRequestBodyV2(const AgentInvocation& invocation, bool stream) const {
     nlohmann::ordered_json message;
     message["role"] = "user";
     message["content"] = BuildPromptV2(invocation);

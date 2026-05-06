@@ -14,7 +14,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <condition_variable>
+#include <cwchar>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -881,6 +883,72 @@ private:
 #endif
 };
 
+#ifndef _WIN32
+bool IsUtf8ContinuationByte(const unsigned char byte) {
+    return (byte & 0xC0) == 0x80;
+}
+
+int Utf8ExpectedContinuationCount(const unsigned char byte) {
+    if (byte >= 0xC2 && byte <= 0xDF) {
+        return 1;
+    }
+    if (byte >= 0xE0 && byte <= 0xEF) {
+        return 2;
+    }
+    if (byte >= 0xF0 && byte <= 0xF4) {
+        return 3;
+    }
+    return 0;
+}
+
+std::size_t Utf8PreviousCodepointStart(const std::string& value, std::size_t cursor) {
+    cursor = std::min(cursor, value.size());
+    if (cursor == 0) {
+        return 0;
+    }
+    --cursor;
+    while (cursor > 0 && IsUtf8ContinuationByte(static_cast<unsigned char>(value[cursor]))) {
+        --cursor;
+    }
+    return cursor;
+}
+
+std::size_t Utf8NextCodepointEnd(const std::string& value, std::size_t cursor) {
+    cursor = std::min(cursor, value.size());
+    if (cursor >= value.size()) {
+        return value.size();
+    }
+    ++cursor;
+    while (cursor < value.size() && IsUtf8ContinuationByte(static_cast<unsigned char>(value[cursor]))) {
+        ++cursor;
+    }
+    return cursor;
+}
+
+std::size_t DisplayColumns(const std::string& value) {
+    std::mbstate_t state{};
+    std::size_t columns = 0;
+    const char* current = value.data();
+    std::size_t remaining = value.size();
+    while (remaining > 0) {
+        wchar_t wide = 0;
+        const std::size_t consumed = std::mbrtowc(&wide, current, remaining, &state);
+        if (consumed == static_cast<std::size_t>(-1) || consumed == static_cast<std::size_t>(-2) || consumed == 0) {
+            ++columns;
+            ++current;
+            --remaining;
+            state = std::mbstate_t{};
+            continue;
+        }
+        const int width = ::wcwidth(wide);
+        columns += width > 0 ? static_cast<std::size_t>(width) : 0;
+        current += consumed;
+        remaining -= consumed;
+    }
+    return columns;
+}
+#endif
+
 void PrintBanner(const std::filesystem::path& workspace) {
     std::cout
         << "\n"
@@ -1484,7 +1552,11 @@ void RedrawInputLine(const std::string& prompt,
                      const std::string& line,
                      const std::size_t cursor) {
     std::cout << "\r" << prompt << line << "\x1b[K";
+#ifdef _WIN32
     const auto right = line.size() - std::min(cursor, line.size());
+#else
+    const auto right = DisplayColumns(line.substr(std::min(cursor, line.size())));
+#endif
     if (right > 0) {
         std::cout << "\x1b[" << right << "D";
     }
@@ -1621,6 +1693,7 @@ bool ReadInteractiveLine(const std::string& prompt,
         }
     }
 #else
+    std::setlocale(LC_CTYPE, "");
     if (::isatty(STDIN_FILENO) != 1) {
         std::cout << prompt << std::flush;
         return static_cast<bool>(std::getline(std::cin, line));
@@ -1636,6 +1709,7 @@ bool ReadInteractiveLine(const std::string& prompt,
     std::string draft;
     std::size_t cursor = 0;
     std::size_t history_index = history.size();
+    int pending_utf8_continuations = 0;
     std::cout << prompt << std::flush;
 
     while (true) {
@@ -1663,8 +1737,12 @@ bool ReadInteractiveLine(const std::string& prompt,
         }
         if (ch == 127 || ch == 8) {
             if (cursor > 0) {
-                line.erase(cursor - 1, 1);
-                --cursor;
+                const auto erase_start = pending_utf8_continuations > 0
+                    ? cursor - 1
+                    : Utf8PreviousCodepointStart(line, cursor);
+                line.erase(erase_start, cursor - erase_start);
+                cursor = erase_start;
+                pending_utf8_continuations = 0;
                 RedrawInputLine(prompt, line, cursor);
             }
             continue;
@@ -1700,13 +1778,13 @@ bool ReadInteractiveLine(const std::string& prompt,
                 }
             } else if (seq2 == 'C') {
                 if (cursor < line.size()) {
-                    ++cursor;
-                    std::cout << "\x1b[C" << std::flush;
+                    cursor = Utf8NextCodepointEnd(line, cursor);
+                    RedrawInputLine(prompt, line, cursor);
                 }
             } else if (seq2 == 'D') {
                 if (cursor > 0) {
-                    --cursor;
-                    std::cout << "\x1b[D" << std::flush;
+                    cursor = Utf8PreviousCodepointStart(line, cursor);
+                    RedrawInputLine(prompt, line, cursor);
                 }
             } else if (seq2 == 'H') {
                 cursor = 0;
@@ -1718,16 +1796,26 @@ bool ReadInteractiveLine(const std::string& prompt,
                 char terminator = 0;
                 (void)::read(STDIN_FILENO, &terminator, 1);
                 if (seq2 == '3' && terminator == '~' && cursor < line.size()) {
-                    line.erase(cursor, 1);
+                    const auto erase_end = Utf8NextCodepointEnd(line, cursor);
+                    line.erase(cursor, erase_end - cursor);
+                    pending_utf8_continuations = 0;
                     RedrawInputLine(prompt, line, cursor);
                 }
             }
             continue;
         }
-        if (ch >= 32) {
+        const auto byte = static_cast<unsigned char>(ch);
+        if (byte >= 32) {
             line.insert(cursor, 1, ch);
             ++cursor;
-            RedrawInputLine(prompt, line, cursor);
+            if (pending_utf8_continuations > 0 && IsUtf8ContinuationByte(byte)) {
+                --pending_utf8_continuations;
+            } else {
+                pending_utf8_continuations = Utf8ExpectedContinuationCount(byte);
+            }
+            if (pending_utf8_continuations == 0) {
+                RedrawInputLine(prompt, line, cursor);
+            }
         }
     }
 #endif

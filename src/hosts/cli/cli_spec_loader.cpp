@@ -23,7 +23,6 @@ bool IsSupportedParseMode(const std::string& parse_mode) {
     return parse_mode == "text" || parse_mode == "json" || parse_mode == "json_lines";
 }
 
-
 struct CliSpecParseResult {
     std::optional<CliSpec> spec;
     std::string error_message;
@@ -200,7 +199,7 @@ CliSpecLoadResult LoadCliSpecsWithDiagnostics(const std::filesystem::path& spec_
     }
 
     std::vector<std::filesystem::path> files;
-    for (const auto& entry : std::filesystem::directory_iterator(spec_dir)) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(spec_dir)) {
         if (entry.is_regular_file() && entry.path().extension() == ".tsv") {
             files.push_back(entry.path());
         }

@@ -1,6 +1,6 @@
 # G017 Domain Docs Maintenance
 
-Status: ready
+Status: done
 
 ## Objective
 
@@ -57,3 +57,12 @@ Out of scope:
 git diff --check
 ```
 
+Completed verification on 2026-05-06:
+
+```bash
+rg -n 'agent execution|plugin output as caller-facing|successful plugin stdout|structured `plugin_output`|Multi-account|process-pool hardening|runtime session admin UX 待完善|deeper process-pool policy|Plugin Host deeper process-pool|Storage still lacks|learn_skill.*planned|REPL dispatch.*deferred|Route-hint consumption is missing' CONTEXT.md improve-plan.md docs/ARCH_ALIGNMENT.md docs/ARCHITECTURE.md docs/ROADMAP.md README.md docs/goals
+git diff --check -- CONTEXT.md improve-plan.md docs/ARCH_ALIGNMENT.md docs/ARCHITECTURE.md docs/ROADMAP.md README.md docs/goals/G017-domain-docs-maintenance.md docs/goals/backlog.md docs/goals/decision-log.md
+```
+
+The terminology scan only reports intentional avoid-list examples in `CONTEXT.md` and this goal packet.
+Focused `git diff --check` was used because repo-wide diff-check still reports pre-existing unrelated line-ending and whitespace diagnostics outside this goal's touched files.

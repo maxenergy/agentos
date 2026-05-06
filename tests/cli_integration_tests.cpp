@@ -7,6 +7,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
+#ifndef _WIN32
+#include <cerrno>
+#include <chrono>
+#include <fcntl.h>
+#include <pty.h>
+#include <thread>
+#include <unistd.h>
+#endif
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 namespace {
 
@@ -27,6 +38,7 @@ std::filesystem::path FreshWorkspace(const std::string& name) {
 }
 
 std::string QuoteShellArg(const std::string& value) {
+#ifdef _WIN32
     if (value.find_first_of(" \t\n\"&<>|^") == std::string::npos) {
         return value;
     }
@@ -49,6 +61,36 @@ std::string QuoteShellArg(const std::string& value) {
     quoted.append(backslashes * 2, '\\');
     quoted.push_back('"');
     return quoted;
+#else
+    if (value.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+-=./:") == std::string::npos) {
+        return value;
+    }
+
+    std::string quoted = "'";
+    for (const char ch : value) {
+        if (ch == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back('\'');
+    return quoted;
+#endif
+}
+
+int DecodeProcessStatus(const int status) {
+#ifdef _WIN32
+    return status;
+#else
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return status;
+#endif
 }
 
 struct CommandResult {
@@ -89,7 +131,7 @@ CommandResult RunAgentos(const std::filesystem::path& workspace, const std::vect
 #else
     const int status = pclose(pipe);
 #endif
-    return {.exit_code = status, .output = std::move(output)};
+    return {.exit_code = DecodeProcessStatus(status), .output = std::move(output)};
 }
 
 // Spawns the built agentos binary with stdin redirected from a workspace-local
@@ -139,8 +181,96 @@ CommandResult RunAgentosWithStdin(
 #else
     const int status = pclose(pipe);
 #endif
-    return {.exit_code = status, .output = std::move(output)};
+    return {.exit_code = DecodeProcessStatus(status), .output = std::move(output)};
 }
+
+#ifndef _WIN32
+CommandResult RunAgentosInPtyWithInput(
+    const std::filesystem::path& workspace,
+    const std::vector<std::string>& args,
+    const std::string& stdin_text) {
+    std::vector<std::string> input_chunks;
+    std::string current_chunk;
+    for (const char ch : stdin_text) {
+        current_chunk.push_back(ch);
+        if (ch == '\n') {
+            input_chunks.push_back(std::move(current_chunk));
+            current_chunk.clear();
+        }
+    }
+    if (!current_chunk.empty()) {
+        input_chunks.push_back(std::move(current_chunk));
+    }
+
+    int master_fd = -1;
+    const pid_t pid = forkpty(&master_fd, nullptr, nullptr, nullptr);
+    if (pid < 0) {
+        return {.exit_code = -1, .output = "forkpty failed"};
+    }
+    if (pid == 0) {
+        std::filesystem::current_path(workspace);
+        std::vector<std::string> owned_args;
+        owned_args.emplace_back(AGENTOS_CLI_TEST_EXE);
+        owned_args.insert(owned_args.end(), args.begin(), args.end());
+        std::vector<char*> argv;
+        argv.reserve(owned_args.size() + 1);
+        for (auto& arg : owned_args) {
+            argv.push_back(arg.data());
+        }
+        argv.push_back(nullptr);
+        execv(AGENTOS_CLI_TEST_EXE, argv.data());
+        _exit(127);
+    }
+
+    const int flags = fcntl(master_fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    std::string output;
+    std::size_t next_input_chunk = 0;
+    std::size_t prompt_search_start = 0;
+    int status = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    while (std::chrono::steady_clock::now() < deadline) {
+        char buffer[4096];
+        while (true) {
+            const ssize_t count = read(master_fd, buffer, sizeof(buffer));
+            if (count > 0) {
+                output.append(buffer, static_cast<std::size_t>(count));
+                continue;
+            }
+            if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                break;
+            }
+            break;
+        }
+        while (next_input_chunk < input_chunks.size()) {
+            const auto prompt_pos = output.find("agentos> ", prompt_search_start);
+            if (prompt_pos == std::string::npos) {
+                break;
+            }
+            prompt_search_start = prompt_pos + 9;
+            const auto& chunk = input_chunks[next_input_chunk++];
+            (void)write(master_fd, chunk.data(), chunk.size());
+        }
+        const pid_t done = waitpid(pid, &status, WNOHANG);
+        if (done == pid) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    close(master_fd);
+    if (next_input_chunk < input_chunks.size()) {
+        kill(pid, SIGTERM);
+    }
+    if (waitpid(pid, &status, WNOHANG) == 0) {
+        kill(pid, SIGTERM);
+        waitpid(pid, &status, 0);
+    }
+    return {.exit_code = DecodeProcessStatus(status), .output = std::move(output)};
+}
+#endif
 
 std::string ReadTextFile(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -427,6 +557,10 @@ void TestPluginsCommand() {
         "plugins lifecycle should include the per-plugin pool_size manifest field");
     Expect(persistent_lifecycle.output.find("effective_pool_size=3") != std::string::npos,
         "plugins lifecycle should report the pool size after the global persistent-session cap");
+    Expect(persistent_lifecycle.output.find("pool_policy=per_plugin_workspace_binary_lru") != std::string::npos,
+        "plugins lifecycle should report the process-pool eviction policy");
+    Expect(persistent_lifecycle.output.find("scope=process persistence=none") != std::string::npos,
+        "plugins lifecycle summary should state that session admin is process scoped");
 
     const auto persistent_inspect = RunAgentos(lifecycle_workspace, {"plugins", "inspect", "name=persistent_plugin"});
     Expect(persistent_inspect.exit_code == 0, "plugins inspect should succeed for persistent plugin specs");
@@ -434,6 +568,8 @@ void TestPluginsCommand() {
         "plugins inspect should report the workspace persistent-session cap");
     Expect(persistent_inspect.output.find("effective_pool_size=3") != std::string::npos,
         "plugins inspect should report the capped effective persistent pool size");
+    Expect(persistent_inspect.output.find("pool_policy=per_plugin_workspace_binary_lru") != std::string::npos,
+        "plugins inspect should report the process-pool eviction policy");
     Expect(persistent_inspect.output.find("isolation_profile=workspace-paths+process-resource-limits") != std::string::npos,
         "plugins inspect should report combined workspace/resource-limit isolation");
     Expect(persistent_inspect.output.find("resource_limits_configured=true") != std::string::npos,
@@ -1538,8 +1674,10 @@ void TestAuthCommands() {
     Expect(credential_store.output.find("backend=windows-credential-manager") != std::string::npos,
         "auth credential-store should report Windows Credential Manager backend on Windows");
 #else
-    Expect(credential_store.output.find("backend=env-ref-only") != std::string::npos,
-        "auth credential-store should report env-ref-only backend");
+    Expect(
+        credential_store.output.find("backend=linux-secret-service") != std::string::npos ||
+            credential_store.output.find("backend=env-ref-only") != std::string::npos,
+        "auth credential-store should report a supported Linux credential backend");
 #endif
 
     const auto oauth_defaults = RunAgentos(workspace, {"auth", "oauth-defaults"});
@@ -2031,6 +2169,23 @@ void TestInteractiveFreeFormDispatch() {
         Expect(result.output.find("main-agent is not configured") != std::string::npos,
             "interactive chat fallback should preserve the existing main-agent setup hint");
     }
+
+#ifndef _WIN32
+    {
+        const auto workspace = FreshWorkspace("interactive_utf8_pty_dispatch");
+        SetEnvForTest("PATH", old_path);
+
+        const auto result = RunAgentosInPtyWithInput(
+            workspace,
+            {"interactive"},
+            "你好\nexit\n");
+        Expect(result.exit_code == 0, "interactive UTF-8 pty dispatch should exit cleanly");
+        Expect(result.output.find("你好") != std::string::npos,
+            "interactive raw terminal input should preserve UTF-8 text");
+        Expect(result.output.find("(route: chat_agent") != std::string::npos,
+            "interactive UTF-8 free-form text should be routed instead of dropped as an empty line");
+    }
+#endif
 
     SetEnvForTest("PATH", old_path);
 }

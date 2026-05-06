@@ -1,6 +1,6 @@
 # G007 Learned Capability Declaration
 
-Status: blocked
+Status: done
 Depends on: G005
 
 ## Objective
@@ -56,3 +56,10 @@ ctest --test-dir build -R "agentos_learn_skill_tests|agentos_cli_integration_tes
 git diff --check
 ```
 
+Completed verification:
+
+- `cmake --build build-codex-g014 --target agentos_learn_skill_tests agentos_cli_integration_tests`
+- `ctest --test-dir build-codex-g014 -R "agentos_learn_skill_tests|agentos_cli_integration_tests" --output-on-failure`
+- `git diff --check -- src/cli/skill_reload.cpp src/skills/builtin/learn_skill.cpp tests/learn_skill_tests.cpp README.md docs/goals/G007-learn-skill-capability-declaration.md docs/goals/backlog.md docs/goals/decision-log.md`
+
+Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so a focused diff check was used for this packet.
