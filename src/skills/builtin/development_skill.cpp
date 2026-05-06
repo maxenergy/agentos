@@ -1,6 +1,7 @@
 #include "skills/builtin/development_skill.hpp"
 
 #include "core/audit/audit_logger.hpp"
+#include "core/execution/task_wait_policy.hpp"
 #include "core/loop/agent_loop.hpp"
 #include "core/registry/agent_registry.hpp"
 #include "utils/signal_cancellation.hpp"
@@ -273,6 +274,18 @@ void WriteAgentTaskStatus(const std::filesystem::path& path,
     json["objective"] = task.objective;
     json["workspace"] = task.workspace_path.string();
     json["events_file"] = events_file;
+    if (const auto it = task.inputs.find("wait_policy"); it != task.inputs.end()) {
+        json["wait_policy"] = it->second;
+    }
+    if (const auto it = task.inputs.find("idle_timeout_ms"); it != task.inputs.end()) {
+        json["idle_timeout_ms"] = it->second;
+    }
+    if (const auto it = task.inputs.find("soft_deadline_ms"); it != task.inputs.end()) {
+        json["soft_deadline_ms"] = it->second;
+    }
+    if (const auto it = task.inputs.find("hard_deadline_ms"); it != task.inputs.end()) {
+        json["hard_deadline_ms"] = it->second;
+    }
     if (elapsed_ms >= 0) {
         json["elapsed_ms"] = elapsed_ms;
     }
@@ -691,6 +704,7 @@ SkillResult DevelopmentSkill::execute(const SkillCall& call) {
     const auto aggregate_acceptance_file = task_dir / "acceptance.json";
     const auto contract = BuildTaskContract(line);
     const int max_attempts = ResolveMaxDevelopmentAttempts();
+    const auto wait_policy = ResolveTaskWaitPolicy(TaskWaitPolicyKind::development);
     std::vector<DevelopmentAttempt> attempts;
     std::string resume_session_id;
     std::string next_objective = line;
@@ -710,7 +724,7 @@ SkillResult DevelopmentSkill::execute(const SkillCall& call) {
             .workspace_path = workspace,
         };
         task.preferred_target = target;
-        task.timeout_ms = 600000;
+        ApplyTaskWaitPolicy(task, wait_policy);
         task.inputs["allow_writes"] = "true";
         task.inputs["interactive_intent"] = "development";
         task.inputs["original_request"] = line;
@@ -754,11 +768,15 @@ SkillResult DevelopmentSkill::execute(const SkillCall& call) {
             return loop_.run(task, task_cancel, on_event);
         });
         int heartbeat_count = 0;
-        while (attempt_future.wait_for(std::chrono::seconds(15)) != std::future_status::ready) {
+        bool reported_soft_deadline = false;
+        while (attempt_future.wait_for(std::chrono::milliseconds(wait_policy.heartbeat_interval_ms)) !=
+               std::future_status::ready) {
             ++heartbeat_count;
             const auto elapsed_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - attempt_started_at).count());
-            WriteAgentTaskStatus(attempt.status_file, task, target, "running",
+            const bool past_soft_deadline = elapsed_ms >= wait_policy.soft_deadline_ms;
+            WriteAgentTaskStatus(attempt.status_file, task, target,
+                                 past_soft_deadline ? "running_soft_deadline" : "running",
                                  attempt.events_file.string(), nullptr,
                                  elapsed_ms, heartbeat_count);
             if (interactive) {
@@ -766,6 +784,10 @@ SkillResult DevelopmentSkill::execute(const SkillCall& call) {
                           << " still running on " << target
                           << ", elapsed " << (elapsed_ms / 1000)
                           << "s; status: " << attempt.status_file.string() << ")\n";
+                if (past_soft_deadline && !reported_soft_deadline) {
+                    std::cout << "(soft deadline reached; continuing in background while events/status remain available)\n";
+                    reported_soft_deadline = true;
+                }
             }
         }
         attempt.result = attempt_future.get();

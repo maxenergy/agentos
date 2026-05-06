@@ -51,10 +51,18 @@ enum class InteractiveRouteKind {
 
 std::string RouteKindName(InteractiveRouteKind kind);
 
+enum class InteractiveExecutionMode {
+    sync,
+    async_job,
+};
+
+std::string ExecutionModeName(InteractiveExecutionMode mode);
+
 struct RouteDecisionExplanation {
     std::string task_id;
     std::string user_request;
     InteractiveRouteKind route = InteractiveRouteKind::chat_agent;
+    InteractiveExecutionMode execution_mode = InteractiveExecutionMode::sync;
     std::string selected_target;
     int score = 0;
     std::vector<std::string> reasons;

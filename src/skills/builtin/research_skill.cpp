@@ -1,6 +1,7 @@
 #include "skills/builtin/research_skill.hpp"
 
 #include "core/audit/audit_logger.hpp"
+#include "core/execution/task_wait_policy.hpp"
 #include "core/loop/agent_loop.hpp"
 #include "core/registry/agent_registry.hpp"
 #include "utils/signal_cancellation.hpp"
@@ -118,6 +119,18 @@ void WriteAgentTaskStatus(const std::filesystem::path& path,
     json["objective"] = task.objective;
     json["workspace"] = task.workspace_path.string();
     json["events_file"] = events_file;
+    if (const auto it = task.inputs.find("wait_policy"); it != task.inputs.end()) {
+        json["wait_policy"] = it->second;
+    }
+    if (const auto it = task.inputs.find("idle_timeout_ms"); it != task.inputs.end()) {
+        json["idle_timeout_ms"] = it->second;
+    }
+    if (const auto it = task.inputs.find("soft_deadline_ms"); it != task.inputs.end()) {
+        json["soft_deadline_ms"] = it->second;
+    }
+    if (const auto it = task.inputs.find("hard_deadline_ms"); it != task.inputs.end()) {
+        json["hard_deadline_ms"] = it->second;
+    }
     if (result != nullptr) {
         json["success"] = result->success;
         json["duration_ms"] = result->duration_ms;
@@ -211,9 +224,9 @@ SkillResult ResearchSkill::execute(const SkillCall& call) {
     };
     task.preferred_target = target;
     task.allow_network = true;
-    task.timeout_ms = 600000;
     task.inputs["research_intent"] = "internet_research";
     task.inputs["allow_writes"] = "false";
+    ApplyTaskWaitPolicy(task, ResolveTaskWaitPolicy(TaskWaitPolicyKind::research));
     if (!runtime_guide_.empty()) {
         task.inputs["runtime_usage_guide"] = runtime_guide_;
     }

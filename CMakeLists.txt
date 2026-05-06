@@ -67,7 +67,9 @@ add_library(agentos_core
     src/utils/spec_parsing.cpp
     src/core/registry/skill_registry.cpp
     src/core/registry/agent_registry.cpp
+    src/core/execution/agent_event_runtime_store.cpp
     src/core/execution/execution_cache.cpp
+    src/core/execution/task_wait_policy.cpp
     src/core/execution/task_lifecycle.cpp
     src/core/policy/approval_store.cpp
     src/core/policy/permission_model.cpp
@@ -189,6 +191,10 @@ add_executable(agentos_agent_dispatch_tests tests/agent_dispatch_tests.cpp)
 target_link_libraries(agentos_agent_dispatch_tests PRIVATE agentos_core)
 add_test(NAME agentos_agent_dispatch_tests COMMAND agentos_agent_dispatch_tests)
 
+add_executable(agentos_task_wait_policy_tests tests/task_wait_policy_tests.cpp)
+target_link_libraries(agentos_task_wait_policy_tests PRIVATE agentos_core)
+add_test(NAME agentos_task_wait_policy_tests COMMAND agentos_task_wait_policy_tests)
+
 add_executable(agentos_policy_trust_tests tests/policy_trust_tests.cpp)
 target_link_libraries(agentos_policy_trust_tests PRIVATE agentos_core)
 add_test(NAME agentos_policy_trust_tests COMMAND agentos_policy_trust_tests)
@@ -245,6 +251,7 @@ if(MSVC)
     target_compile_options(agentos_auth_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_agent_provider_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_agent_dispatch_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_task_wait_policy_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_policy_trust_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_scheduler_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_workflow_router_tests PRIVATE /W4 /permissive- /EHsc)
@@ -265,6 +272,7 @@ else()
     target_compile_options(agentos_auth_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_agent_provider_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_agent_dispatch_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_task_wait_policy_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_policy_trust_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_scheduler_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_workflow_router_tests PRIVATE -Wall -Wextra -Wpedantic)

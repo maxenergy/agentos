@@ -347,6 +347,24 @@ void WriteCurlTokenFixture(const std::filesystem::path& bin_dir) {
 #endif
 }
 
+#ifndef _WIN32
+void WriteSleepingCodexFixture(const std::filesystem::path& bin_dir) {
+    std::filesystem::create_directories(bin_dir);
+    const auto fixture_path = bin_dir / "codex";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "sleep 1\n"
+        << "printf '%s\\n' '{\"ok\":false}'\n"
+        << "exit 1\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+}
+#endif
+
 void TestAgentsCommand() {
     const auto workspace = FreshWorkspace("agents");
     const auto result = RunAgentos(workspace, {"agents"});
@@ -2122,6 +2140,10 @@ void TestInteractiveFreeFormDispatch() {
         Expect(result.exit_code == 0, "interactive development dispatch should exit cleanly");
         Expect(result.output.find("(route: development_agent -> development_request") != std::string::npos,
             "interactive development free-form text should be classified as a development route");
+        Expect(result.output.find("mode=async_job") != std::string::npos,
+            "interactive development route should declare async job execution mode");
+        Expect(result.output.find("(background development job started: dev-") != std::string::npos,
+            "interactive development dispatch should enqueue a background job");
         Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
             "interactive development dispatch should invoke the registered development_request skill");
         const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
@@ -2145,6 +2167,12 @@ void TestInteractiveFreeFormDispatch() {
         Expect(result.exit_code == 0, "interactive research dispatch should exit cleanly");
         Expect(result.output.find("(route: research_agent -> research_request") != std::string::npos,
             "interactive research free-form text should be classified as a research route");
+        Expect(result.output.find("mode=async_job") != std::string::npos,
+            "interactive research route should declare async job execution mode");
+        Expect(result.output.find("(background research job started: research-") != std::string::npos,
+            "interactive research dispatch should enqueue a background job");
+        Expect(result.output.find("Use `jobs` to inspect progress") != std::string::npos,
+            "interactive research dispatch should return a job inspection hint");
         Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
             "interactive research dispatch should invoke the registered research_request skill");
         const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
@@ -2166,11 +2194,32 @@ void TestInteractiveFreeFormDispatch() {
         Expect(result.exit_code == 0, "interactive chat fallback should exit cleanly");
         Expect(result.output.find("(route: chat_agent") != std::string::npos,
             "interactive non-classified free-form text should still fall through to chat");
+        Expect(result.output.find("mode=sync") != std::string::npos,
+            "interactive chat route should declare sync execution mode");
         Expect(result.output.find("main-agent is not configured") != std::string::npos,
             "interactive chat fallback should preserve the existing main-agent setup hint");
     }
 
 #ifndef _WIN32
+    {
+        const auto workspace = FreshWorkspace("interactive_exit_running_job");
+        const auto bin_dir = workspace / "bin";
+        WriteSleepingCodexFixture(bin_dir);
+        SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+        SetEnvForTest("AGENTOS_DEV_MAX_ATTEMPTS", "1");
+
+        const auto result = RunAgentosWithStdin(
+            workspace,
+            {"interactive"},
+            "please build a small command line tool\nexit\nexit --wait\n");
+        Expect(result.exit_code == 0, "interactive exit --wait should exit cleanly after a running job");
+        Expect(result.output.find("background job(s) still running") != std::string::npos,
+            "interactive exit should report running jobs instead of blocking immediately");
+        Expect(result.output.find("exit --wait") != std::string::npos,
+            "interactive exit should tell the user how to wait explicitly");
+        SetEnvForTest("AGENTOS_DEV_MAX_ATTEMPTS", "");
+    }
+
     {
         const auto workspace = FreshWorkspace("interactive_utf8_pty_dispatch");
         SetEnvForTest("PATH", old_path);

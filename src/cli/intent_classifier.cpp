@@ -44,6 +44,35 @@ std::string RouteKindName(const InteractiveRouteKind kind) {
     return "unknown";
 }
 
+std::string ExecutionModeName(const InteractiveExecutionMode mode) {
+    switch (mode) {
+    case InteractiveExecutionMode::sync:
+        return "sync";
+    case InteractiveExecutionMode::async_job:
+        return "async_job";
+    }
+    return "sync";
+}
+
+namespace {
+
+void ApplyExecutionMode(RouteDecisionExplanation& decision) {
+    switch (decision.route) {
+    case InteractiveRouteKind::development_agent:
+    case InteractiveRouteKind::research_agent:
+        decision.execution_mode = InteractiveExecutionMode::async_job;
+        break;
+    case InteractiveRouteKind::local_intent:
+    case InteractiveRouteKind::direct_skill:
+    case InteractiveRouteKind::chat_agent:
+    case InteractiveRouteKind::unknown_command:
+        decision.execution_mode = InteractiveExecutionMode::sync;
+        break;
+    }
+}
+
+}  // namespace
+
 bool LooksLikeExplicitDevelopmentChangeRequest(const std::string& line) {
     static const std::regex skill_creation_re(
         R"((\b(create|generate|install|add|build|scaffold|configure|integrate)\b).{0,40}\b(skills?|tools?|commands?)\b|(\b(skills?|tools?|commands?)\b).{0,40}\b(create|generate|install|add|build|scaffold|configure|integrate)\b|(创建|生成|安装|新增|添加|接入|配置|获得|获取).{0,40}(技能|工具|命令)|(技能|工具|命令).{0,40}(创建|生成|安装|新增|添加|接入|配置|获得|获取))",
@@ -149,6 +178,7 @@ RouteDecisionExplanation ClassifyInteractiveRequest(
         decision.score -= 4;
         decision.reasons.push_back("mentions a registered skill and asks for its usage");
         decision.selected_target = "interactive_runtime";
+        ApplyExecutionMode(decision);
         return decision;
     }
 
@@ -158,6 +188,7 @@ RouteDecisionExplanation ClassifyInteractiveRequest(
         decision.reasons.push_back("asks to use a registered skill as a tool");
         const auto resolved = resolve_registered_skill ? resolve_registered_skill(line) : std::string{};
         decision.selected_target = resolved.empty() ? "interactive_runtime" : resolved;
+        ApplyExecutionMode(decision);
         return decision;
     }
 
@@ -167,6 +198,7 @@ RouteDecisionExplanation ClassifyInteractiveRequest(
         decision.score -= 5;
         decision.reasons.push_back("matches runtime self-description or host-info local intent");
         decision.selected_target = "interactive_runtime";
+        ApplyExecutionMode(decision);
         return decision;
     }
 
@@ -177,6 +209,7 @@ RouteDecisionExplanation ClassifyInteractiveRequest(
         decision.score -= 4;
         decision.reasons.push_back("directly maps to registered host_info skill");
         decision.selected_target = "host_info";
+        ApplyExecutionMode(decision);
         return decision;
     }
 
@@ -217,6 +250,7 @@ RouteDecisionExplanation ClassifyInteractiveRequest(
             ? (resolve_chat_target ? resolve_chat_target() : std::string{})
             : "unavailable";
     }
+    ApplyExecutionMode(decision);
     (void)usage_snapshot;
     (void)workspace;
     (void)agent_registry;
@@ -231,6 +265,7 @@ void WriteRouteDecision(const std::filesystem::path& workspace,
     json["task_id"] = decision.task_id;
     json["user_request"] = decision.user_request;
     json["route"] = RouteKindName(decision.route);
+    json["execution_mode"] = ExecutionModeName(decision.execution_mode);
     json["selected_target"] = decision.selected_target;
     json["score"] = decision.score;
     json["reasons"] = decision.reasons;
@@ -271,6 +306,7 @@ void PrintRouteDecision(const RouteDecisionExplanation& decision,
     if (!decision.selected_target.empty()) {
         std::cout << " -> " << decision.selected_target;
     }
+    std::cout << "; mode=" << ExecutionModeName(decision.execution_mode);
     if (language == RuntimeLanguage::Chinese) {
         std::cout << "; ";
         switch (decision.route) {

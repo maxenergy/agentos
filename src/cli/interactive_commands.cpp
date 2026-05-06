@@ -1,5 +1,6 @@
 #include "cli/interactive_commands.hpp"
 
+#include "core/execution/agent_event_runtime_store.hpp"
 #include "cli/intent_classifier.hpp"
 #include "storage/main_agent_store.hpp"
 #include "utils/signal_cancellation.hpp"
@@ -19,6 +20,7 @@
 #include <cwchar>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -975,11 +977,12 @@ void PrintHelp() {
         << "  memory lessons                    Show lesson store\n"
         << "  memory workflows                  Show workflow candidates\n"
         << "  memory stored-workflows           Show stored workflows\n"
-        << "  jobs                              Show background development jobs\n"
+        << "  jobs                              Show background jobs\n"
         << "  schedule list                     List scheduled tasks\n"
         << "  schedule history                  Show scheduler run history\n"
         << "  help                              Show this help message\n"
         << "  exit / quit                       Exit the interactive console\n"
+        << "  exit --wait                       Wait for running background jobs, then exit\n"
         << "\n"
         << "Free-form text that doesn't match a command is sent as a chat\n"
         << "prompt to the first healthy chat agent. Override the target via\n"
@@ -1202,13 +1205,11 @@ TaskRequest BuildResearchTaskRequest(const std::string& prompt,
     return task;
 }
 
-TaskRunResult RunResearchPrompt(const std::string& prompt,
-                                AgentLoop& loop,
-                                AuditLogger& audit_logger,
-                                const std::filesystem::path& workspace) {
+TaskRunResult ExecuteResearchTask(const TaskRequest& task,
+                                  AgentLoop& loop,
+                                  AuditLogger& audit_logger) {
     auto task_cancel = InstallSignalCancellation();
-    const auto result = loop.run(BuildResearchTaskRequest(prompt, workspace),
-                                 std::move(task_cancel));
+    const auto result = loop.run(task, std::move(task_cancel));
     if (!result.success) {
         PrintResult(result);
     }
@@ -1218,6 +1219,7 @@ TaskRunResult RunResearchPrompt(const std::string& prompt,
 
 struct BackgroundJob {
     std::string id;
+    std::string kind;
     std::string objective;
     std::filesystem::path workspace;
     std::chrono::steady_clock::time_point started_at = std::chrono::steady_clock::now();
@@ -1229,62 +1231,6 @@ struct BackgroundJob {
     std::mutex mutex;
     std::thread worker;
 };
-
-std::optional<std::filesystem::path> FindBackgroundTaskDir(const std::filesystem::path& workspace,
-                                                           const std::string& job_id) {
-    const auto agents_root = workspace / "runtime" / "agents";
-    std::error_code ec;
-    if (!std::filesystem::exists(agents_root, ec) || !std::filesystem::is_directory(agents_root, ec)) {
-        return std::nullopt;
-    }
-    for (const auto& entry : std::filesystem::directory_iterator(agents_root, ec)) {
-        if (!entry.is_directory(ec)) {
-            continue;
-        }
-        const auto candidate = entry.path() / job_id;
-        if (std::filesystem::exists(candidate, ec) && std::filesystem::is_directory(candidate, ec)) {
-            return candidate;
-        }
-    }
-    return std::nullopt;
-}
-
-std::string ReadBackgroundStatusSummary(const std::filesystem::path& task_dir) {
-    std::error_code ec;
-    if (!std::filesystem::exists(task_dir, ec)) {
-        return {};
-    }
-    std::filesystem::path latest_status;
-    std::filesystem::file_time_type latest_time{};
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(task_dir, ec)) {
-        if (!entry.is_regular_file(ec) || entry.path().filename() != "status.json") {
-            continue;
-        }
-        const auto write_time = entry.last_write_time(ec);
-        if (latest_status.empty() || write_time > latest_time) {
-            latest_status = entry.path();
-            latest_time = write_time;
-        }
-    }
-    if (latest_status.empty()) {
-        return {};
-    }
-    try {
-        const auto status = nlohmann::json::parse(ReadTextFile(latest_status));
-        std::ostringstream out;
-        out << status.value("state", std::string("unknown"));
-        if (status.contains("elapsed_ms") && status["elapsed_ms"].is_number_integer()) {
-            out << " elapsed=" << (status["elapsed_ms"].get<int>() / 1000) << "s";
-        }
-        if (status.contains("heartbeat_count") && status["heartbeat_count"].is_number_integer()) {
-            out << " heartbeat=" << status["heartbeat_count"].get<int>();
-        }
-        out << " status=" << latest_status.string();
-        return out.str();
-    } catch (const std::exception&) {
-        return "status=" + latest_status.string();
-    }
-}
 
 void ReapFinishedJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
     for (const auto& job : jobs) {
@@ -1309,14 +1255,16 @@ void ListBackgroundJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
         const auto elapsed_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - job->started_at).count());
         std::cout << "  " << job->id
+                  << "  kind=" << job->kind
                   << "  state=" << (job->finished.load() ? "finished" : "running")
                   << "  elapsed=" << (elapsed_ms / 1000) << "s"
                   << "  workspace=" << job->workspace.string() << '\n';
-        if (const auto task_dir = FindBackgroundTaskDir(job->workspace, job->id); task_dir.has_value()) {
+        AgentEventRuntimeStore event_store(job->workspace);
+        if (const auto task_dir = event_store.find_task_dir(job->id); task_dir.has_value()) {
             std::cout << "    task_dir=" << task_dir->string() << '\n';
-            const auto status = ReadBackgroundStatusSummary(*task_dir);
-            if (!status.empty()) {
-                std::cout << "    " << status << '\n';
+            const auto status = event_store.read_latest_status(*task_dir);
+            if (status.has_value()) {
+                std::cout << "    " << FormatAgentEventStatusSummary(*status) << '\n';
             }
         }
         if (job->finished.load()) {
@@ -1333,24 +1281,22 @@ void ListBackgroundJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
     std::cout << '\n';
 }
 
-void StartBackgroundDevelopmentPrompt(const std::string& prompt,
-                                      AgentLoop& loop,
-                                      AuditLogger& audit_logger,
-                                      const std::filesystem::path& default_workspace,
-                                      std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
-    std::filesystem::path task_workspace;
-    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
-    if (task_workspace != default_workspace) {
-        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
-    }
-
+void StartBackgroundTask(const std::string& kind,
+                         const std::string& prompt,
+                         const TaskRequest& task,
+                         const std::filesystem::path& task_workspace,
+                         AgentLoop& loop,
+                         AuditLogger& audit_logger,
+                         std::vector<std::shared_ptr<BackgroundJob>>& jobs,
+                         std::function<TaskRunResult(const TaskRequest&, AgentLoop&, AuditLogger&)> execute) {
     auto job = std::make_shared<BackgroundJob>();
-    job->id = task.inputs.at("root_task_id");
+    job->id = task.inputs.count("root_task_id") > 0 ? task.inputs.at("root_task_id") : task.task_id;
+    job->kind = kind;
     job->objective = prompt;
     job->workspace = task_workspace;
     job->started_at = std::chrono::steady_clock::now();
-    job->worker = std::thread([job, task, &loop, &audit_logger]() mutable {
-        const auto result = ExecuteDevelopmentTask(task, loop, audit_logger);
+    job->worker = std::thread([job, task, &loop, &audit_logger, execute = std::move(execute)]() mutable {
+        const auto result = execute(task, loop, audit_logger);
         {
             std::lock_guard<std::mutex> lock(job->mutex);
             job->success = result.success;
@@ -1362,9 +1308,31 @@ void StartBackgroundDevelopmentPrompt(const std::string& prompt,
     });
     jobs.push_back(job);
 
-    std::cout << "(background development job started: " << job->id << ")\n"
+    std::cout << "(background " << kind << " job started: " << job->id << ")\n"
               << "Use `jobs` to inspect progress. Status files will appear under:\n"
               << "  " << (task_workspace / "runtime" / "agents").string() << "\n\n";
+}
+
+void StartBackgroundDevelopmentPrompt(const std::string& prompt,
+                                      AgentLoop& loop,
+                                      AuditLogger& audit_logger,
+                                      const std::filesystem::path& default_workspace,
+                                      std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
+    std::filesystem::path task_workspace;
+    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
+    if (task_workspace != default_workspace) {
+        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
+    }
+    StartBackgroundTask("development", prompt, task, task_workspace, loop, audit_logger, jobs, ExecuteDevelopmentTask);
+}
+
+void StartBackgroundResearchPrompt(const std::string& prompt,
+                                   AgentLoop& loop,
+                                   AuditLogger& audit_logger,
+                                   const std::filesystem::path& workspace,
+                                   std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
+    const auto task = BuildResearchTaskRequest(prompt, workspace);
+    StartBackgroundTask("research", prompt, task, workspace, loop, audit_logger, jobs, ExecuteResearchTask);
 }
 
 UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
@@ -1384,7 +1352,7 @@ UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
         {"chat", "chat <text>", "Send free-form text to a chat agent", {}},
         {"agents", "agents", "List registered agent adapters", {}},
         {"skills", "skills", "List registered skills", {}},
-        {"jobs", "jobs", "Show background development jobs", {}},
+        {"jobs", "jobs", "Show background jobs", {}},
     };
     for (const auto& profile : agent_registry.list_profiles()) {
         const auto adapter = agent_registry.find(profile.agent_name);
@@ -1887,15 +1855,22 @@ int RunInteractiveCommand(
 
         // ── exit / quit ─────────────────────────────────────────────────
         if (command == "exit" || command == "quit") {
-            if (!line_history.empty() && line_history.back() == line) {
-                line_history.pop_back();
-            }
-            SaveReplHistory(history_path, line_history);
             const auto running = std::count_if(background_jobs.begin(), background_jobs.end(),
                 [](const std::shared_ptr<BackgroundJob>& job) {
                     return job && !job->finished.load();
                 });
-            if (running > 0) {
+            const bool wait_for_jobs = std::find(tokens.begin() + 1, tokens.end(), "--wait") != tokens.end() ||
+                std::find(tokens.begin() + 1, tokens.end(), "wait") != tokens.end();
+            if (running > 0 && !wait_for_jobs) {
+                std::cout << running << " background job(s) still running.\n"
+                          << "Use `jobs` to inspect progress, or `exit --wait` to wait for completion.\n\n";
+                continue;
+            }
+            if (!line_history.empty() && line_history.back() == line) {
+                line_history.pop_back();
+            }
+            SaveReplHistory(history_path, line_history);
+            if (running > 0 && wait_for_jobs) {
                 std::cout << "Waiting for " << running
                           << " background job(s) before exit. Press Ctrl-C again to force terminate.\n";
                 for (const auto& job : background_jobs) {
@@ -2185,7 +2160,7 @@ int RunInteractiveCommand(
             StartBackgroundDevelopmentPrompt(line, loop, audit_logger, workspace, background_jobs);
             continue;
         case InteractiveRouteKind::research_agent:
-            (void)RunResearchPrompt(line, loop, audit_logger, workspace);
+            StartBackgroundResearchPrompt(line, loop, audit_logger, workspace, background_jobs);
             continue;
         case InteractiveRouteKind::chat_agent:
             RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);

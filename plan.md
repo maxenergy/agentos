@@ -291,6 +291,14 @@ Status (2026-05-06): **complete for the current slice**. Development/research sk
 - [ ] Revisit SQLite only if query-heavy workflows, cross-component joins, or multi-process write contention become routine.
 - [ ] Create an ADR only when a durable candidate is rejected for a non-obvious reason.
 
+### 2026-05-06 interactive job architecture follow-up
+
+- [x] First Interactive Job Runtime slice: `development_request` and `research_request` share a REPL background job **Module** while preserving the `AgentLoop` **Interface** as the dispatch **Seam**.
+- [x] Add a Task Wait Policy **Module** that models `idle_timeout`, `soft_deadline`, and `hard_deadline` instead of one fixed timeout. Keep policy in an **Adapter** behind task execution so simple chat, research, and artifact generation can use different **Depth** without changing skill **Implementation** code.
+- [x] Add a REPL exit first slice: `exit` reports running jobs and returns to the prompt; `exit --wait` keeps the old explicit wait behavior. Full detach/cancel remains blocked until background jobs no longer capture REPL-local runtime references.
+- [x] Continue candidate 3 first slice: `AgentEventRuntimeStore` now owns task-dir lookup and latest `status.json` summary formatting for REPL jobs. Follow-up remains to move event/status writes from individual skill **Implementation** files behind the same durable **Interface**.
+- [x] Continue candidate 4 first slice: route decisions now carry execution mode metadata (`sync` or `async_job`) and persist it in routing JSON, making Interactive Route Action an explicit **Seam**. Follow-up remains to add queue priority and budget hints after the job store shape is settled.
+
 ## Immediate Next TODO
 
 - [x] Sync `docs/ROADMAP.md` with this plan.
