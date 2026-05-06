@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -40,6 +41,14 @@ struct AutoDevLoadSkillPackResult {
     std::filesystem::path snapshot_path;
 };
 
+struct AutoDevGenerateGoalDocsResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    std::filesystem::path goal_dir;
+    std::vector<std::filesystem::path> written_files;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -57,6 +66,7 @@ public:
     AutoDevLoadSkillPackResult load_skill_pack(
         const std::string& job_id,
         const std::optional<std::filesystem::path>& override_path = std::nullopt);
+    AutoDevGenerateGoalDocsResult generate_goal_docs(const std::string& job_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
 
 private:

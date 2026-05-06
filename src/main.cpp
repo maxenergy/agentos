@@ -651,6 +651,7 @@ void PrintUsage() {
         << "  agentos autodev status job_id=<job_id>\n"
         << "  agentos autodev prepare-workspace job_id=<job_id>\n"
         << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
+        << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
         << "  agentos cli-specs validate\n"
         << "  agentos diagnostics [format=text|json]\n"
         << "  agentos plugins\n"

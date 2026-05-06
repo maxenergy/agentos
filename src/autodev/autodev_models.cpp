@@ -53,6 +53,7 @@ nlohmann::json ToJson(const AutoDevJob& job) {
         {"phase", job.phase},
         {"current_activity", job.current_activity},
         {"approval_gate", job.approval_gate},
+        {"objective", job.objective},
         {"agentos_workspace", job.agentos_workspace.string()},
         {"target_repo_path", job.target_repo_path.string()},
         {"job_worktree_path", job.job_worktree_path.string()},
@@ -77,6 +78,7 @@ AutoDevJob AutoDevJobFromJson(const nlohmann::json& json) {
     job.phase = json.value("phase", "workspace_preparing");
     job.current_activity = json.value("current_activity", "none");
     job.approval_gate = json.value("approval_gate", "none");
+    job.objective = json.value("objective", std::string{});
     job.agentos_workspace = json.at("agentos_workspace").get<std::string>();
     job.target_repo_path = json.at("target_repo_path").get<std::string>();
     job.job_worktree_path = json.at("job_worktree_path").get<std::string>();

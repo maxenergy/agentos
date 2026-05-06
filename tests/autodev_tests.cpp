@@ -327,6 +327,76 @@ void TestLoadSkillPackBlocksMissingSteps() {
         "failed skill pack load should explain missing required step");
 }
 
+void TestGenerateGoalDocsWritesOnlyJobWorktree() {
+    const auto workspace = FreshWorkspace("generate_goal_docs");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Generate goal docs",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before generate_goal_docs should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace before generate_goal_docs should succeed");
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(loaded.success, "load_skill_pack before generate_goal_docs should succeed");
+
+    const auto generated = store.generate_goal_docs(submit.job.job_id);
+    Expect(generated.success, "generate_goal_docs should succeed after workspace and skill pack are ready");
+    Expect(generated.job.phase == "requirements_grilling",
+        "generate_goal_docs should advance to requirements_grilling");
+    Expect(generated.job.next_action == "run_docs_pipeline",
+        "generate_goal_docs should set docs pipeline next action");
+    Expect(generated.written_files.size() == 13,
+        "generate_goal_docs should write the candidate goal doc skeleton set");
+    Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "GOAL.md"),
+        "generate_goal_docs should write GOAL.md under job worktree");
+    Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json"),
+        "generate_goal_docs should write candidate AUTODEV_SPEC.json under job worktree");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "generate_goal_docs should not write docs/goal into target repo");
+
+    const auto spec = nlohmann::json::parse(ReadFile(prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json"));
+    Expect(spec["status"] == "candidate_skeleton", "AUTODEV_SPEC skeleton should be candidate-only");
+    Expect(spec["tasks"].empty(), "AUTODEV_SPEC skeleton should not define execution tasks");
+
+    const auto events = ReadFile(store.events_path(submit.job.job_id));
+    Expect(events.find("\"type\":\"autodev.goal_docs.generated\"") != std::string::npos,
+        "events.ndjson should record goal docs generated event");
+}
+
+void TestGenerateGoalDocsBlocksUntilReady() {
+    const auto workspace = FreshWorkspace("generate_goal_docs_blocked");
+    const auto target = workspace / "target_app";
+    std::filesystem::create_directories(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Generate too early",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before blocked generate_goal_docs should succeed");
+
+    const auto generated = store.generate_goal_docs(submit.job.job_id);
+    Expect(!generated.success, "generate_goal_docs should fail before workspace is ready");
+    Expect(generated.job.status == "blocked", "generate_goal_docs before workspace should block job");
+    Expect(generated.job.blocker.has_value() &&
+               generated.job.blocker->find("workspace is not ready") != std::string::npos,
+        "generate_goal_docs should explain workspace readiness blocker");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "blocked generate_goal_docs should not write target docs");
+}
+
 }  // namespace
 
 int main() {
@@ -339,6 +409,8 @@ int main() {
     TestPrepareWorkspaceBlocksDirtyTarget();
     TestLoadSkillPackRecordsSnapshotOnly();
     TestLoadSkillPackBlocksMissingSteps();
+    TestGenerateGoalDocsWritesOnlyJobWorktree();
+    TestGenerateGoalDocsBlocksUntilReady();
 
     if (failures != 0) {
         std::cerr << failures << " AutoDev test assertion(s) failed\n";

@@ -28,6 +28,7 @@ struct AutoDevJob {
     std::string phase = "workspace_preparing";
     std::string current_activity = "none";
     std::string approval_gate = "none";
+    std::string objective;
 
     std::filesystem::path agentos_workspace;
     std::filesystem::path target_repo_path;

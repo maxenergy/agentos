@@ -98,6 +98,19 @@ std::string QuoteShellArg(const std::string& value) {
 #endif
 }
 
+void InitGitRepoForCliTest(const std::filesystem::path& repo) {
+    std::filesystem::create_directories(repo);
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " init >/dev/null 2>&1").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " config user.email test@example.com").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " config user.name Test").c_str());
+    {
+        std::ofstream readme(repo / "README.md", std::ios::binary);
+        readme << "fixture\n";
+    }
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " add README.md").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " commit -m initial >/dev/null 2>&1").c_str());
+}
+
 int DecodeProcessStatus(const int status) {
 #ifdef _WIN32
     return status;
@@ -2301,7 +2314,7 @@ void TestInteractiveFreeFormDispatch() {
 void TestAutoDevCommands() {
     const auto workspace = FreshWorkspace("autodev_cli");
     const auto target = workspace / "target_app";
-    std::filesystem::create_directories(target);
+    InitGitRepoForCliTest(target);
     const auto skill_pack = workspace / "skills";
     CreateAutoDevSkillPackFixture(skill_pack);
 
@@ -2371,6 +2384,15 @@ void TestAutoDevCommands() {
                status.output.find("agentos autodev prepare-workspace job_id=" + job_id) != std::string::npos,
         "autodev status should print prepare workspace next action");
 
+    const auto prepare = RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + job_id});
+    Expect(prepare.exit_code == 0, "autodev prepare-workspace should succeed for clean git repo");
+    Expect(prepare.output.find("AutoDev workspace prepared") != std::string::npos,
+        "autodev prepare-workspace should print success heading");
+    Expect(prepare.output.find("isolation_status:      ready") != std::string::npos,
+        "autodev prepare-workspace should report ready isolation");
+    Expect(std::filesystem::exists(std::filesystem::path(planned_path) / ".git"),
+        "autodev prepare-workspace should create planned git worktree");
+
     const auto load_skill_pack = RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + job_id});
     Expect(load_skill_pack.exit_code == 0, "autodev load-skill-pack should succeed for complete fixture");
     Expect(load_skill_pack.output.find("AutoDev skill pack loaded") != std::string::npos,
@@ -2388,6 +2410,26 @@ void TestAutoDevCommands() {
         "autodev status should show loaded skill pack");
     Expect(loaded_status.output.find("hash:") != std::string::npos,
         "autodev status should show skill pack manifest hash");
+
+    const auto generate_docs = RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + job_id});
+    Expect(generate_docs.exit_code == 0, "autodev generate-goal-docs should succeed after workspace and skill pack are ready");
+    Expect(generate_docs.output.find("AutoDev goal docs generated") != std::string::npos,
+        "autodev generate-goal-docs should print success heading");
+    Expect(generate_docs.output.find("files_written: 13") != std::string::npos,
+        "autodev generate-goal-docs should report skeleton file count");
+    Expect(std::filesystem::exists(std::filesystem::path(planned_path) / "docs" / "goal" / "GOAL.md"),
+        "autodev generate-goal-docs should write GOAL.md under job worktree");
+    Expect(std::filesystem::exists(std::filesystem::path(planned_path) / "docs" / "goal" / "AUTODEV_SPEC.json"),
+        "autodev generate-goal-docs should write AUTODEV_SPEC.json under job worktree");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "autodev generate-goal-docs should not write docs/goal into target repo");
+
+    const auto generated_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(generated_status.exit_code == 0, "autodev status should read generated goal docs job");
+    Expect(generated_status.output.find("Phase: requirements_grilling") != std::string::npos,
+        "autodev status should show requirements_grilling after goal docs generation");
+    Expect(generated_status.output.find("agentos autodev run_docs_pipeline job_id=" + job_id) != std::string::npos,
+        "autodev status should show run_docs_pipeline next action");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

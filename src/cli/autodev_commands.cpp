@@ -33,7 +33,8 @@ void PrintUsage() {
         << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [allow_dirty_target=true|false]\n"
         << "  agentos autodev status job_id=<job_id>\n"
         << "  agentos autodev prepare-workspace job_id=<job_id>\n"
-        << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n";
+        << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
+        << "  agentos autodev generate-goal-docs job_id=<job_id>\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -121,7 +122,7 @@ int RunPrepareWorkspace(const std::filesystem::path& workspace, const int argc, 
               << "created_from_head_sha: " << result.job.created_from_head_sha.value_or("") << '\n'
               << "worktree_created_at:   " << result.job.worktree_created_at.value_or("") << '\n'
               << "next_action:           " << result.job.next_action << '\n'
-              << "\nTarget repo was not modified; work will continue in the job worktree.\n";
+              << "\nTarget working tree files were not modified; work will continue in the job worktree.\n";
     return 0;
 }
 
@@ -166,6 +167,41 @@ int RunLoadSkillPack(const std::filesystem::path& workspace, const int argc, cha
               << "snapshot:           " << result.snapshot_path.string() << '\n'
               << "next_action:        " << result.job.next_action << '\n'
               << "\nNo docs/goal files were generated and no Codex execution was started.\n";
+    return 0;
+}
+
+int RunGenerateGoalDocs(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev generate-goal-docs failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev generate-goal-docs failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.generate_goal_docs(job_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev generate-goal-docs failed: " << result.error_message << '\n';
+        if (!result.job.job_id.empty()) {
+            std::cerr << "status:      " << result.job.status << '\n'
+                      << "phase:       " << result.job.phase << '\n'
+                      << "next_action: " << result.job.next_action << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "AutoDev goal docs generated\n"
+              << "job_id:        " << result.job.job_id << '\n'
+              << "status:        " << result.job.status << '\n'
+              << "phase:         " << result.job.phase << '\n'
+              << "goal_dir:      " << result.goal_dir.string() << '\n'
+              << "files_written: " << result.written_files.size() << '\n'
+              << "next_action:   " << result.job.next_action << '\n'
+              << "\nThese are candidate working documents only. No spec was frozen and no Codex execution was started.\n";
     return 0;
 }
 
@@ -252,6 +288,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "load-skill-pack" || subcommand == "load_skill_pack") {
         return RunLoadSkillPack(workspace, argc, argv);
+    }
+    if (subcommand == "generate-goal-docs" || subcommand == "generate_goal_docs") {
+        return RunGenerateGoalDocs(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';
