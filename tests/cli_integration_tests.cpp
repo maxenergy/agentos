@@ -2660,6 +2660,29 @@ void TestAutoDevCommands() {
         "autodev status should show final_review as the next action");
     Expect(accepted_status.output.find("passed: 1") != std::string::npos,
         "autodev status should count accepted task as passed");
+    const auto final_review = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + executable_job_id});
+    Expect(final_review.exit_code == 0,
+        "autodev final-review should pass when accepted task facts and current diff are in scope");
+    Expect(final_review.output.find("AutoDev final review checked") != std::string::npos,
+        "autodev final-review should print heading");
+    Expect(final_review.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-review should print final review id");
+    Expect(final_review.output.find("passed:          true") != std::string::npos,
+        "autodev final-review should report passed=true");
+    Expect(final_review.output.find("job_status:      pr_ready") != std::string::npos,
+        "autodev final-review should advance the job to pr_ready");
+    Expect(std::filesystem::exists(executable_job_dir / "final_review.json"),
+        "autodev final-review should write final_review.json under runtime store");
+    const auto final_review_report_path = std::filesystem::path(executable_planned_path) / "docs" / "goal" / "FINAL_REVIEW.md";
+    Expect(std::filesystem::exists(final_review_report_path),
+        "autodev final-review should write FINAL_REVIEW.md under job worktree");
+    const auto final_review_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + executable_job_id});
+    Expect(final_review_status.exit_code == 0,
+        "autodev status should read job after final review");
+    Expect(final_review_status.output.find("Status: pr_ready") != std::string::npos,
+        "autodev status should show pr_ready after final review");
+    Expect(final_review_status.output.find("Next action:\n  none") != std::string::npos,
+        "autodev status should show no next action after pr_ready");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);
@@ -2696,6 +2719,8 @@ void TestAutoDevCommands() {
         "autodev diff-guard should append a diff guard completed event");
     Expect(executable_events.output.find("autodev.acceptance_gate.completed") != std::string::npos,
         "autodev acceptance-gate should append an acceptance completed event");
+    Expect(executable_events.output.find("autodev.final_review.completed") != std::string::npos,
+        "autodev final-review should append a final review completed event");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

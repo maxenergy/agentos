@@ -308,4 +308,36 @@ AutoDevAcceptanceGate AutoDevAcceptanceGateFromJson(const nlohmann::json& json) 
     return acceptance;
 }
 
+nlohmann::json ToJson(const AutoDevFinalReview& final_review) {
+    return nlohmann::json{
+        {"final_review_id", final_review.final_review_id},
+        {"job_id", final_review.job_id},
+        {"spec_revision", final_review.spec_revision},
+        {"passed", final_review.passed},
+        {"tasks_total", final_review.tasks_total},
+        {"tasks_passed", final_review.tasks_passed},
+        {"changed_files", final_review.changed_files},
+        {"blocked_file_violations", final_review.blocked_file_violations},
+        {"outside_allowed_files", final_review.outside_allowed_files},
+        {"reasons", final_review.reasons},
+        {"checked_at", final_review.checked_at},
+    };
+}
+
+AutoDevFinalReview AutoDevFinalReviewFromJson(const nlohmann::json& json) {
+    AutoDevFinalReview final_review;
+    final_review.final_review_id = json.value("final_review_id", std::string{});
+    final_review.job_id = json.value("job_id", std::string{});
+    final_review.spec_revision = json.value("spec_revision", std::string{});
+    final_review.passed = json.value("passed", false);
+    final_review.tasks_total = json.value("tasks_total", 0);
+    final_review.tasks_passed = json.value("tasks_passed", 0);
+    final_review.changed_files = ReadStringVector(json, "changed_files");
+    final_review.blocked_file_violations = ReadStringVector(json, "blocked_file_violations");
+    final_review.outside_allowed_files = ReadStringVector(json, "outside_allowed_files");
+    final_review.reasons = ReadStringVector(json, "reasons");
+    final_review.checked_at = json.value("checked_at", std::string{});
+    return final_review;
+}
+
 }  // namespace agentos

@@ -99,6 +99,15 @@ struct AutoDevAcceptanceGateResult {
     std::filesystem::path acceptance_path;
 };
 
+struct AutoDevFinalReviewResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    AutoDevFinalReview final_review;
+    std::filesystem::path final_review_path;
+    std::filesystem::path final_review_report_path;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -114,6 +123,7 @@ public:
     [[nodiscard]] std::filesystem::path verification_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path diffs_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path acceptance_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path final_review_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path logs_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path artifacts_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path spec_revisions_dir(const std::string& job_id) const;
@@ -140,6 +150,7 @@ public:
         const std::optional<std::string>& related_turn_id = std::nullopt);
     AutoDevDiffGuardResult diff_guard(const std::string& job_id, const std::string& task_id);
     AutoDevAcceptanceGateResult acceptance_gate(const std::string& job_id, const std::string& task_id);
+    AutoDevFinalReviewResult final_review(const std::string& job_id);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevTask>> load_tasks(
         const std::string& job_id,

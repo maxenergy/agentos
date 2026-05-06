@@ -49,6 +49,7 @@ void PrintUsage() {
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev diffs job_id=<job_id>\n"
         << "  agentos autodev acceptance-gate job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev final-review job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
@@ -686,6 +687,42 @@ int RunAcceptanceGate(const std::filesystem::path& workspace, const int argc, ch
     return result.acceptance.passed ? 0 : 1;
 }
 
+int RunFinalReview(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev final-review failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev final-review failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.final_review(job_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev final-review failed: " << result.error_message << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev final review checked\n"
+              << "job_id:          " << result.final_review.job_id << '\n'
+              << "final_review_id: " << result.final_review.final_review_id << '\n'
+              << "passed:          " << (result.final_review.passed ? "true" : "false") << '\n'
+              << "job_status:      " << result.job.status << '\n'
+              << "job_phase:       " << result.job.phase << '\n'
+              << "tasks:           " << result.final_review.tasks_passed << "/" << result.final_review.tasks_total << '\n'
+              << "final_review:    " << result.final_review_path.string() << '\n'
+              << "review_report:   " << result.final_review_report_path.string() << '\n';
+    PrintStringList("changed_files:           ", result.final_review.changed_files);
+    PrintStringList("blocked_file_violations:", result.final_review.blocked_file_violations);
+    PrintStringList("outside_allowed_files:  ", result.final_review.outside_allowed_files);
+    PrintStringList("reasons:                ", result.final_review.reasons);
+    std::cout << "\nFinalReview records runtime facts and may advance the job to pr_ready. It never marks the job done.\n";
+    return result.final_review.passed ? 0 : 1;
+}
+
 int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -860,12 +897,16 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
         }
     }
     std::cout << '\n'
-              << "Next action:\n"
-              << "  agentos autodev "
-              << (job->next_action == "prepare_workspace" ? "prepare-workspace" : job->next_action)
-              << " job_id=" << job->job_id;
-    if (job->next_action == "approve_spec" && job->spec_hash.has_value()) {
-        std::cout << " spec_hash=" << *job->spec_hash;
+              << "Next action:\n";
+    if (job->next_action == "none") {
+        std::cout << "  none";
+    } else {
+        std::cout << "  agentos autodev "
+                  << (job->next_action == "prepare_workspace" ? "prepare-workspace" : job->next_action)
+                  << " job_id=" << job->job_id;
+        if (job->next_action == "approve_spec" && job->spec_hash.has_value()) {
+            std::cout << " spec_hash=" << *job->spec_hash;
+        }
     }
     std::cout << '\n'
               << '\n';
@@ -926,6 +967,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "acceptance-gate" || subcommand == "acceptance_gate") {
         return RunAcceptanceGate(workspace, argc, argv);
+    }
+    if (subcommand == "final-review" || subcommand == "final_review") {
+        return RunFinalReview(workspace, argc, argv);
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);

@@ -789,6 +789,34 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
             "acceptance_gate should mark all task acceptance criteria passed");
     }
     {
+        const auto job_after_acceptance = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
+        Expect(job_after_acceptance["status"] == "running",
+            "acceptance_gate should not mark the job done");
+        Expect(job_after_acceptance["phase"] == "final_review",
+            "acceptance_gate should advance an all-passed job to final_review");
+        Expect(job_after_acceptance["next_action"] == "final_review",
+            "acceptance_gate should make final_review the next action after all tasks pass");
+    }
+    const auto final_review = store.final_review(submit.job.job_id);
+    Expect(final_review.success, "final_review should evaluate all accepted task facts");
+    Expect(final_review.final_review.final_review_id == "final-review-001",
+        "first final review should use final-review-001");
+    Expect(final_review.final_review.passed,
+        "final_review should pass when all tasks are accepted and current diff is in scope");
+    Expect(final_review.job.status == "pr_ready",
+        "final_review should advance a passing job to pr_ready");
+    Expect(final_review.job.phase == "pr_ready",
+        "final_review should record pr_ready phase after passing");
+    Expect(std::filesystem::exists(store.final_review_path(submit.job.job_id)),
+        "final_review should write final_review.json under runtime store");
+    Expect(std::filesystem::exists(final_review.final_review_report_path),
+        "final_review should write FINAL_REVIEW.md summary under job worktree");
+    Expect(final_review.final_review_report_path == approved.job.job_worktree_path / "docs" / "goal" / "FINAL_REVIEW.md",
+        "final_review should write FINAL_REVIEW.md in job worktree goal docs");
+    const auto final_review_report = ReadFile(final_review.final_review_report_path);
+    Expect(final_review_report.find("It is NOT the source of truth for job completion") != std::string::npos,
+        "FINAL_REVIEW.md should state summary-only authority boundary");
+    {
         std::ofstream blocked(approved.job.job_worktree_path / "package.json", std::ios::binary);
         blocked << "{}\n";
     }
@@ -863,8 +891,12 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record diff guard completed event");
     Expect(events.find("\"type\":\"autodev.acceptance_gate.completed\"") != std::string::npos,
         "events.ndjson should record acceptance gate completed event");
+    Expect(events.find("\"type\":\"autodev.final_review.completed\"") != std::string::npos,
+        "events.ndjson should record final review completed event");
     Expect(events.find("\"verify_report_path\"") != std::string::npos,
         "verification completed event should link VERIFY.md report path");
+    Expect(events.find("\"final_review_report_path\"") != std::string::npos,
+        "final review completed event should link FINAL_REVIEW.md report path");
     Expect(events.find("\"adapter_kind\":\"codex_cli\"") != std::string::npos,
         "execution blocked event should record adapter kind");
     Expect(events.find("\"event_stream_mode\":\"synthetic\"") != std::string::npos,
@@ -873,12 +905,12 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     Expect(persisted_tasks[0]["status"] == "passed",
         "AcceptanceGate should be the first runtime step that changes task status");
     const auto persisted_job = nlohmann::json::parse(ReadFile(store.job_json_path(submit.job.job_id)));
-    Expect(persisted_job["status"] == "running",
-        "acceptance_gate should not mark the job done");
-    Expect(persisted_job["phase"] == "final_review",
-        "acceptance_gate should advance an all-passed job to final_review");
-    Expect(persisted_job["next_action"] == "final_review",
-        "acceptance_gate should make final_review the next action after all tasks pass");
+    Expect(persisted_job["status"] == "pr_ready",
+        "final_review should advance the job to pr_ready instead of done");
+    Expect(persisted_job["phase"] == "pr_ready",
+        "final_review should persist pr_ready phase");
+    Expect(persisted_job["next_action"] == "none",
+        "final_review should clear next action after pr_ready");
 }
 
 }  // namespace
