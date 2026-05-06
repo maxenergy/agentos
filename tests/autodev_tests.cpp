@@ -583,10 +583,29 @@ void TestApproveSpecFreezesHashBoundRevision() {
         "approved spec should mark revision approved_frozen");
     Expect(revision_status["approved_by"] == "cli",
         "approved spec should record CLI approval provenance");
+    Expect(std::filesystem::exists(approved.tasks_path),
+        "approved spec should materialize runtime tasks.json");
+    const auto tasks = nlohmann::json::parse(ReadFile(approved.tasks_path));
+    Expect(tasks.is_array() && tasks.size() == 1,
+        "approved spec should materialize one runtime task");
+    Expect(tasks[0]["task_id"] == "task-001",
+        "materialized runtime task should preserve task id");
+    Expect(tasks[0]["status"] == "pending",
+        "materialized runtime task should start pending");
+    Expect(tasks[0]["current_activity"] == "none",
+        "materialized runtime task should start with no activity");
+    Expect(tasks[0]["spec_revision"] == "rev-001",
+        "materialized runtime task should record source spec revision");
+    Expect(tasks[0]["verify_command"] == "true",
+        "materialized runtime task should preserve verify command");
+    Expect(tasks[0]["acceptance_total"] == 1,
+        "materialized runtime task should preserve acceptance count");
 
     const auto events = ReadFile(store.events_path(submit.job.job_id));
     Expect(events.find("\"type\":\"autodev.spec.approved\"") != std::string::npos,
         "events.ndjson should record spec approved event");
+    Expect(events.find("\"type\":\"autodev.tasks.materialized\"") != std::string::npos,
+        "events.ndjson should record task materialization event");
 }
 
 }  // namespace

@@ -4,8 +4,11 @@
 #include "autodev/autodev_state_store.hpp"
 
 #include <iostream>
+#include <fstream>
 #include <map>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace agentos {
 
@@ -287,6 +290,7 @@ int RunApproveSpec(const std::filesystem::path& workspace, const int argc, char*
               << "spec_revision: " << result.spec_revision << '\n'
               << "spec_hash:     " << result.spec_hash << '\n'
               << "status_file:   " << result.status_path.string() << '\n'
+              << "tasks_file:    " << result.tasks_path.string() << '\n'
               << "next_action:   " << result.job.next_action << '\n'
               << "\nThe frozen spec is approved. Codex execution was not started by this command.\n";
     return 0;
@@ -348,6 +352,30 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
                   << "  schema_version: " << job->schema_version.value_or("(none)") << '\n'
                   << "  revision:       " << *job->spec_revision << '\n'
                   << "  hash:           " << job->spec_hash.value_or("(none)") << '\n';
+    }
+    if (std::filesystem::exists(store.tasks_path(job->job_id))) {
+        try {
+            std::ifstream input(store.tasks_path(job->job_id), std::ios::binary);
+            nlohmann::json tasks;
+            input >> tasks;
+            const auto total = tasks.is_array() ? tasks.size() : 0U;
+            std::size_t passed = 0;
+            if (tasks.is_array()) {
+                for (const auto& task : tasks) {
+                    if (task.value("status", "") == "passed") {
+                        ++passed;
+                    }
+                }
+            }
+            std::cout << '\n'
+                      << "Tasks:\n"
+                      << "  total:  " << total << '\n'
+                      << "  passed: " << passed << '\n';
+        } catch (...) {
+            std::cout << '\n'
+                      << "Tasks:\n"
+                      << "  error: failed to read tasks.json\n";
+        }
     }
     std::cout << '\n'
               << "Next action:\n"

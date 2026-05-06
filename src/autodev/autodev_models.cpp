@@ -28,6 +28,19 @@ std::optional<std::filesystem::path> ReadOptionalPath(const nlohmann::json& json
     return std::filesystem::path(json.at(key).get<std::string>());
 }
 
+std::vector<std::string> ReadStringVector(const nlohmann::json& json, const char* key) {
+    if (!json.contains(key) || !json.at(key).is_array()) {
+        return {};
+    }
+    std::vector<std::string> values;
+    for (const auto& value : json.at(key)) {
+        if (value.is_string()) {
+            values.push_back(value.get<std::string>());
+        }
+    }
+    return values;
+}
+
 }  // namespace
 
 nlohmann::json ToJson(const AutoDevSkillPackBinding& binding) {
@@ -113,6 +126,38 @@ AutoDevJob AutoDevJobFromJson(const nlohmann::json& json) {
     job.created_at = json.at("created_at").get<std::string>();
     job.updated_at = json.at("updated_at").get<std::string>();
     return job;
+}
+
+nlohmann::json ToJson(const AutoDevTask& task) {
+    return nlohmann::json{
+        {"task_id", task.task_id},
+        {"job_id", task.job_id},
+        {"title", task.title},
+        {"status", task.status},
+        {"current_activity", task.current_activity},
+        {"spec_revision", task.spec_revision},
+        {"allowed_files", task.allowed_files},
+        {"blocked_files", task.blocked_files},
+        {"verify_command", OptionalString(task.verify_command)},
+        {"acceptance_total", task.acceptance_total},
+        {"acceptance_passed", task.acceptance_passed},
+    };
+}
+
+AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json) {
+    AutoDevTask task;
+    task.task_id = json.value("task_id", std::string{});
+    task.job_id = json.value("job_id", std::string{});
+    task.title = json.value("title", std::string{});
+    task.status = json.value("status", "pending");
+    task.current_activity = json.value("current_activity", "none");
+    task.spec_revision = json.value("spec_revision", std::string{});
+    task.allowed_files = ReadStringVector(json, "allowed_files");
+    task.blocked_files = ReadStringVector(json, "blocked_files");
+    task.verify_command = ReadOptionalString(json, "verify_command");
+    task.acceptance_total = json.value("acceptance_total", 0);
+    task.acceptance_passed = json.value("acceptance_passed", 0);
+    return task;
 }
 
 }  // namespace agentos

@@ -67,6 +67,7 @@ struct AutoDevApproveSpecResult {
     std::string spec_revision;
     std::string spec_hash;
     std::filesystem::path status_path;
+    std::filesystem::path tasks_path;
 };
 
 class AutoDevStateStore {
@@ -79,6 +80,7 @@ public:
     [[nodiscard]] std::filesystem::path job_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path job_json_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path events_path(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path tasks_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path artifacts_dir(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path spec_revisions_dir(const std::string& job_id) const;
 

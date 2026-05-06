@@ -242,6 +242,19 @@ nlohmann::json SpecApprovedEvent(const AutoDevJob& job) {
     };
 }
 
+nlohmann::json TasksMaterializedEvent(const AutoDevJob& job, const std::vector<AutoDevTask>& tasks) {
+    return nlohmann::json{
+        {"type", "autodev.tasks.materialized"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"spec_revision", job.spec_revision.value_or("")},
+        {"tasks_total", tasks.size()},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
+    };
+}
+
 std::string ReadFile(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
@@ -304,6 +317,58 @@ std::string ValidateAutoDevSpecShape(const nlohmann::json& spec) {
         return "unsupported AUTODEV_SPEC schema_version: " + spec.at("schema_version").get<std::string>();
     }
     return {};
+}
+
+std::vector<std::string> JsonStringArray(const nlohmann::json& json, const char* key) {
+    if (!json.contains(key) || !json.at(key).is_array()) {
+        return {};
+    }
+    std::vector<std::string> values;
+    for (const auto& value : json.at(key)) {
+        if (value.is_string()) {
+            values.push_back(value.get<std::string>());
+        }
+    }
+    return values;
+}
+
+std::vector<AutoDevTask> MaterializeTasksFromSpec(
+    const AutoDevJob& job,
+    const nlohmann::json& spec,
+    const std::string& revision) {
+    std::vector<AutoDevTask> tasks;
+    if (!spec.contains("tasks") || !spec.at("tasks").is_array()) {
+        return tasks;
+    }
+    int generated_id = 1;
+    for (const auto& raw_task : spec.at("tasks")) {
+        if (!raw_task.is_object()) {
+            continue;
+        }
+        AutoDevTask task;
+        task.job_id = job.job_id;
+        task.spec_revision = revision;
+        task.task_id = raw_task.value("task_id", "");
+        if (task.task_id.empty()) {
+            std::ostringstream fallback;
+            fallback << "task-" << std::setw(3) << std::setfill('0') << generated_id;
+            task.task_id = fallback.str();
+        }
+        task.title = raw_task.value("title", task.task_id);
+        task.allowed_files = JsonStringArray(raw_task, "allowed_files");
+        task.blocked_files = JsonStringArray(raw_task, "blocked_files");
+        if (raw_task.contains("verify_command") && raw_task.at("verify_command").is_string()) {
+            task.verify_command = raw_task.at("verify_command").get<std::string>();
+        }
+        if (raw_task.contains("acceptance") && raw_task.at("acceptance").is_array()) {
+            task.acceptance_total = static_cast<int>(raw_task.at("acceptance").size());
+        } else if (raw_task.contains("acceptance_criteria") && raw_task.at("acceptance_criteria").is_array()) {
+            task.acceptance_total = static_cast<int>(raw_task.at("acceptance_criteria").size());
+        }
+        tasks.push_back(std::move(task));
+        ++generated_id;
+    }
+    return tasks;
 }
 
 std::string MarkdownSkeleton(const AutoDevJob& job, const std::string& title, const std::string& body) {
@@ -406,6 +471,10 @@ std::filesystem::path AutoDevStateStore::job_json_path(const std::string& job_id
 
 std::filesystem::path AutoDevStateStore::events_path(const std::string& job_id) const {
     return job_dir(job_id) / "events.ndjson";
+}
+
+std::filesystem::path AutoDevStateStore::tasks_path(const std::string& job_id) const {
+    return job_dir(job_id) / "tasks.json";
 }
 
 std::filesystem::path AutoDevStateStore::artifacts_dir(const std::string& job_id) const {
@@ -1055,6 +1124,10 @@ AutoDevApproveSpecResult AutoDevStateStore::approve_spec(
     if (!spec.contains("tasks") || !spec.at("tasks").is_array() || spec.at("tasks").empty()) {
         return block(std::move(job), "AUTODEV_SPEC tasks must not be empty before approval", "fix_autodev_spec");
     }
+    auto tasks = MaterializeTasksFromSpec(job, spec, revision);
+    if (tasks.empty()) {
+        return block(std::move(job), "AUTODEV_SPEC tasks could not be materialized", "fix_autodev_spec");
+    }
 
     const auto approved_at = IsoUtcNow();
     revision_status["status"] = "approved_frozen";
@@ -1062,6 +1135,11 @@ AutoDevApproveSpecResult AutoDevStateStore::approve_spec(
     revision_status["approved_by"] = "cli";
     revision_status["approval_gate"] = "none";
     WriteFileAtomically(status_path, revision_status.dump(2) + "\n");
+    nlohmann::json task_records = nlohmann::json::array();
+    for (const auto& task : tasks) {
+        task_records.push_back(ToJson(task));
+    }
+    WriteFileAtomically(tasks_path(job.job_id), task_records.dump(2) + "\n");
 
     job.status = "running";
     job.phase = "codex_execution";
@@ -1071,6 +1149,7 @@ AutoDevApproveSpecResult AutoDevStateStore::approve_spec(
     job.blocker = std::nullopt;
     job.updated_at = approved_at;
     save_job(job);
+    append_event(job.job_id, TasksMaterializedEvent(job, tasks));
     append_event(job.job_id, SpecApprovedEvent(job));
 
     AutoDevApproveSpecResult result;
@@ -1079,6 +1158,7 @@ AutoDevApproveSpecResult AutoDevStateStore::approve_spec(
     result.spec_revision = revision;
     result.spec_hash = spec_hash;
     result.status_path = status_path;
+    result.tasks_path = tasks_path(job_id);
     return result;
 }
 

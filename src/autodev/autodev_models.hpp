@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -52,8 +53,24 @@ struct AutoDevJob {
     std::string updated_at;
 };
 
+struct AutoDevTask {
+    std::string task_id;
+    std::string job_id;
+    std::string title;
+    std::string status = "pending";
+    std::string current_activity = "none";
+    std::string spec_revision;
+    std::vector<std::string> allowed_files;
+    std::vector<std::string> blocked_files;
+    std::optional<std::string> verify_command;
+    int acceptance_total = 0;
+    int acceptance_passed = 0;
+};
+
 nlohmann::json ToJson(const AutoDevSkillPackBinding& binding);
 nlohmann::json ToJson(const AutoDevJob& job);
+nlohmann::json ToJson(const AutoDevTask& task);
 AutoDevJob AutoDevJobFromJson(const nlohmann::json& json);
+AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json);
 
 }  // namespace agentos
