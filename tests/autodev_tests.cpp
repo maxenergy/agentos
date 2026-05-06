@@ -1,3 +1,4 @@
+#include "autodev/autodev_execution_adapter.hpp"
 #include "autodev/autodev_job_id.hpp"
 #include "autodev/autodev_state_store.hpp"
 
@@ -98,6 +99,31 @@ void TestJobIdValidation() {
         "path traversal should not pass job id validation");
     Expect(!agentos::IsValidAutoDevJobId("dev-1778050066404"),
         "legacy dev job id should not pass AutoDev validation");
+}
+
+void TestCodexCliExecutionAdapterProfileIsTransitional() {
+    const auto profile = agentos::CodexCliAutoDevAdapterProfile();
+    Expect(profile.adapter_kind == "codex_cli",
+        "Codex CLI AutoDev profile should identify the adapter kind");
+    Expect(profile.adapter_name == "CodexCliAutoDevAdapter",
+        "Codex CLI AutoDev profile should identify the transitional adapter name");
+    Expect(profile.continuity_mode == "best_effort_context",
+        "Codex CLI AutoDev profile should be honest about best-effort continuity");
+    Expect(profile.event_stream_mode == "synthetic",
+        "Codex CLI AutoDev profile should be honest about synthetic events");
+    Expect(!profile.supports_persistent_session,
+        "Codex CLI AutoDev profile should not claim persistent sessions");
+    Expect(!profile.supports_native_event_stream,
+        "Codex CLI AutoDev profile should not claim native event streams");
+    Expect(!profile.supports_same_thread_repair,
+        "Codex CLI AutoDev profile should not claim same-thread repair");
+    Expect(!profile.production_final_executor,
+        "Codex CLI AutoDev profile should not claim final production executor status");
+    const agentos::CodexCliAutoDevAdapter adapter;
+    Expect(adapter.profile().adapter_kind == "codex_cli",
+        "Codex CLI AutoDev adapter should expose its profile through the adapter interface");
+    Expect(!adapter.healthy(),
+        "Codex CLI AutoDev adapter should fail closed until execution is implemented");
 }
 
 void TestSubmitCreatesRuntimeFactsOnly() {
@@ -626,6 +652,7 @@ void TestApproveSpecFreezesHashBoundRevision() {
 
 int main() {
     TestJobIdValidation();
+    TestCodexCliExecutionAdapterProfileIsTransitional();
     TestSubmitCreatesRuntimeFactsOnly();
     TestSubmitWithoutSkillPackStaysNotLoaded();
     TestSubmitMissingTargetFailsWithoutJob();

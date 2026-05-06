@@ -1,8 +1,10 @@
 #include "cli/autodev_commands.hpp"
 
+#include "autodev/autodev_execution_adapter.hpp"
 #include "autodev/autodev_job_id.hpp"
 #include "autodev/autodev_state_store.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <map>
@@ -41,7 +43,8 @@ void PrintUsage() {
         << "  agentos autodev validate-spec job_id=<job_id>\n"
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
-        << "  agentos autodev events job_id=<job_id>\n";
+        << "  agentos autodev events job_id=<job_id>\n"
+        << "  agentos autodev execute-next-task job_id=<job_id>\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -412,6 +415,96 @@ int RunEvents(const std::filesystem::path& workspace, const int argc, char* argv
     return 0;
 }
 
+int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev execute-next-task failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev execute-next-task failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto job = store.load_job(job_id_it->second, &error);
+    if (!job.has_value()) {
+        std::cerr << "autodev execute-next-task failed: " << error << '\n';
+        return 1;
+    }
+    if (job->status != "running" || job->phase != "codex_execution") {
+        std::cerr << "autodev execute-next-task failed: job is not in codex_execution\n"
+                  << "status: " << job->status << '\n'
+                  << "phase:  " << job->phase << '\n';
+        return 1;
+    }
+    if (job->approval_gate != "none") {
+        std::cerr << "autodev execute-next-task failed: approval gate is still active: " << job->approval_gate << '\n';
+        return 1;
+    }
+    if (job->isolation_status != "ready" || !std::filesystem::exists(job->job_worktree_path)) {
+        std::cerr << "autodev execute-next-task failed: workspace isolation is not ready\n"
+                  << "isolation_status: " << job->isolation_status << '\n'
+                  << "job_worktree_path: " << job->job_worktree_path.string() << '\n';
+        return 1;
+    }
+    if (!job->spec_revision.has_value() || !job->spec_hash.has_value()) {
+        std::cerr << "autodev execute-next-task failed: no approved frozen spec is recorded on the job\n";
+        return 1;
+    }
+
+    const auto tasks = store.load_tasks(job_id_it->second, &error);
+    if (!tasks.has_value()) {
+        std::cerr << "autodev execute-next-task failed: " << error << '\n';
+        return 1;
+    }
+    const auto pending_task = std::find_if(tasks->begin(), tasks->end(), [](const AutoDevTask& task) {
+        return task.status == "pending";
+    });
+    if (pending_task == tasks->end()) {
+        std::cerr << "autodev execute-next-task failed: no pending AutoDev task is available\n";
+        return 1;
+    }
+
+    const CodexCliAutoDevAdapter adapter;
+    const auto profile = adapter.profile();
+    std::cout << "AutoDev execution preflight\n"
+              << "job_id:             " << job->job_id << '\n'
+              << "status:             " << job->status << '\n'
+              << "phase:              " << job->phase << '\n'
+              << "spec_revision:      " << *job->spec_revision << '\n'
+              << "spec_hash:          " << *job->spec_hash << '\n'
+              << "job_worktree_path:  " << job->job_worktree_path.string() << '\n'
+              << '\n'
+              << "Next task:\n"
+              << "  task_id:          " << pending_task->task_id << '\n'
+              << "  title:            " << pending_task->title << '\n'
+              << "  status:           " << pending_task->status << '\n'
+              << "  current_activity: " << pending_task->current_activity << '\n';
+    if (pending_task->verify_command.has_value()) {
+        std::cout << "  verify_command:   " << *pending_task->verify_command << '\n';
+    }
+
+    std::cout << '\n'
+              << "Execution adapter:\n"
+              << "  adapter_kind:                " << profile.adapter_kind << '\n'
+              << "  adapter_name:                " << profile.adapter_name << '\n'
+              << "  continuity_mode:             " << profile.continuity_mode << '\n'
+              << "  event_stream_mode:           " << profile.event_stream_mode << '\n'
+              << "  supports_persistent_session: " << (profile.supports_persistent_session ? "true" : "false") << '\n'
+              << "  supports_native_event_stream:" << (profile.supports_native_event_stream ? " true" : " false") << '\n'
+              << "  supports_same_thread_repair: " << (profile.supports_same_thread_repair ? "true" : "false") << '\n'
+              << "  production_final_executor:   " << (profile.production_final_executor ? "true" : "false") << '\n'
+              << "  healthy:                     " << (adapter.healthy() ? "true" : "false") << '\n'
+              << "  risk_level:                  " << profile.risk_level << '\n'
+              << '\n'
+              << "Execution was not started. Codex CLI AutoDev execution is not implemented in this build.\n"
+              << "Task status and job completion remain controlled by AgentOS runtime facts.\n";
+    return 1;
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -545,6 +638,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "events") {
         return RunEvents(workspace, argc, argv);
+    }
+    if (subcommand == "execute-next-task" || subcommand == "execute_next_task") {
+        return RunExecuteNextTask(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';

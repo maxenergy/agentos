@@ -25,6 +25,7 @@ FetchContent_Declare(
 FetchContent_Populate(httplib)
 
 add_library(agentos_core
+    src/autodev/autodev_execution_adapter.cpp
     src/autodev/autodev_job_id.cpp
     src/autodev/autodev_models.cpp
     src/autodev/autodev_skill_pack_loader.cpp

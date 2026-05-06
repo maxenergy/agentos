@@ -2479,6 +2479,79 @@ void TestAutoDevCommands() {
     Expect(events_result.output.find("autodev.spec.approval_blocked") != std::string::npos,
         "autodev events should include approval blocked event");
 
+    const auto executable_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Execute approved task preflight",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(executable_submit.exit_code == 0, "autodev submit should support a second executable fixture job");
+    const auto executable_job_id = ExtractLineValue(executable_submit.output, "job_id:");
+    const auto executable_planned_worktree = ExtractLineValue(executable_submit.output, "job_worktree_path:");
+    const auto executable_planned_path = executable_planned_worktree.substr(0, executable_planned_worktree.find(" "));
+    const auto executable_job_dir = workspace / "runtime" / "autodev" / "jobs" / executable_job_id;
+
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + executable_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare executable fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + executable_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load executable fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + executable_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate executable fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(executable_planned_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Execute approved task preflight\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Update README through execution adapter\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"README.md remains present\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto executable_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + executable_job_id});
+    Expect(executable_validate.exit_code == 0,
+        "autodev validate-spec should validate executable fixture spec");
+    const auto executable_spec_hash = ExtractLineValue(executable_validate.output, "spec_hash:");
+    const auto executable_approve = RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + executable_job_id,
+        "spec_hash=" + executable_spec_hash});
+    Expect(executable_approve.exit_code == 0,
+        "autodev approve-spec should approve executable fixture spec");
+    const auto execute_next = RunAgentos(workspace, {"autodev", "execute-next-task", "job_id=" + executable_job_id});
+    Expect(execute_next.exit_code != 0,
+        "autodev execute-next-task should fail closed until a real execution adapter is implemented");
+    Expect(execute_next.output.find("AutoDev execution preflight") != std::string::npos,
+        "autodev execute-next-task should print execution preflight details");
+    Expect(execute_next.output.find("task_id:          task-001") != std::string::npos,
+        "autodev execute-next-task should select the first pending runtime task");
+    Expect(execute_next.output.find("adapter_kind:                codex_cli") != std::string::npos,
+        "autodev execute-next-task should expose the transitional adapter kind");
+    Expect(execute_next.output.find("continuity_mode:             best_effort_context") != std::string::npos,
+        "autodev execute-next-task should expose best-effort continuity");
+    Expect(execute_next.output.find("event_stream_mode:           synthetic") != std::string::npos,
+        "autodev execute-next-task should expose synthetic events");
+    Expect(execute_next.output.find("Execution was not started") != std::string::npos,
+        "autodev execute-next-task should clearly state that Codex was not started");
+    const auto executable_tasks = ReadTextFile(executable_job_dir / "tasks.json");
+    Expect(executable_tasks.find("\"status\": \"pending\"") != std::string::npos,
+        "failed-closed execute-next-task should leave runtime task status pending");
+
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");
     Expect(invalid_status.output.find("invalid job_id") != std::string::npos,
