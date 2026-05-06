@@ -2756,6 +2756,141 @@ AutoDevCompleteJobResult AutoDevStateStore::complete_job(const std::string& job_
     return result;
 }
 
+AutoDevJobControlResult AutoDevStateStore::pause_job(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevJobControlResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    if (job.status == "done" || job.status == "cancelled") {
+        return AutoDevJobControlResult{
+            .error_message = "job cannot be paused from status: " + job.status,
+            .job = std::move(job),
+        };
+    }
+    if (job.status == "paused") {
+        AutoDevJobControlResult result;
+        result.success = true;
+        result.job = std::move(job);
+        return result;
+    }
+
+    const auto previous_status = job.status;
+    const auto previous_next_action = job.next_action;
+    job.status = "paused";
+    job.current_activity = "none";
+    job.next_action = "resume";
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.job.paused"},
+        {"job_id", job.job_id},
+        {"previous_status", previous_status},
+        {"phase", job.phase},
+        {"previous_next_action", previous_next_action},
+        {"next_action", job.next_action},
+        {"process_interrupted", false},
+        {"at", job.updated_at},
+    });
+    AutoDevJobControlResult result;
+    result.success = true;
+    result.job = std::move(job);
+    return result;
+}
+
+AutoDevJobControlResult AutoDevStateStore::resume_job(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevJobControlResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    if (job.status != "paused") {
+        return AutoDevJobControlResult{
+            .error_message = "job is not paused",
+            .job = std::move(job),
+        };
+    }
+
+    job.status = "running";
+    job.current_activity = "none";
+    if (job.phase == "final_review") {
+        job.next_action = "final_review";
+    } else if (job.phase == "repairing") {
+        job.next_action = "inspect_repairs";
+    } else if (job.phase == "pr_ready") {
+        job.next_action = "complete_job";
+    } else {
+        job.next_action = "execute_next_task";
+    }
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.job.resumed"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"next_action", job.next_action},
+        {"process_restarted", false},
+        {"at", job.updated_at},
+    });
+    AutoDevJobControlResult result;
+    result.success = true;
+    result.job = std::move(job);
+    return result;
+}
+
+AutoDevJobControlResult AutoDevStateStore::cancel_job(const std::string& job_id) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevJobControlResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    if (job.status == "done") {
+        return AutoDevJobControlResult{
+            .error_message = "done job cannot be cancelled",
+            .job = std::move(job),
+        };
+    }
+    if (job.status == "cancelled") {
+        AutoDevJobControlResult result;
+        result.success = true;
+        result.job = std::move(job);
+        return result;
+    }
+
+    const auto previous_status = job.status;
+    const auto previous_phase = job.phase;
+    job.status = "cancelled";
+    job.phase = "cancelled";
+    job.current_activity = "none";
+    job.next_action = "none";
+    job.blocker = std::nullopt;
+    job.updated_at = IsoUtcNow();
+    save_job(job);
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.job.cancelled"},
+        {"job_id", job.job_id},
+        {"previous_status", previous_status},
+        {"previous_phase", previous_phase},
+        {"next_action", job.next_action},
+        {"process_terminated", false},
+        {"at", job.updated_at},
+    });
+    AutoDevJobControlResult result;
+    result.success = true;
+    result.job = std::move(job);
+    return result;
+}
+
 std::optional<AutoDevJob> AutoDevStateStore::load_job(
     const std::string& job_id,
     std::string* error_message) const {

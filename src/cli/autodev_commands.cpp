@@ -61,6 +61,9 @@ void PrintUsage() {
         << "  agentos autodev final-review job_id=<job_id>\n"
         << "  agentos autodev final-reviews job_id=<job_id>\n"
         << "  agentos autodev complete-job job_id=<job_id>\n"
+        << "  agentos autodev pause job_id=<job_id>\n"
+        << "  agentos autodev resume job_id=<job_id>\n"
+        << "  agentos autodev cancel job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
         << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server]\n";
@@ -1067,6 +1070,46 @@ int RunCompleteJob(const std::filesystem::path& workspace, const int argc, char*
     return 0;
 }
 
+int RunJobControl(
+    const std::filesystem::path& workspace,
+    const int argc,
+    char* argv[],
+    const std::string& command,
+    AutoDevJobControlResult (AutoDevStateStore::*operation)(const std::string&)) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev " << command << " failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev " << command << " failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = (store.*operation)(job_id_it->second);
+    if (!result.success) {
+        std::cerr << "autodev " << command << " failed: " << result.error_message << '\n';
+        if (!result.job.job_id.empty()) {
+            std::cerr << "status:      " << result.job.status << '\n'
+                      << "phase:       " << result.job.phase << '\n'
+                      << "next_action: " << result.job.next_action << '\n';
+        }
+        return 1;
+    }
+
+    const auto past_tense = command == "cancel" ? std::string("cancelled") : command + "d";
+    std::cout << "AutoDev job " << past_tense << '\n'
+              << "job_id:      " << result.job.job_id << '\n'
+              << "status:      " << result.job.status << '\n'
+              << "phase:       " << result.job.phase << '\n'
+              << "next_action: " << result.job.next_action << '\n'
+              << "updated_at:  " << result.job.updated_at << '\n'
+              << "\nNo Codex process was interrupted or terminated by this command.\n";
+    return 0;
+}
+
 int RunPrSummary(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -1627,6 +1670,15 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     if (subcommand == "complete-job" || subcommand == "complete_job" ||
         subcommand == "mark-done" || subcommand == "mark_done") {
         return RunCompleteJob(workspace, argc, argv);
+    }
+    if (subcommand == "pause") {
+        return RunJobControl(workspace, argc, argv, "pause", &AutoDevStateStore::pause_job);
+    }
+    if (subcommand == "resume") {
+        return RunJobControl(workspace, argc, argv, "resume", &AutoDevStateStore::resume_job);
+    }
+    if (subcommand == "cancel") {
+        return RunJobControl(workspace, argc, argv, "cancel", &AutoDevStateStore::cancel_job);
     }
     if (subcommand == "pr-summary" || subcommand == "pr_summary") {
         return RunPrSummary(workspace, argc, argv);

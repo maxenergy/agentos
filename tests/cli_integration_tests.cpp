@@ -3105,6 +3105,51 @@ void TestAutoDevCommands() {
         "autodev repairs should include acceptance repair source");
     Expect(failing_repairs.output.find("prompt_artifact:") != std::string::npos,
         "autodev repairs should show failed verification repair prompt artifact");
+    const auto pause_failed_job = RunAgentos(workspace, {"autodev", "pause", "job_id=" + failing_verify_job_id});
+    Expect(pause_failed_job.exit_code == 0,
+        "autodev pause should update job status without stopping a process");
+    Expect(pause_failed_job.output.find("AutoDev job paused") != std::string::npos,
+        "autodev pause should print paused heading");
+    Expect(pause_failed_job.output.find("status:      paused") != std::string::npos,
+        "autodev pause should report paused status");
+    Expect(pause_failed_job.output.find("next_action: resume") != std::string::npos,
+        "autodev pause should make resume the next action");
+    Expect(pause_failed_job.output.find("No Codex process was interrupted") != std::string::npos,
+        "autodev pause should state that it does not interrupt Codex");
+    const auto resume_failed_job = RunAgentos(workspace, {"autodev", "resume", "job_id=" + failing_verify_job_id});
+    Expect(resume_failed_job.exit_code == 0,
+        "autodev resume should restore a paused job to running");
+    Expect(resume_failed_job.output.find("AutoDev job resumed") != std::string::npos,
+        "autodev resume should print resumed heading");
+    Expect(resume_failed_job.output.find("status:      running") != std::string::npos,
+        "autodev resume should report running status");
+    Expect(resume_failed_job.output.find("next_action: execute_next_task") != std::string::npos,
+        "autodev resume should restore codex_execution next action");
+    const auto cancel_failed_job = RunAgentos(workspace, {"autodev", "cancel", "job_id=" + failing_verify_job_id});
+    Expect(cancel_failed_job.exit_code == 0,
+        "autodev cancel should update job status without killing a process");
+    Expect(cancel_failed_job.output.find("AutoDev job cancelled") != std::string::npos,
+        "autodev cancel should print cancelled heading");
+    Expect(cancel_failed_job.output.find("status:      cancelled") != std::string::npos,
+        "autodev cancel should report cancelled status");
+    Expect(cancel_failed_job.output.find("phase:       cancelled") != std::string::npos,
+        "autodev cancel should report cancelled phase");
+    Expect(cancel_failed_job.output.find("next_action: none") != std::string::npos,
+        "autodev cancel should clear next action");
+    const auto cancelled_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + failing_verify_job_id});
+    Expect(cancelled_status.exit_code == 0,
+        "autodev status should read cancelled job");
+    Expect(cancelled_status.output.find("Status: cancelled") != std::string::npos,
+        "autodev status should show cancelled status");
+    const auto cancelled_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + failing_verify_job_id});
+    Expect(cancelled_events.exit_code == 0,
+        "autodev events should read pause/resume/cancel events");
+    Expect(cancelled_events.output.find("autodev.job.paused") != std::string::npos,
+        "autodev pause should append a paused event");
+    Expect(cancelled_events.output.find("autodev.job.resumed") != std::string::npos,
+        "autodev resume should append a resumed event");
+    Expect(cancelled_events.output.find("autodev.job.cancelled") != std::string::npos,
+        "autodev cancel should append a cancelled event");
 
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
