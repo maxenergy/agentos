@@ -887,6 +887,16 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "repair-needed fact should record diff guard source");
     Expect(repairs.has_value() && repairs->front().next_action == "repair_task",
         "repair-needed fact should record next repair action");
+    Expect(repairs.has_value() && repairs->front().prompt_artifact.has_value() &&
+               std::filesystem::exists(*repairs->front().prompt_artifact),
+        "repair-needed fact should write same-thread repair prompt artifact");
+    if (repairs.has_value() && repairs->front().prompt_artifact.has_value()) {
+        const auto repair_prompt = ReadFile(*repairs->front().prompt_artifact);
+        Expect(repair_prompt.find("same thread/session") != std::string::npos,
+            "repair prompt should require same thread/session repair");
+        Expect(repair_prompt.find("diff_guard") != std::string::npos,
+            "repair prompt should include failed fact source");
+    }
     const auto soft_rollback = store.rollback_soft(submit.job.job_id, "task-001");
     Expect(soft_rollback.success,
         "rollback_soft should restore tracked task files in the job worktree");

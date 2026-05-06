@@ -660,6 +660,40 @@ std::string BlockedExecutionResponseArtifact(
     return out.str();
 }
 
+std::string RepairPromptArtifact(
+    const AutoDevJob& job,
+    const AutoDevTask& task,
+    const AutoDevRepairNeeded& repair) {
+    std::ostringstream out;
+    out << "# AutoDev Repair Prompt\n\n"
+        << "Use the same thread/session that produced the failed runtime facts. "
+        << "Do not start a new independent repair context unless explicitly instructed.\n\n"
+        << "## Job\n\n"
+        << "- job_id: `" << job.job_id << "`\n"
+        << "- status: `" << job.status << "`\n"
+        << "- phase: `" << job.phase << "`\n"
+        << "- objective: " << job.objective << "\n\n"
+        << "## Task\n\n"
+        << "- task_id: `" << task.task_id << "`\n"
+        << "- title: " << task.title << "\n"
+        << "- status: `" << task.status << "`\n\n"
+        << "## Failed Runtime Fact\n\n"
+        << "- repair_id: `" << repair.repair_id << "`\n"
+        << "- source_type: `" << repair.source_type << "`\n"
+        << "- source_id: `" << repair.source_id << "`\n"
+        << "- next_action: `" << repair.next_action << "`\n\n"
+        << "## Reasons\n\n";
+    for (const auto& reason : repair.reasons) {
+        out << "- " << reason << '\n';
+    }
+    out << "\n## Instructions\n\n"
+        << "- Inspect the linked runtime facts before editing.\n"
+        << "- Repair only the failing task scope and preserve AgentOS runtime authority boundaries.\n"
+        << "- After repair, rerun verification, diff guard, and acceptance gate for this task.\n"
+        << "- This artifact is a prompt aid only; it does not complete or approve the task.\n";
+    return out.str();
+}
+
 std::string VerificationReportMarkdown(
     const AutoDevJob& job,
     const AutoDevTask& task,
@@ -1677,6 +1711,8 @@ AutoDevRepairNeeded AutoDevStateStore::record_repair_needed(
     repair.status = "needed";
     repair.next_action = "repair_task";
     repair.recorded_at = IsoUtcNow();
+    repair.prompt_artifact = job_dir(job.job_id) / "repairs" / (repair.repair_id + ".prompt.md");
+    WriteFileAtomically(*repair.prompt_artifact, RepairPromptArtifact(job, task, repair));
     repair_records.push_back(ToJson(repair));
     WriteFileAtomically(repairs_path(job.job_id), repair_records.dump(2) + "\n");
 
@@ -1691,6 +1727,7 @@ AutoDevRepairNeeded AutoDevStateStore::record_repair_needed(
         {"source_id", repair.source_id},
         {"reasons", repair.reasons},
         {"next_action", repair.next_action},
+        {"prompt_artifact", repair.prompt_artifact->string()},
         {"at", repair.recorded_at},
     });
     return repair;

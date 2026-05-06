@@ -2859,6 +2859,15 @@ void TestAutoDevCommands() {
         "autodev repairs should link diff guard repair source");
     Expect(repairs_after_failed_gates.output.find("source:      acceptance_gate acceptance-002") != std::string::npos,
         "autodev repairs should link acceptance repair source");
+    Expect(repairs_after_failed_gates.output.find("prompt_artifact:") != std::string::npos,
+        "autodev repairs should show repair prompt artifact path");
+    Expect(std::filesystem::exists(executable_job_dir / "repairs" / "repair-001.prompt.md"),
+        "failed diff guard should write repair prompt artifact");
+    const auto repair_prompt = ReadTextFile(executable_job_dir / "repairs" / "repair-001.prompt.md");
+    Expect(repair_prompt.find("same thread/session") != std::string::npos,
+        "repair prompt artifact should require same thread/session repair");
+    Expect(repair_prompt.find("diff_guard") != std::string::npos,
+        "repair prompt artifact should include failed runtime fact source");
     const auto diffs_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id});
     Expect(diffs_result.exit_code == 0,
         "autodev diffs should list diff guard facts");
@@ -3060,6 +3069,8 @@ void TestAutoDevCommands() {
         "autodev repairs should include verification repair source");
     Expect(failing_repairs.output.find("source:      acceptance_gate acceptance-001") != std::string::npos,
         "autodev repairs should include acceptance repair source");
+    Expect(failing_repairs.output.find("prompt_artifact:") != std::string::npos,
+        "autodev repairs should show failed verification repair prompt artifact");
 
     const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
     Expect(executable_events.exit_code == 0,
@@ -3074,6 +3085,8 @@ void TestAutoDevCommands() {
         "autodev rollback-hard should append a denied rollback event");
     Expect(executable_events.output.find("autodev.repair.needed") != std::string::npos,
         "failed gates should append repair needed events");
+    Expect(executable_events.output.find("prompt_artifact") != std::string::npos,
+        "repair needed event should link repair prompt artifact");
     Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
         "autodev verify-task should append a verification completed event");
     Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,

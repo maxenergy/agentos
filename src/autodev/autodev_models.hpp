@@ -124,6 +124,7 @@ struct AutoDevRepairNeeded {
     std::string status = "needed";
     std::string next_action = "repair_task";
     std::string recorded_at;
+    std::optional<std::filesystem::path> prompt_artifact;
 };
 
 struct AutoDevVerification {

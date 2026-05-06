@@ -425,6 +425,9 @@ int RunEvents(const std::filesystem::path& workspace, const int argc, char* argv
             if (event.contains("next_action") && event.at("next_action").is_string()) {
                 std::cout << " next_action=" << event.at("next_action").get<std::string>();
             }
+            if (event.contains("prompt_artifact") && event.at("prompt_artifact").is_string()) {
+                std::cout << " prompt_artifact=" << event.at("prompt_artifact").get<std::string>();
+            }
             if (event.contains("blocker") && event.at("blocker").is_string() && !event.at("blocker").get<std::string>().empty()) {
                 std::cout << " blocker=" << event.at("blocker").get<std::string>();
             }
@@ -702,6 +705,9 @@ int RunRepairs(const std::filesystem::path& workspace, const int argc, char* arg
                   << "  status:      " << repair.status << '\n'
                   << "  next_action: " << repair.next_action << '\n'
                   << "  recorded_at: " << repair.recorded_at << '\n';
+        if (repair.prompt_artifact.has_value()) {
+            std::cout << "  prompt_artifact: " << repair.prompt_artifact->string() << '\n';
+        }
         PrintStringList("  reasons:", repair.reasons);
     }
     return 0;
@@ -1297,6 +1303,9 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
                   << "  task_id:     " << repair.task_id << '\n'
                   << "  source:      " << repair.source_type << " " << repair.source_id << '\n'
                   << "  next_action: " << repair.next_action << '\n';
+        if (repair.prompt_artifact.has_value()) {
+            std::cout << "  prompt_artifact: " << repair.prompt_artifact->string() << '\n';
+        }
         PrintStringList("  reasons:", repair.reasons);
     }
     return 0;

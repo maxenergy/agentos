@@ -277,6 +277,7 @@ nlohmann::json ToJson(const AutoDevRepairNeeded& repair) {
         {"status", repair.status},
         {"next_action", repair.next_action},
         {"recorded_at", repair.recorded_at},
+        {"prompt_artifact", OptionalPath(repair.prompt_artifact)},
     };
 }
 
@@ -291,6 +292,7 @@ AutoDevRepairNeeded AutoDevRepairNeededFromJson(const nlohmann::json& json) {
     repair.status = json.value("status", "needed");
     repair.next_action = json.value("next_action", "repair_task");
     repair.recorded_at = json.value("recorded_at", std::string{});
+    repair.prompt_artifact = ReadOptionalPath(json, "prompt_artifact");
     return repair;
 }
 
