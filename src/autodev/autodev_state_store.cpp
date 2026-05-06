@@ -2327,6 +2327,47 @@ std::optional<std::vector<AutoDevDiffGuard>> AutoDevStateStore::load_diffs(
     }
 }
 
+std::optional<std::vector<AutoDevAcceptanceGate>> AutoDevStateStore::load_acceptances(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+
+    const auto path = acceptance_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error_message) {
+            *error_message = "AutoDev acceptance records not found: " + job_id + "\nExpected path:\n" + path.string();
+        }
+        return std::nullopt;
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev acceptance records: acceptance.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevAcceptanceGate> acceptances;
+        for (const auto& acceptance_json : json) {
+            acceptances.push_back(AutoDevAcceptanceGateFromJson(acceptance_json));
+        }
+        return acceptances;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev acceptance records: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
 std::optional<std::vector<AutoDevFinalReview>> AutoDevStateStore::load_final_reviews(
     const std::string& job_id,
     std::string* error_message) const {

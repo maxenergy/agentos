@@ -2646,6 +2646,15 @@ void TestAutoDevCommands() {
         "autodev acceptance-gate should mark the task passed");
     Expect(std::filesystem::exists(executable_job_dir / "acceptance.json"),
         "autodev acceptance-gate should write acceptance.json under runtime store");
+    const auto acceptances = RunAgentos(workspace, {"autodev", "acceptances", "job_id=" + executable_job_id});
+    Expect(acceptances.exit_code == 0,
+        "autodev acceptances should list acceptance gate facts");
+    Expect(acceptances.output.find("AutoDev acceptances") != std::string::npos,
+        "autodev acceptances should print heading");
+    Expect(acceptances.output.find("acceptance_id: acceptance-001") != std::string::npos,
+        "autodev acceptances should include acceptance-001");
+    Expect(acceptances.output.find("verification:  verify-001") != std::string::npos,
+        "autodev acceptances should include linked verification id");
     const auto accepted_tasks = ReadTextFile(executable_job_dir / "tasks.json");
     Expect(accepted_tasks.find("\"status\": \"passed\"") != std::string::npos,
         "autodev acceptance-gate should persist passed task status");

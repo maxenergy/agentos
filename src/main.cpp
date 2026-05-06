@@ -661,6 +661,7 @@ void PrintUsage() {
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev diffs job_id=<job_id>\n"
         << "  agentos autodev acceptance-gate job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev acceptances job_id=<job_id>\n"
         << "  agentos autodev final-review job_id=<job_id>\n"
         << "  agentos autodev final-reviews job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"

@@ -49,6 +49,7 @@ void PrintUsage() {
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev diffs job_id=<job_id>\n"
         << "  agentos autodev acceptance-gate job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev acceptances job_id=<job_id>\n"
         << "  agentos autodev final-review job_id=<job_id>\n"
         << "  agentos autodev final-reviews job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
@@ -688,6 +689,42 @@ int RunAcceptanceGate(const std::filesystem::path& workspace, const int argc, ch
     return result.acceptance.passed ? 0 : 1;
 }
 
+int RunAcceptances(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev acceptances failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev acceptances failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto acceptances = store.load_acceptances(job_id_it->second, &error);
+    if (!acceptances.has_value()) {
+        std::cerr << "autodev acceptances failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev acceptances\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << acceptances->size() << '\n';
+    for (const auto& acceptance : *acceptances) {
+        std::cout << '\n'
+                  << "- acceptance_id: " << acceptance.acceptance_id << '\n'
+                  << "  task_id:       " << acceptance.task_id << '\n'
+                  << "  passed:        " << (acceptance.passed ? "true" : "false") << '\n'
+                  << "  verification:  " << acceptance.verification_id.value_or("(none)") << '\n'
+                  << "  diff:          " << acceptance.diff_id.value_or("(none)") << '\n'
+                  << "  checked_at:    " << acceptance.checked_at << '\n';
+        PrintStringList("  reasons:       ", acceptance.reasons);
+    }
+    return 0;
+}
+
 int RunFinalReview(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -1005,6 +1042,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "acceptance-gate" || subcommand == "acceptance_gate") {
         return RunAcceptanceGate(workspace, argc, argv);
+    }
+    if (subcommand == "acceptances") {
+        return RunAcceptances(workspace, argc, argv);
     }
     if (subcommand == "final-review" || subcommand == "final_review") {
         return RunFinalReview(workspace, argc, argv);

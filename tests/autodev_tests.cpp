@@ -781,6 +781,12 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "acceptance_gate should mark the task passed when runtime facts pass");
     Expect(std::filesystem::exists(store.acceptance_path(submit.job.job_id)),
         "acceptance_gate should write acceptance.json under runtime store");
+    std::string acceptances_error;
+    const auto acceptances = store.load_acceptances(submit.job.job_id, &acceptances_error);
+    Expect(acceptances.has_value() && acceptances->size() == 1,
+        "load_acceptances should read acceptance gate records");
+    Expect(acceptances.has_value() && acceptances->front().acceptance_id == "acceptance-001",
+        "load_acceptances should preserve acceptance id");
     {
         const auto accepted_tasks = nlohmann::json::parse(ReadFile(store.tasks_path(submit.job.job_id)));
         Expect(accepted_tasks[0]["status"] == "passed",
