@@ -492,6 +492,103 @@ void TestValidateSpecBlocksUnsupportedSchema() {
         "unsupported schema should explain blocker");
 }
 
+void TestApproveSpecRequiresNonEmptyTasks() {
+    const auto workspace = FreshWorkspace("approve_spec_empty_tasks");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Approve empty spec",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before empty approve_spec should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace before empty approve_spec should succeed");
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(loaded.success, "load_skill_pack before empty approve_spec should succeed");
+    const auto generated = store.generate_goal_docs(submit.job.job_id);
+    Expect(generated.success, "generate_goal_docs before empty approve_spec should succeed");
+    const auto validated = store.validate_spec(submit.job.job_id);
+    Expect(validated.success, "validate_spec before empty approve_spec should succeed");
+
+    const auto approved = store.approve_spec(submit.job.job_id, validated.spec_hash);
+    Expect(!approved.success, "approve_spec should block empty generated task list");
+    Expect(approved.job.status == "blocked",
+        "empty task approval should block job");
+    Expect(approved.job.blocker.has_value() &&
+               approved.job.blocker->find("tasks must not be empty") != std::string::npos,
+        "empty task approval should explain blocker");
+}
+
+void TestApproveSpecFreezesHashBoundRevision() {
+    const auto workspace = FreshWorkspace("approve_spec");
+    const auto target = workspace / "target_app";
+    InitGitRepo(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    agentos::AutoDevStateStore store(workspace);
+    const auto submit = store.submit(agentos::AutoDevSubmitRequest{
+        .agentos_workspace = workspace,
+        .target_repo_path = target,
+        .objective = "Approve spec",
+        .skill_pack_path = skill_pack,
+    });
+    Expect(submit.success, "submit before approve_spec should succeed");
+    const auto prepared = store.prepare_workspace(submit.job.job_id);
+    Expect(prepared.success, "prepare_workspace before approve_spec should succeed");
+    const auto loaded = store.load_skill_pack(submit.job.job_id);
+    Expect(loaded.success, "load_skill_pack before approve_spec should succeed");
+    const auto generated = store.generate_goal_docs(submit.job.job_id);
+    Expect(generated.success, "generate_goal_docs before approve_spec should succeed");
+
+    const auto spec_path = prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json";
+    auto spec = nlohmann::json::parse(ReadFile(spec_path));
+    spec["tasks"] = nlohmann::json::array({
+        {
+            {"task_id", "task-001"},
+            {"title", "Implement approved fixture task"},
+            {"allowed_files", nlohmann::json::array({"README.md"})},
+            {"blocked_files", nlohmann::json::array()},
+            {"verify_command", "true"},
+            {"acceptance", nlohmann::json::array({"README.md remains readable"})},
+        }
+    });
+    {
+        std::ofstream output(spec_path, std::ios::binary | std::ios::trunc);
+        output << spec.dump(2) << '\n';
+    }
+
+    const auto validated = store.validate_spec(submit.job.job_id);
+    Expect(validated.success, "validate_spec before approve_spec should succeed for nonempty tasks");
+    const auto wrong_hash = store.approve_spec(submit.job.job_id, std::string(64, '0'));
+    Expect(!wrong_hash.success, "approve_spec should reject wrong spec hash");
+    Expect(wrong_hash.error_message.find("does not match") != std::string::npos,
+        "wrong hash approval should explain mismatch");
+
+    const auto approved = store.approve_spec(submit.job.job_id, validated.spec_hash);
+    Expect(approved.success, "approve_spec should approve hash-matched nonempty task spec");
+    Expect(approved.job.status == "running", "approved spec should make job runnable");
+    Expect(approved.job.phase == "codex_execution", "approved spec should enter codex_execution phase");
+    Expect(approved.job.approval_gate == "none", "approved spec should clear approval gate");
+    Expect(approved.job.next_action == "execute_next_task", "approved spec should point to execution adapter");
+
+    const auto revision_status = nlohmann::json::parse(ReadFile(approved.status_path));
+    Expect(revision_status["status"] == "approved_frozen",
+        "approved spec should mark revision approved_frozen");
+    Expect(revision_status["approved_by"] == "cli",
+        "approved spec should record CLI approval provenance");
+
+    const auto events = ReadFile(store.events_path(submit.job.job_id));
+    Expect(events.find("\"type\":\"autodev.spec.approved\"") != std::string::npos,
+        "events.ndjson should record spec approved event");
+}
+
 }  // namespace
 
 int main() {
@@ -508,6 +605,8 @@ int main() {
     TestGenerateGoalDocsBlocksUntilReady();
     TestValidateSpecSnapshotsPendingRevision();
     TestValidateSpecBlocksUnsupportedSchema();
+    TestApproveSpecRequiresNonEmptyTasks();
+    TestApproveSpecFreezesHashBoundRevision();
 
     if (failures != 0) {
         std::cerr << failures << " AutoDev test assertion(s) failed\n";

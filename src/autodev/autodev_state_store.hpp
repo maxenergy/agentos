@@ -60,6 +60,15 @@ struct AutoDevValidateSpecResult {
     std::filesystem::path status_path;
 };
 
+struct AutoDevApproveSpecResult {
+    bool success = false;
+    std::string error_message;
+    AutoDevJob job;
+    std::string spec_revision;
+    std::string spec_hash;
+    std::filesystem::path status_path;
+};
+
 class AutoDevStateStore {
 public:
     explicit AutoDevStateStore(std::filesystem::path agentos_workspace);
@@ -80,6 +89,10 @@ public:
         const std::optional<std::filesystem::path>& override_path = std::nullopt);
     AutoDevGenerateGoalDocsResult generate_goal_docs(const std::string& job_id);
     AutoDevValidateSpecResult validate_spec(const std::string& job_id);
+    AutoDevApproveSpecResult approve_spec(
+        const std::string& job_id,
+        const std::string& spec_hash,
+        const std::optional<std::string>& spec_revision = std::nullopt);
     std::optional<AutoDevJob> load_job(const std::string& job_id, std::string* error_message = nullptr) const;
 
 private:

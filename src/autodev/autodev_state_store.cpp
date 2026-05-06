@@ -227,6 +227,35 @@ nlohmann::json SpecValidatedEvent(const AutoDevJob& job) {
     };
 }
 
+nlohmann::json SpecApprovedEvent(const AutoDevJob& job) {
+    return nlohmann::json{
+        {"type", "autodev.spec.approved"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"approval_gate", job.approval_gate},
+        {"schema_version", job.schema_version.value_or("")},
+        {"spec_revision", job.spec_revision.value_or("")},
+        {"spec_hash", job.spec_hash.value_or("")},
+        {"next_action", job.next_action},
+        {"at", job.updated_at},
+    };
+}
+
+std::string ReadFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+std::string TrimAscii(std::string value) {
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
 std::string NextSpecRevision(const std::filesystem::path& dir) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
@@ -937,6 +966,118 @@ AutoDevValidateSpecResult AutoDevStateStore::validate_spec(const std::string& jo
     result.spec_hash = hash;
     result.normalized_path = normalized_path;
     result.hash_path = hash_path;
+    result.status_path = status_path;
+    return result;
+}
+
+AutoDevApproveSpecResult AutoDevStateStore::approve_spec(
+    const std::string& job_id,
+    const std::string& spec_hash,
+    const std::optional<std::string>& spec_revision) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevApproveSpecResult result;
+        result.error_message = load_error;
+        return result;
+    }
+
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevApproveSpecResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+    const auto block = [this](AutoDevJob job, const std::string& message, const std::string& next_action) {
+        job.status = "blocked";
+        job.current_activity = "none";
+        job.blocker = message;
+        job.next_action = next_action;
+        job.updated_at = IsoUtcNow();
+        save_job(job);
+        append_event(job.job_id, nlohmann::json{
+            {"type", "autodev.spec.approval_blocked"},
+            {"job_id", job.job_id},
+            {"status", job.status},
+            {"phase", job.phase},
+            {"blocker", message},
+            {"next_action", next_action},
+            {"at", job.updated_at},
+        });
+        AutoDevApproveSpecResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (spec_hash.empty()) {
+        return fail(std::move(job), "spec_hash is required");
+    }
+    if (job.status != "awaiting_approval" || job.approval_gate != "before_code_execution") {
+        return fail(std::move(job), "job is not awaiting before_code_execution approval");
+    }
+    if (!job.spec_revision.has_value() || !job.spec_hash.has_value()) {
+        return fail(std::move(job), "job has no pending spec revision");
+    }
+    const auto revision = spec_revision.value_or(*job.spec_revision);
+    if (revision != *job.spec_revision) {
+        return fail(std::move(job), "requested spec_revision does not match pending job spec revision");
+    }
+    if (spec_hash != *job.spec_hash) {
+        return fail(std::move(job), "provided spec_hash does not match pending job spec hash");
+    }
+
+    const auto revision_dir = spec_revisions_dir(job.job_id);
+    const auto normalized_path = revision_dir / (revision + ".normalized.json");
+    const auto hash_path = revision_dir / (revision + ".sha256");
+    const auto status_path = revision_dir / (revision + ".status.json");
+    if (!std::filesystem::exists(normalized_path) ||
+        !std::filesystem::exists(hash_path) ||
+        !std::filesystem::exists(status_path)) {
+        return fail(std::move(job), "pending spec revision files are missing");
+    }
+    if (TrimAscii(ReadFile(hash_path)) != spec_hash) {
+        return fail(std::move(job), "runtime spec hash file does not match provided spec_hash");
+    }
+
+    nlohmann::json spec;
+    nlohmann::json revision_status;
+    try {
+        spec = nlohmann::json::parse(ReadFile(normalized_path));
+        revision_status = nlohmann::json::parse(ReadFile(status_path));
+    } catch (const std::exception& e) {
+        return fail(std::move(job), std::string("failed to read pending spec revision: ") + e.what());
+    }
+    if (revision_status.value("status", "") != "pending_approval") {
+        return fail(std::move(job), "spec revision is not pending approval");
+    }
+    if (!spec.contains("tasks") || !spec.at("tasks").is_array() || spec.at("tasks").empty()) {
+        return block(std::move(job), "AUTODEV_SPEC tasks must not be empty before approval", "fix_autodev_spec");
+    }
+
+    const auto approved_at = IsoUtcNow();
+    revision_status["status"] = "approved_frozen";
+    revision_status["approved_at"] = approved_at;
+    revision_status["approved_by"] = "cli";
+    revision_status["approval_gate"] = "none";
+    WriteFileAtomically(status_path, revision_status.dump(2) + "\n");
+
+    job.status = "running";
+    job.phase = "codex_execution";
+    job.current_activity = "none";
+    job.approval_gate = "none";
+    job.next_action = "execute_next_task";
+    job.blocker = std::nullopt;
+    job.updated_at = approved_at;
+    save_job(job);
+    append_event(job.job_id, SpecApprovedEvent(job));
+
+    AutoDevApproveSpecResult result;
+    result.success = true;
+    result.job = std::move(job);
+    result.spec_revision = revision;
+    result.spec_hash = spec_hash;
     result.status_path = status_path;
     return result;
 }

@@ -2441,6 +2441,8 @@ void TestAutoDevCommands() {
         "autodev validate-spec should report before_code_execution gate");
     Expect(validate_spec.output.find("spec_revision: rev-001") != std::string::npos,
         "autodev validate-spec should report first spec revision");
+    const auto spec_hash = ExtractLineValue(validate_spec.output, "spec_hash:");
+    Expect(spec_hash.size() == 64, "autodev validate-spec should print sha256 spec hash");
     Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.normalized.json"),
         "autodev validate-spec should write normalized spec snapshot under runtime store");
     Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.sha256"),
@@ -2456,6 +2458,13 @@ void TestAutoDevCommands() {
         "autodev status should show before_code_execution after spec validation");
     Expect(validated_status.output.find("revision:       rev-001") != std::string::npos,
         "autodev status should show spec revision");
+    Expect(validated_status.output.find("agentos autodev approve_spec job_id=" + job_id + " spec_hash=" + spec_hash) != std::string::npos,
+        "autodev status should show hash-bound approve_spec next action");
+
+    const auto approve_empty = RunAgentos(workspace, {"autodev", "approve-spec", "job_id=" + job_id, "spec_hash=" + spec_hash});
+    Expect(approve_empty.exit_code != 0, "autodev approve-spec should block empty generated task skeleton");
+    Expect(approve_empty.output.find("tasks must not be empty") != std::string::npos,
+        "autodev approve-spec should explain empty tasks blocker");
 
     const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
     Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");

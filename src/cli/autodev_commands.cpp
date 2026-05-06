@@ -35,7 +35,8 @@ void PrintUsage() {
         << "  agentos autodev prepare-workspace job_id=<job_id>\n"
         << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
         << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
-        << "  agentos autodev validate-spec job_id=<job_id>\n";
+        << "  agentos autodev validate-spec job_id=<job_id>\n"
+        << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -245,6 +246,52 @@ int RunValidateSpec(const std::filesystem::path& workspace, const int argc, char
     return 0;
 }
 
+int RunApproveSpec(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev approve-spec failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev approve-spec failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+    const auto hash_it = options.find("spec_hash");
+    if (hash_it == options.end() || hash_it->second.empty()) {
+        std::cerr << "autodev approve-spec failed: spec_hash is required\n";
+        return 1;
+    }
+    std::optional<std::string> spec_revision;
+    if (const auto it = options.find("spec_revision"); it != options.end() && !it->second.empty()) {
+        spec_revision = it->second;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.approve_spec(job_id_it->second, hash_it->second, spec_revision);
+    if (!result.success) {
+        std::cerr << "autodev approve-spec failed: " << result.error_message << '\n';
+        if (!result.job.job_id.empty()) {
+            std::cerr << "status:      " << result.job.status << '\n'
+                      << "phase:       " << result.job.phase << '\n'
+                      << "next_action: " << result.job.next_action << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "AutoDev spec approved\n"
+              << "job_id:        " << result.job.job_id << '\n'
+              << "status:        " << result.job.status << '\n'
+              << "phase:         " << result.job.phase << '\n'
+              << "approval_gate: " << result.job.approval_gate << '\n'
+              << "spec_revision: " << result.spec_revision << '\n'
+              << "spec_hash:     " << result.spec_hash << '\n'
+              << "status_file:   " << result.status_path.string() << '\n'
+              << "next_action:   " << result.job.next_action << '\n'
+              << "\nThe frozen spec is approved. Codex execution was not started by this command.\n";
+    return 0;
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -306,7 +353,11 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
               << "Next action:\n"
               << "  agentos autodev "
               << (job->next_action == "prepare_workspace" ? "prepare-workspace" : job->next_action)
-              << " job_id=" << job->job_id << '\n'
+              << " job_id=" << job->job_id;
+    if (job->next_action == "approve_spec" && job->spec_hash.has_value()) {
+        std::cout << " spec_hash=" << *job->spec_hash;
+    }
+    std::cout << '\n'
               << '\n';
     if (job->isolation_status == "ready") {
         std::cout << "Workspace is ready. Future AutoDev writes must use the job worktree.\n";
@@ -341,6 +392,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "validate-spec" || subcommand == "validate_spec") {
         return RunValidateSpec(workspace, argc, argv);
+    }
+    if (subcommand == "approve-spec" || subcommand == "approve_spec") {
+        return RunApproveSpec(workspace, argc, argv);
     }
 
     std::cerr << "Unknown autodev subcommand: " << subcommand << '\n';
