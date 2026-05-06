@@ -88,6 +88,8 @@ Execution turn records do not mark tasks passed. Task state remains controlled b
 
 `agentos autodev run-task job_id=<job_id>` is the single-task pipeline wrapper for the next pending task. It records the pre-task snapshot through `execute-next-task`, then runs `verify-task`, `diff-guard`, and `acceptance-gate` for the executed task. The same adapter options accepted by `execute-next-task` are supported. The command stops at the first failed stage; failed verification, DiffGuard, or AcceptanceGate stages leave the existing repair-needed facts and print the repair entrypoint.
 
+`agentos autodev run-job job_id=<job_id>` loops `run-task` across pending tasks until the job reaches `final_review`. It stops on the first failed task pipeline and does not run `final-review`, `complete-job`, or cleanup.
+
 ## Repair Flow
 
 Failed verification, DiffGuard, AcceptanceGate, and FinalReview checks can record repair-needed facts in `repairs.json` and write a same-thread repair prompt under `repairs/<repair_id>.prompt.md`.

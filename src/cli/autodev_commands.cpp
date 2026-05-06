@@ -379,6 +379,7 @@ void PrintUsage() {
         << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
+        << "  agentos autodev run-job job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos autodev run-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n";
 }
@@ -2350,6 +2351,74 @@ int RunTaskPipeline(const std::filesystem::path& workspace, const int argc, char
     return 0;
 }
 
+int RunJobLoop(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev run-job failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev run-job failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::cout << "AutoDev job run loop\n"
+              << "job_id:        " << job_id_it->second << '\n';
+    int iterations = 0;
+    while (true) {
+        std::string error;
+        const auto job = store.load_job(job_id_it->second, &error);
+        if (!job.has_value()) {
+            std::cerr << "autodev run-job failed: " << error << '\n';
+            return 1;
+        }
+        const auto tasks = store.load_tasks(job_id_it->second, &error);
+        if (!tasks.has_value()) {
+            std::cerr << "autodev run-job failed: " << error << '\n';
+            return 1;
+        }
+        const auto passed = std::count_if(tasks->begin(), tasks->end(), [](const AutoDevTask& task) {
+            return task.status == "passed";
+        });
+        const auto pending = std::count_if(tasks->begin(), tasks->end(), [](const AutoDevTask& task) {
+            return task.status == "pending";
+        });
+
+        std::cout << "loop_status:   status=" << job->status
+                  << " phase=" << job->phase
+                  << " tasks=" << passed << "/" << tasks->size()
+                  << " pending=" << pending << '\n';
+        if (job->phase == "final_review") {
+            std::cout << "run_job_status: ready_for_final_review\n"
+                      << "iterations:    " << iterations << '\n'
+                      << "\nJob was not marked done. Next: agentos autodev final-review job_id="
+                      << job_id_it->second << '\n';
+            return 0;
+        }
+        if (job->status != "running" || job->phase != "codex_execution") {
+            std::cerr << "autodev run-job failed: job is not runnable\n"
+                      << "status: " << job->status << '\n'
+                      << "phase:  " << job->phase << '\n';
+            return 1;
+        }
+        if (pending == 0) {
+            std::cerr << "autodev run-job failed: no pending tasks remain but job is not in final_review\n";
+            return 1;
+        }
+
+        ++iterations;
+        std::cout << "\niteration:     " << iterations << '\n';
+        const int task_code = RunTaskPipeline(workspace, argc, argv);
+        if (task_code != 0) {
+            std::cout << "run_job_status: stopped\n"
+                      << "iterations:    " << iterations << '\n';
+            return task_code;
+        }
+    }
+}
+
 int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv[]) {
     const auto options = ParseOptionsFromArgs(argc, argv, 3);
     const auto job_id_it = options.find("job_id");
@@ -2617,6 +2686,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "execute-next-task" || subcommand == "execute_next_task") {
         return RunExecuteNextTask(workspace, argc, argv);
+    }
+    if (subcommand == "run-job" || subcommand == "run_job") {
+        return RunJobLoop(workspace, argc, argv);
     }
     if (subcommand == "run-task" || subcommand == "run_task" ||
         subcommand == "pipeline-task" || subcommand == "pipeline_task") {

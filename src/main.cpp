@@ -683,6 +683,7 @@ void PrintUsage() {
         << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
+        << "  agentos autodev run-job job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos autodev run-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos cli-specs validate\n"

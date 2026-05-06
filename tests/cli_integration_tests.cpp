@@ -3050,6 +3050,103 @@ void TestAutoDevCommands() {
         "autodev run-task should not mark the job done");
     Expect(pipeline_status.output.find("Phase: final_review") != std::string::npos,
         "autodev run-task should advance all-passed jobs to final_review");
+    const auto run_job_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Run all tasks through job loop",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(run_job_submit.exit_code == 0,
+        "autodev submit should support a run-job fixture");
+    const auto run_job_id = ExtractLineValue(run_job_submit.output, "job_id:");
+    const auto run_job_worktree = ExtractLineValue(run_job_submit.output, "job_worktree_path:");
+    const auto run_job_path = run_job_worktree.substr(0, run_job_worktree.find(" "));
+    const auto run_job_dir = workspace / "runtime" / "autodev" / "jobs" / run_job_id;
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + run_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare run-job fixture");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + run_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load run-job fixture");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + run_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate run-job fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(run_job_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Run all tasks through job loop\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"First loop task\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"First loop task passes\"]\n"
+            << "    },\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-002\",\n"
+            << "      \"title\": \"Second loop task\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"Second loop task passes\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto run_job_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + run_job_id});
+    Expect(run_job_validate.exit_code == 0,
+        "autodev validate-spec should validate run-job fixture spec");
+    const auto run_job_hash = ExtractLineValue(run_job_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + run_job_id,
+        "spec_hash=" + run_job_hash}).exit_code == 0,
+        "autodev approve-spec should approve run-job fixture spec");
+    const auto run_job = RunAgentos(workspace, {
+        "autodev",
+        "run-job",
+        "job_id=" + run_job_id,
+        "codex_cli_command=" + codex_fixture.string()});
+    Expect(run_job.exit_code == 0,
+        "autodev run-job should loop pending tasks to final_review");
+    Expect(run_job.output.find("AutoDev job run loop") != std::string::npos,
+        "autodev run-job should print run loop heading");
+    Expect(run_job.output.find("iteration:     1") != std::string::npos,
+        "autodev run-job should run the first task iteration");
+    Expect(run_job.output.find("iteration:     2") != std::string::npos,
+        "autodev run-job should run the second task iteration");
+    Expect(run_job.output.find("run_job_status: ready_for_final_review") != std::string::npos,
+        "autodev run-job should stop at final_review");
+    Expect(run_job.output.find("Job was not marked done") != std::string::npos,
+        "autodev run-job should state that it does not complete the job");
+    const auto run_job_tasks = ReadTextFile(run_job_dir / "tasks.json");
+    Expect(run_job_tasks.find("\"task_id\": \"task-001\"") != std::string::npos &&
+               run_job_tasks.find("\"task_id\": \"task-002\"") != std::string::npos,
+        "autodev run-job should keep both runtime tasks");
+    Expect(run_job_tasks.find("\"status\": \"pending\"") == std::string::npos,
+        "autodev run-job should accept all pending tasks");
+    const auto run_job_turns = RunAgentos(workspace, {"autodev", "turns", "job_id=" + run_job_id});
+    Expect(run_job_turns.exit_code == 0,
+        "autodev turns should list run-job turns");
+    Expect(run_job_turns.output.find("turn_id:           turn-001") != std::string::npos &&
+               run_job_turns.output.find("turn_id:           turn-002") != std::string::npos,
+        "autodev run-job should record one turn per task");
+    const auto run_job_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + run_job_id});
+    Expect(run_job_status.exit_code == 0,
+        "autodev status should read run-job fixture");
+    Expect(run_job_status.output.find("Status: running") != std::string::npos,
+        "autodev run-job should leave the job running");
+    Expect(run_job_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev run-job should leave the job at final_review");
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);
