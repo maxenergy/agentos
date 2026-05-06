@@ -886,6 +886,59 @@ std::string CodexStartSkeleton(const AutoDevJob& job) {
     return out.str();
 }
 
+std::string VerifyTemplateSkeleton(const AutoDevJob& job) {
+    std::ostringstream out;
+    out << "# VERIFY Template\n\n"
+        << "> Template only. AgentOS writes authoritative verification facts to Runtime Store `verification.json`.\n"
+        << "> Editing this file cannot make verification pass.\n\n"
+        << "Job ID: `" << job.job_id << "`\n\n"
+        << "## Evidence\n\n"
+        << "- verification_id: TODO\n"
+        << "- command: TODO\n"
+        << "- exit_code: TODO\n"
+        << "- output_log: TODO\n\n"
+        << "## Authority\n\n"
+        << "- AgentOS `verify-task` records verification facts.\n"
+        << "- AcceptanceGate reads runtime facts, not this template.\n";
+    return out.str();
+}
+
+std::string FinalReviewTemplateSkeleton(const AutoDevJob& job) {
+    std::ostringstream out;
+    out << "# FINAL_REVIEW Template\n\n"
+        << "> Template only. AgentOS writes authoritative final review facts to Runtime Store `final_review.json`.\n"
+        << "> Editing this file cannot advance a job to `pr_ready` or `done`.\n\n"
+        << "Job ID: `" << job.job_id << "`\n\n"
+        << "## Review\n\n"
+        << "- final_review_id: TODO\n"
+        << "- passed: TODO\n"
+        << "- changed_files: TODO\n"
+        << "- reasons: TODO\n\n"
+        << "## Authority\n\n"
+        << "- AgentOS `final-review` records final review facts.\n"
+        << "- AgentOS `complete-job` / `mark-done` controls job completion.\n";
+    return out.str();
+}
+
+std::string TaskTemplateSkeleton(const AutoDevJob& job) {
+    std::ostringstream out;
+    out << "# TASK Template\n\n"
+        << "> Template only. AgentOS materializes authoritative tasks from the approved `AUTODEV_SPEC` snapshot into Runtime Store `tasks.json`.\n"
+        << "> Editing this file cannot change allowed files, blocked files, acceptance criteria, retry counters, or task status.\n\n"
+        << "Job ID: `" << job.job_id << "`\n\n"
+        << "## Task\n\n"
+        << "- task_id: TODO\n"
+        << "- title: TODO\n"
+        << "- allowed_files: TODO\n"
+        << "- blocked_files: TODO\n"
+        << "- verify_command: TODO\n"
+        << "- acceptance: TODO\n\n"
+        << "## Authority\n\n"
+        << "- AgentOS `approve-spec` materializes tasks.\n"
+        << "- AgentOS `acceptance-gate` is the task completion authority.\n";
+    return out.str();
+}
+
 std::string AutoDevSpecSkeleton(const AutoDevJob& job) {
     const auto spec = nlohmann::json{
         {"schema_version", "1.0.0"},
@@ -1396,6 +1449,9 @@ AutoDevGenerateGoalDocsResult AutoDevStateStore::generate_goal_docs(const std::s
         {"ACCEPTANCE.md", MarkdownSkeleton(job, "Acceptance", "## Acceptance Criteria\n\n- TODO\n")},
         {"GOAL.md", GoalContractSkeleton(job)},
         {"CODEX_START.md", CodexStartSkeleton(job)},
+        {"VERIFY.template.md", VerifyTemplateSkeleton(job)},
+        {"FINAL_REVIEW.template.md", FinalReviewTemplateSkeleton(job)},
+        {"TASK.template.md", TaskTemplateSkeleton(job)},
         {"AUTODEV_SPEC.json", AutoDevSpecSkeleton(job)},
     };
 

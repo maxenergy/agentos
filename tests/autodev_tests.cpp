@@ -409,18 +409,33 @@ void TestGenerateGoalDocsWritesOnlyJobWorktree() {
         "generate_goal_docs should advance to requirements_grilling");
     Expect(generated.job.next_action == "validate_spec",
         "generate_goal_docs should set validate_spec next action");
-    Expect(generated.written_files.size() == 13,
+    Expect(generated.written_files.size() == 16,
         "generate_goal_docs should write the candidate goal doc skeleton set");
     Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "GOAL.md"),
         "generate_goal_docs should write GOAL.md under job worktree");
     Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json"),
         "generate_goal_docs should write candidate AUTODEV_SPEC.json under job worktree");
+    Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "VERIFY.template.md"),
+        "generate_goal_docs should write VERIFY.template.md under job worktree");
+    Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "FINAL_REVIEW.template.md"),
+        "generate_goal_docs should write FINAL_REVIEW.template.md under job worktree");
+    Expect(std::filesystem::exists(prepared.job.job_worktree_path / "docs" / "goal" / "TASK.template.md"),
+        "generate_goal_docs should write TASK.template.md under job worktree");
     Expect(!std::filesystem::exists(target / "docs" / "goal"),
         "generate_goal_docs should not write docs/goal into target repo");
 
     const auto spec = nlohmann::json::parse(ReadFile(prepared.job.job_worktree_path / "docs" / "goal" / "AUTODEV_SPEC.json"));
     Expect(spec["status"] == "candidate_skeleton", "AUTODEV_SPEC skeleton should be candidate-only");
     Expect(spec["tasks"].empty(), "AUTODEV_SPEC skeleton should not define execution tasks");
+    const auto verify_template = ReadFile(prepared.job.job_worktree_path / "docs" / "goal" / "VERIFY.template.md");
+    Expect(verify_template.find("verification.json") != std::string::npos,
+        "VERIFY.template.md should name runtime verification facts as authority");
+    const auto final_review_template = ReadFile(prepared.job.job_worktree_path / "docs" / "goal" / "FINAL_REVIEW.template.md");
+    Expect(final_review_template.find("final_review.json") != std::string::npos,
+        "FINAL_REVIEW.template.md should name runtime final review facts as authority");
+    const auto task_template = ReadFile(prepared.job.job_worktree_path / "docs" / "goal" / "TASK.template.md");
+    Expect(task_template.find("tasks.json") != std::string::npos,
+        "TASK.template.md should name runtime task facts as authority");
 
     const auto events = ReadFile(store.events_path(submit.job.job_id));
     Expect(events.find("\"type\":\"autodev.goal_docs.generated\"") != std::string::npos,

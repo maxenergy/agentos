@@ -8,6 +8,8 @@ AutoDev runtime facts live in the AgentOS workspace, not in the target repo or j
 
 The job worktree may contain human-facing `docs/goal/*` artifacts, but those files are not authoritative for task acceptance or job completion. AgentOS runtime JSON/NDJSON files are the source of truth.
 
+Generated goal docs include `VERIFY.template.md`, `FINAL_REVIEW.template.md`, and `TASK.template.md` to guide human/model-written evidence. These templates are not runtime facts and cannot change task or job status.
+
 ## Runtime Files
 
 | Path | Purpose | CLI |
