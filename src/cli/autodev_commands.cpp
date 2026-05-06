@@ -320,6 +320,26 @@ void PrintJson(const nlohmann::json& json) {
     std::cout << json.dump(2) << '\n';
 }
 
+std::string ReadTextFileForCli(const std::filesystem::path& path, std::string* error) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        if (error) {
+            *error = "unable to read file: " + path.string();
+        }
+        return {};
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+std::string PreviewText(const std::string& value, const std::size_t max_bytes = 4000) {
+    if (value.size() <= max_bytes) {
+        return value;
+    }
+    return value.substr(0, max_bytes) + "\n[truncated]\n";
+}
+
 void PrintUsage() {
     std::cerr
         << "Usage:\n"
@@ -342,6 +362,8 @@ void PrintUsage() {
         << "  agentos autodev rollback-hard job_id=<job_id> task_id=<task_id> approval=hard_rollback_approved\n"
         << "  agentos autodev rollbacks job_id=<job_id>\n"
         << "  agentos autodev repairs job_id=<job_id>\n"
+        << "  agentos autodev repair-next job_id=<job_id>\n"
+        << "  agentos autodev repair-task job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
@@ -1130,6 +1152,106 @@ int RunRepairs(const std::filesystem::path& workspace, const int argc, char* arg
         PrintStringList("  reasons:", repair.reasons);
     }
     return 0;
+}
+
+int RunRepairNextOrTask(
+    const std::filesystem::path& workspace,
+    const int argc,
+    char* argv[],
+    const bool require_task_id) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    const std::string command_name = require_task_id ? "repair-task" : "repair-next";
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev " << command_name << " failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev " << command_name << " failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    std::optional<std::string> requested_task_id;
+    if (const auto it = options.find("task_id"); it != options.end() && !it->second.empty()) {
+        requested_task_id = it->second;
+    }
+    if (require_task_id && !requested_task_id.has_value()) {
+        std::cerr << "autodev repair-task failed: task_id is required\n";
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto repairs = store.load_repairs(job_id_it->second, &error);
+    if (!repairs.has_value()) {
+        std::cerr << "autodev " << command_name << " failed: " << error << '\n';
+        return 1;
+    }
+    if (repairs->empty()) {
+        std::cerr << "autodev " << command_name << " failed: no repair-needed facts are recorded\n";
+        return 1;
+    }
+
+    const AutoDevRepairNeeded* selected = nullptr;
+    for (auto it = repairs->rbegin(); it != repairs->rend(); ++it) {
+        if (requested_task_id.has_value() && it->task_id != *requested_task_id) {
+            continue;
+        }
+        if (it->status == "needed" && !it->retry_limit_exceeded) {
+            selected = &*it;
+            break;
+        }
+    }
+    if (!selected) {
+        for (auto it = repairs->rbegin(); it != repairs->rend(); ++it) {
+            if (!requested_task_id.has_value() || it->task_id == *requested_task_id) {
+                selected = &*it;
+                break;
+            }
+        }
+    }
+    if (!selected) {
+        std::cerr << "autodev " << command_name << " failed: no repair fact found for task_id: "
+                  << *requested_task_id << '\n';
+        return 1;
+    }
+    if (!selected->prompt_artifact.has_value()) {
+        std::cerr << "autodev " << command_name << " failed: selected repair has no prompt_artifact: "
+                  << selected->repair_id << '\n';
+        return 1;
+    }
+
+    std::string prompt_error;
+    const auto prompt = ReadTextFileForCli(*selected->prompt_artifact, &prompt_error);
+    if (!prompt_error.empty()) {
+        std::cerr << "autodev " << command_name << " failed: " << prompt_error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev repair task\n"
+              << "job_id:       " << job_id_it->second << '\n'
+              << "task_id:      " << selected->task_id << '\n'
+              << "repair_id:    " << selected->repair_id << '\n'
+              << "source:       " << selected->source_type << " " << selected->source_id << '\n'
+              << "status:       " << selected->status << '\n'
+              << "next_action:  " << selected->next_action << '\n'
+              << "retry:        " << selected->retry_count << "/" << selected->max_retries << '\n'
+              << "retry_limit_exceeded: " << (selected->retry_limit_exceeded ? "true" : "false") << '\n'
+              << "prompt_artifact: " << selected->prompt_artifact->string() << '\n';
+    PrintStringList("reasons:", selected->reasons);
+    std::cout << "\nRepair prompt preview\n"
+              << PreviewText(prompt)
+              << "\nSame-task repair flow\n"
+              << "1. Apply the prompt above in the same Codex thread/session for task_id=" << selected->task_id << ".\n"
+              << "2. Run: agentos autodev execute-next-task job_id=" << job_id_it->second
+              << " execution_adapter=codex_cli\n"
+              << "3. Run: agentos autodev verify-task job_id=" << job_id_it->second
+              << " task_id=" << selected->task_id << '\n'
+              << "4. Run: agentos autodev diff-guard job_id=" << job_id_it->second
+              << " task_id=" << selected->task_id << '\n'
+              << "5. Run: agentos autodev acceptance-gate job_id=" << job_id_it->second
+              << " task_id=" << selected->task_id << '\n';
+    return selected->retry_limit_exceeded ? 1 : 0;
 }
 
 int RunVerifyTask(const std::filesystem::path& workspace, const int argc, char* argv[]) {
@@ -2323,6 +2445,12 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "repairs") {
         return RunRepairs(workspace, argc, argv);
+    }
+    if (subcommand == "repair-next" || subcommand == "repair_next") {
+        return RunRepairNextOrTask(workspace, argc, argv, false);
+    }
+    if (subcommand == "repair-task" || subcommand == "repair_task") {
+        return RunRepairNextOrTask(workspace, argc, argv, true);
     }
     if (subcommand == "verify-task" || subcommand == "verify_task") {
         return RunVerifyTask(workspace, argc, argv);

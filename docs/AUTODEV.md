@@ -26,7 +26,7 @@ Generated goal docs include `VERIFY.template.md`, `FINAL_REVIEW.template.md`, an
 | `snapshots/<snapshot_id>.json` | Per-snapshot artifact containing the same snapshot fact. | `agentos autodev snapshots job_id=<job_id>` |
 | `rollbacks.json` | Rollback intent/result facts for soft and hard rollback requests. | `agentos autodev rollbacks job_id=<job_id>` |
 | `repairs.json` | Repair-needed facts from failed verification, diff, or acceptance gates, including retry state and prompt artifact path. | `agentos autodev repairs job_id=<job_id>` |
-| `repairs/<repair_id>.prompt.md` | Same-thread repair prompt artifact generated from failed runtime facts. | `agentos autodev repairs job_id=<job_id>` |
+| `repairs/<repair_id>.prompt.md` | Same-thread repair prompt artifact generated from failed runtime facts. | `agentos autodev repair-next job_id=<job_id>` |
 | `logs/<verification_id>.output.txt` | Captured verification command output. | `agentos autodev verifications job_id=<job_id>` |
 | `prompts/<turn_id>.md` | Execution prompt artifact for a recorded turn. | `agentos autodev turns job_id=<job_id>` |
 | `responses/<turn_id>.md` | Execution response/blocker artifact for a recorded turn. | `agentos autodev turns job_id=<job_id>` |
@@ -86,6 +86,12 @@ The command does not approve specs, mark tasks passed, run Codex execution, or m
 
 Execution turn records do not mark tasks passed. Task state remains controlled by `verify-task`, `diff-guard`, and `acceptance-gate`.
 
+## Repair Flow
+
+Failed verification, DiffGuard, AcceptanceGate, and FinalReview checks can record repair-needed facts in `repairs.json` and write a same-thread repair prompt under `repairs/<repair_id>.prompt.md`.
+
+`agentos autodev repair-next job_id=<job_id>` selects the latest actionable repair, reads its prompt artifact, and prints a same-task repair flow. `agentos autodev repair-task job_id=<job_id> task_id=<task_id>` does the same for a specific task. These commands are read-only: they do not run Codex, mutate task status, reset retry counters, or mark repairs completed.
+
 ## Authority Boundary
 
 Codex may read and modify files under the job worktree, including `docs/goal/*`. Codex cannot mark a task passed or a job done by editing worktree files.
@@ -93,6 +99,7 @@ Codex may read and modify files under the job worktree, including `docs/goal/*`.
 Only AgentOS runtime gates mutate authoritative state:
 
 - `execute-next-task` may run a configured execution adapter and record turn facts; it does not mark tasks passed.
+- `repair-next` and `repair-task` may read repair facts and prompt artifacts; they do not mutate authoritative state.
 - `verify-task` records verification facts only.
 - `diff-guard` records diff facts only.
 - `acceptance-gate` may mark a task passed when latest verification and diff facts pass.

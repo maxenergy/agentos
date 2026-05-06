@@ -3075,6 +3075,36 @@ void TestAutoDevCommands() {
         "repair prompt artifact should require same thread/session repair");
     Expect(repair_prompt.find("diff_guard") != std::string::npos,
         "repair prompt artifact should include failed runtime fact source");
+    const auto repair_next = RunAgentos(workspace, {"autodev", "repair-next", "job_id=" + executable_job_id});
+    Expect(repair_next.exit_code == 0,
+        "autodev repair-next should select the latest actionable repair");
+    Expect(repair_next.output.find("AutoDev repair task") != std::string::npos,
+        "autodev repair-next should print repair task heading");
+    Expect(repair_next.output.find("task_id:      task-001") != std::string::npos,
+        "autodev repair-next should show the selected task");
+    Expect(repair_next.output.find("repair_id:    repair-002") != std::string::npos,
+        "autodev repair-next should select the latest repair-needed fact");
+    Expect(repair_next.output.find("same thread/session") != std::string::npos,
+        "autodev repair-next should include the same-thread repair prompt preview");
+    Expect(repair_next.output.find("prompt_artifact:") != std::string::npos,
+        "autodev repair-next should show the repair prompt artifact path");
+    Expect(repair_next.output.find("execute-next-task job_id=" + executable_job_id) != std::string::npos,
+        "autodev repair-next should show the execution entrypoint");
+    Expect(repair_next.output.find("verify-task job_id=" + executable_job_id + " task_id=task-001") != std::string::npos,
+        "autodev repair-next should show the same-task verification command");
+    Expect(repair_next.output.find("diff-guard job_id=" + executable_job_id + " task_id=task-001") != std::string::npos,
+        "autodev repair-next should show the same-task diff guard command");
+    Expect(repair_next.output.find("acceptance-gate job_id=" + executable_job_id + " task_id=task-001") != std::string::npos,
+        "autodev repair-next should show the same-task acceptance command");
+    const auto repair_task = RunAgentos(workspace, {
+        "autodev",
+        "repair-task",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(repair_task.exit_code == 0,
+        "autodev repair-task should select a repair for the requested task");
+    Expect(repair_task.output.find("repair_id:    repair-002") != std::string::npos,
+        "autodev repair-task should use the latest repair for the requested task");
     const auto diffs_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id});
     Expect(diffs_result.exit_code == 0,
         "autodev diffs should list diff guard facts");
