@@ -82,6 +82,8 @@ The command does not approve specs, mark tasks passed, run Codex execution, or m
 
 `agentos autodev execute-next-task job_id=<job_id> execution_adapter=codex_cli` records a pre-task snapshot, builds a task prompt, runs the configured Codex CLI command in the job worktree, and records a turn fact with prompt artifact, response artifact, exit code, duration, and changed files. The command defaults to `codex exec --skip-git-repo-check --sandbox workspace-write -`; callers can override it with `codex_cli_command=<command>` or `AGENTOS_AUTODEV_CODEX_CLI_COMMAND`.
 
+`execution_adapter=codex_app_server` supports a minimal HTTP transport when `app_server_url=<url>` or `AGENTOS_AUTODEV_CODEX_APP_SERVER_URL` is provided. AgentOS checks `GET /health`, opens a session with `POST /sessions`, submits a turn to `POST /sessions/<session_id>/turns`, and records the returned output/events in the execution response artifact. Without a URL, the app-server adapter remains fail-closed.
+
 Execution turn records do not mark tasks passed. Task state remains controlled by `verify-task`, `diff-guard`, and `acceptance-gate`.
 
 ## Authority Boundary

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -36,8 +37,18 @@ public:
 
 class CodexAppServerAutoDevAdapter final : public AutoDevExecutionAdapter {
 public:
+    explicit CodexAppServerAutoDevAdapter(std::string base_url = {});
     [[nodiscard]] AutoDevExecutionAdapterProfile profile() const override;
     [[nodiscard]] bool healthy() const override;
+    [[nodiscard]] std::string start_session(const std::string& job_id, const std::string& task_id) const;
+    [[nodiscard]] std::string run_turn(
+        const std::string& session_id,
+        const std::string& prompt,
+        int* exit_code,
+        std::vector<std::string>* events) const;
+
+private:
+    std::string base_url_;
 };
 
 [[nodiscard]] nlohmann::json ToJson(const AutoDevExecutionAdapterProfile& profile);

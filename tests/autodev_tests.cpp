@@ -2,14 +2,17 @@
 #include "autodev/autodev_job_id.hpp"
 #include "autodev/autodev_state_store.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include <httplib.h>
 #include <nlohmann/json.hpp>
 
 namespace {
@@ -147,13 +150,62 @@ void TestCodexCliExecutionAdapterProfileIsTransitional() {
         "Codex app-server AutoDev profile should support native event streams");
     Expect(app_server_profile.supports_same_thread_repair,
         "Codex app-server AutoDev profile should support same-thread repair");
-    Expect(!app_server_profile.production_final_executor,
-        "Codex app-server AutoDev skeleton should not claim final production executor status");
+    Expect(app_server_profile.production_final_executor,
+        "Codex app-server AutoDev profile should claim production executor status");
     const agentos::CodexAppServerAutoDevAdapter app_server_adapter;
     Expect(app_server_adapter.profile().adapter_kind == "codex_app_server",
         "Codex app-server AutoDev adapter should expose its profile through the adapter interface");
     Expect(!app_server_adapter.healthy(),
-        "Codex app-server AutoDev skeleton should fail closed until real execution is implemented");
+        "Codex app-server AutoDev adapter without URL should be unhealthy");
+}
+
+void TestCodexAppServerAdapterTransport() {
+    httplib::Server server;
+    bool session_requested = false;
+    bool turn_requested = false;
+
+    server.Get("/health", [](const httplib::Request&, httplib::Response& response) {
+        response.set_content(R"({"status":"ok","healthy":true})", "application/json");
+    });
+    server.Post("/sessions", [&](const httplib::Request& request, httplib::Response& response) {
+        const auto body = nlohmann::json::parse(request.body);
+        session_requested = body.value("job_id", "") == "job-1" &&
+            body.value("task_id", "") == "task-1" &&
+            body.value("continuity_mode", "") == "persistent_thread";
+        response.set_content(R"({"session_id":"session-1"})", "application/json");
+    });
+    server.Post("/sessions/session-1/turns", [&](const httplib::Request& request, httplib::Response& response) {
+        const auto body = nlohmann::json::parse(request.body);
+        turn_requested = body.value("session_id", "") == "session-1" &&
+            body.value("prompt", "").find("Do the task") != std::string::npos &&
+            body.value("event_stream", "") == "ndjson";
+        response.set_content(
+            R"({"exit_code":0,"output":"app-server completed","events":[{"type":"started"},{"type":"completed"}]})",
+            "application/json");
+    });
+
+    const auto port = server.bind_to_any_port("127.0.0.1");
+    Expect(port > 0, "Codex app-server fixture should bind to a loopback port");
+    std::thread server_thread([&]() {
+        server.listen_after_bind();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const agentos::CodexAppServerAutoDevAdapter adapter("http://127.0.0.1:" + std::to_string(port));
+    Expect(adapter.healthy(), "Codex app-server adapter should health-check a reachable server");
+    const auto session_id = adapter.start_session("job-1", "task-1");
+    Expect(session_id == "session-1", "Codex app-server adapter should return session_id");
+    int exit_code = -1;
+    std::vector<std::string> events;
+    const auto output = adapter.run_turn(session_id, "Do the task", &exit_code, &events);
+    Expect(exit_code == 0, "Codex app-server adapter should parse turn exit code");
+    Expect(output == "app-server completed", "Codex app-server adapter should parse turn output");
+    Expect(events.size() == 2, "Codex app-server adapter should preserve event stream entries");
+    Expect(session_requested, "Codex app-server adapter should send session payload");
+    Expect(turn_requested, "Codex app-server adapter should send turn payload");
+
+    server.stop();
+    server_thread.join();
 }
 
 void TestSubmitCreatesRuntimeFactsOnly() {
@@ -1260,6 +1312,7 @@ void TestMultiTaskAcceptanceKeepsJobRunningUntilAllTasksPass() {
 int main() {
     TestJobIdValidation();
     TestCodexCliExecutionAdapterProfileIsTransitional();
+    TestCodexAppServerAdapterTransport();
     TestSubmitCreatesRuntimeFactsOnly();
     TestSubmitWithoutSkillPackStaysNotLoaded();
     TestSubmitMissingTargetFailsWithoutJob();

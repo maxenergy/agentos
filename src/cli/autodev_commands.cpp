@@ -357,7 +357,7 @@ void PrintUsage() {
         << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
         << "  agentos autodev pr-summary job_id=<job_id>\n"
         << "  agentos autodev events job_id=<job_id>\n"
-        << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>]\n";
+        << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n";
 }
 
 bool ParseBool(const std::string& value) {
@@ -1931,6 +1931,7 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
     bool adapter_healthy = false;
     std::string blocked_reason;
     std::string codex_cli_command;
+    std::string app_server_url;
     if (adapter_kind == "codex_cli") {
         const CodexCliAutoDevAdapter adapter;
         profile = adapter.profile();
@@ -1945,7 +1946,13 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
             codex_cli_command = "codex exec --skip-git-repo-check --sandbox workspace-write -";
         }
     } else if (adapter_kind == "codex_app_server") {
-        const CodexAppServerAutoDevAdapter adapter;
+        if (const auto url_it = options.find("app_server_url"); url_it != options.end() && !url_it->second.empty()) {
+            app_server_url = url_it->second;
+        } else if (const char* env_url = std::getenv("AGENTOS_AUTODEV_CODEX_APP_SERVER_URL");
+                   env_url != nullptr && std::string(env_url).size() > 0) {
+            app_server_url = env_url;
+        }
+        const CodexAppServerAutoDevAdapter adapter(app_server_url);
         profile = adapter.profile();
         adapter_healthy = adapter.healthy();
         blocked_reason = "Codex app-server AutoDev execution is not implemented in this build";
@@ -2001,6 +2008,65 @@ int RunExecuteNextTask(const std::filesystem::path& workspace, const int argc, c
                   << "healthy:            " << (adapter_healthy ? "true" : "false") << '\n'
                   << "\nTask status and job completion remain controlled by AgentOS runtime facts.\n";
         return execution.exit_code == 0 ? 0 : 1;
+    }
+    if (adapter_kind == "codex_app_server" && !app_server_url.empty()) {
+        const CodexAppServerAutoDevAdapter adapter(app_server_url);
+        if (!adapter_healthy) {
+            std::cerr << "autodev execute-next-task failed: Codex app-server is not healthy\n"
+                      << "app_server_url: " << app_server_url << '\n';
+            return 1;
+        }
+        int exit_code = -1;
+        std::vector<std::string> events;
+        std::string output;
+        std::string session_id;
+        try {
+            session_id = adapter.start_session(job->job_id, pending_task->task_id);
+            output = adapter.run_turn(session_id, BuildCodexCliPrompt(*job, *pending_task), &exit_code, &events);
+        } catch (const std::exception& e) {
+            std::cerr << "autodev execute-next-task failed: " << e.what() << '\n';
+            return 1;
+        }
+        if (!events.empty()) {
+            output += output.empty() || output.back() == '\n' ? "" : "\n";
+            output += "[app-server events]\n";
+            for (const auto& event : events) {
+                output += event;
+                output += "\n";
+            }
+        }
+        const auto turn = store.record_execution_turn(
+            job_id_it->second,
+            pending_task->task_id,
+            profile,
+            "codex_app_server " + app_server_url + " session=" + session_id,
+            exit_code,
+            0,
+            output);
+        if (!turn.success) {
+            std::cerr << "autodev execute-next-task failed: " << turn.error_message << '\n';
+            return 1;
+        }
+        std::cout << "AutoDev execution completed\n"
+                  << "job_id:             " << turn.job.job_id << '\n'
+                  << "status:             " << turn.job.status << '\n'
+                  << "phase:              " << turn.job.phase << '\n'
+                  << "next_action:        " << turn.job.next_action << '\n'
+                  << "task_id:            " << turn.task.task_id << '\n'
+                  << "turn_id:            " << turn.turn.turn_id << '\n'
+                  << "turn_status:        " << turn.turn.status << '\n'
+                  << "exit_code:          " << exit_code << '\n'
+                  << "session_id:         " << session_id << '\n'
+                  << "event_count:        " << events.size() << '\n'
+                  << "prompt_artifact:    " << turn.turn.prompt_artifact->string() << '\n'
+                  << "response_artifact:  " << turn.turn.response_artifact->string() << '\n'
+                  << "changed_files:      " << turn.turn.changed_files.size() << '\n'
+                  << "snapshot_id:        " << snapshot.snapshot.snapshot_id << '\n'
+                  << "adapter_kind:       " << profile.adapter_kind << '\n'
+                  << "adapter_name:       " << profile.adapter_name << '\n'
+                  << "healthy:            true\n"
+                  << "\nTask status and job completion remain controlled by AgentOS runtime facts.\n";
+        return exit_code == 0 ? 0 : 1;
     }
     store.record_execution_blocked(*job, *pending_task, profile, blocked_reason);
     std::cout << "AutoDev execution preflight\n"
