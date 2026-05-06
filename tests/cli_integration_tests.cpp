@@ -2585,6 +2585,15 @@ void TestAutoDevCommands() {
         "autodev snapshots should print heading");
     Expect(snapshots_result.output.find("snapshot_id: snapshot-001") != std::string::npos,
         "autodev snapshots should include snapshot-001");
+    const auto rollbacks_result = RunAgentos(workspace, {"autodev", "rollbacks", "job_id=" + executable_job_id});
+    Expect(rollbacks_result.exit_code == 0,
+        "autodev rollbacks should list rollback facts even before any rollback exists");
+    Expect(rollbacks_result.output.find("AutoDev rollbacks") != std::string::npos,
+        "autodev rollbacks should print heading");
+    Expect(rollbacks_result.output.find("total:  0") != std::string::npos,
+        "autodev rollbacks should show zero records before rollback commands run");
+    Expect(rollbacks_result.output.find("does not modify the worktree") != std::string::npos,
+        "autodev rollbacks should state that query is non-destructive");
     const auto verify_task = RunAgentos(workspace, {
         "autodev",
         "verify-task",

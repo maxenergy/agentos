@@ -236,6 +236,34 @@ AutoDevSnapshot AutoDevSnapshotFromJson(const nlohmann::json& json) {
     return snapshot;
 }
 
+nlohmann::json ToJson(const AutoDevRollback& rollback) {
+    return nlohmann::json{
+        {"rollback_id", rollback.rollback_id},
+        {"job_id", rollback.job_id},
+        {"task_id", rollback.task_id},
+        {"mode", rollback.mode},
+        {"status", rollback.status},
+        {"reason", rollback.reason},
+        {"destructive", rollback.destructive},
+        {"executed", rollback.executed},
+        {"recorded_at", rollback.recorded_at},
+    };
+}
+
+AutoDevRollback AutoDevRollbackFromJson(const nlohmann::json& json) {
+    AutoDevRollback rollback;
+    rollback.rollback_id = json.value("rollback_id", std::string{});
+    rollback.job_id = json.value("job_id", std::string{});
+    rollback.task_id = json.value("task_id", std::string{});
+    rollback.mode = json.value("mode", std::string{});
+    rollback.status = json.value("status", std::string{});
+    rollback.reason = json.value("reason", std::string{});
+    rollback.destructive = json.value("destructive", false);
+    rollback.executed = json.value("executed", false);
+    rollback.recorded_at = json.value("recorded_at", std::string{});
+    return rollback;
+}
+
 nlohmann::json ToJson(const AutoDevVerification& verification) {
     return nlohmann::json{
         {"verification_id", verification.verification_id},

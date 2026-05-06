@@ -721,6 +721,10 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     const auto snapshots = store.load_snapshots(submit.job.job_id, &snapshots_error);
     Expect(snapshots.has_value() && snapshots->size() == 1,
         "load_snapshots should read recorded snapshot facts");
+    std::string rollbacks_error;
+    const auto rollbacks = store.load_rollbacks(submit.job.job_id, &rollbacks_error);
+    Expect(rollbacks.has_value() && rollbacks->empty(),
+        "load_rollbacks should return an empty list before rollback facts exist");
     store.record_execution_blocked(approved.job, tasks->front(), profile, "adapter not implemented");
     const auto verified = store.verify_task(submit.job.job_id, "task-001", "turn-001");
     Expect(verified.success, "verify_task should run the materialized task verify_command");

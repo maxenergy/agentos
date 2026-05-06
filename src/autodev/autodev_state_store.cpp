@@ -833,6 +833,10 @@ std::filesystem::path AutoDevStateStore::snapshots_dir(const std::string& job_id
     return job_dir(job_id) / "snapshots";
 }
 
+std::filesystem::path AutoDevStateStore::rollbacks_path(const std::string& job_id) const {
+    return job_dir(job_id) / "rollbacks.json";
+}
+
 std::filesystem::path AutoDevStateStore::verification_path(const std::string& job_id) const {
     return job_dir(job_id) / "verification.json";
 }
@@ -2476,6 +2480,50 @@ std::optional<std::vector<AutoDevSnapshot>> AutoDevStateStore::load_snapshots(
     } catch (const std::exception& e) {
         if (error_message) {
             *error_message = std::string("failed to read AutoDev snapshots: ") + e.what();
+        }
+        return std::nullopt;
+    }
+}
+
+std::optional<std::vector<AutoDevRollback>> AutoDevStateStore::load_rollbacks(
+    const std::string& job_id,
+    std::string* error_message) const {
+    if (!IsValidAutoDevJobId(job_id)) {
+        if (error_message) {
+            *error_message = "invalid AutoDev job_id: " + job_id;
+        }
+        return std::nullopt;
+    }
+    if (!std::filesystem::exists(job_json_path(job_id))) {
+        if (error_message) {
+            *error_message = "AutoDev job not found: " + job_id + "\nExpected path:\n" + job_json_path(job_id).string();
+        }
+        return std::nullopt;
+    }
+
+    const auto path = rollbacks_path(job_id);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return std::vector<AutoDevRollback>{};
+    }
+
+    try {
+        nlohmann::json json;
+        input >> json;
+        if (!json.is_array()) {
+            if (error_message) {
+                *error_message = "failed to read AutoDev rollbacks: rollbacks.json must contain an array";
+            }
+            return std::nullopt;
+        }
+        std::vector<AutoDevRollback> rollbacks;
+        for (const auto& rollback_json : json) {
+            rollbacks.push_back(AutoDevRollbackFromJson(rollback_json));
+        }
+        return rollbacks;
+    } catch (const std::exception& e) {
+        if (error_message) {
+            *error_message = std::string("failed to read AutoDev rollbacks: ") + e.what();
         }
         return std::nullopt;
     }

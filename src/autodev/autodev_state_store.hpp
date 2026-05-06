@@ -139,6 +139,7 @@ public:
     [[nodiscard]] std::filesystem::path turns_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path snapshots_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path snapshots_dir(const std::string& job_id) const;
+    [[nodiscard]] std::filesystem::path rollbacks_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path verification_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path diffs_path(const std::string& job_id) const;
     [[nodiscard]] std::filesystem::path acceptance_path(const std::string& job_id) const;
@@ -180,6 +181,9 @@ public:
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevSnapshot>> load_snapshots(
+        const std::string& job_id,
+        std::string* error_message = nullptr) const;
+    std::optional<std::vector<AutoDevRollback>> load_rollbacks(
         const std::string& job_id,
         std::string* error_message = nullptr) const;
     std::optional<std::vector<AutoDevVerification>> load_verifications(

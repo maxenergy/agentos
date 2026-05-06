@@ -48,6 +48,7 @@ void PrintUsage() {
         << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev snapshots job_id=<job_id>\n"
+        << "  agentos autodev rollbacks job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
         << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
@@ -552,6 +553,44 @@ int RunSnapshots(const std::filesystem::path& workspace, const int argc, char* a
             std::cout << "  artifact:    " << snapshot.artifact_path->string() << '\n';
         }
     }
+    return 0;
+}
+
+int RunRollbacks(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev rollbacks failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev rollbacks failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto rollbacks = store.load_rollbacks(job_id_it->second, &error);
+    if (!rollbacks.has_value()) {
+        std::cerr << "autodev rollbacks failed: " << error << '\n';
+        return 1;
+    }
+
+    std::cout << "AutoDev rollbacks\n"
+              << "job_id: " << job_id_it->second << '\n'
+              << "total:  " << rollbacks->size() << '\n';
+    for (const auto& rollback : *rollbacks) {
+        std::cout << '\n'
+                  << "- rollback_id: " << rollback.rollback_id << '\n'
+                  << "  task_id:     " << rollback.task_id << '\n'
+                  << "  mode:        " << rollback.mode << '\n'
+                  << "  status:      " << rollback.status << '\n'
+                  << "  destructive: " << (rollback.destructive ? "true" : "false") << '\n'
+                  << "  executed:    " << (rollback.executed ? "true" : "false") << '\n'
+                  << "  recorded_at: " << rollback.recorded_at << '\n'
+                  << "  reason:      " << rollback.reason << '\n';
+    }
+    std::cout << "\nRollback records are runtime facts. This command does not modify the worktree.\n";
     return 0;
 }
 
@@ -1387,6 +1426,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "snapshots") {
         return RunSnapshots(workspace, argc, argv);
+    }
+    if (subcommand == "rollbacks") {
+        return RunRollbacks(workspace, argc, argv);
     }
     if (subcommand == "verify-task" || subcommand == "verify_task") {
         return RunVerifyTask(workspace, argc, argv);

@@ -101,6 +101,18 @@ struct AutoDevSnapshot {
     std::optional<std::filesystem::path> artifact_path;
 };
 
+struct AutoDevRollback {
+    std::string rollback_id;
+    std::string job_id;
+    std::string task_id;
+    std::string mode;
+    std::string status;
+    std::string reason;
+    bool destructive = false;
+    bool executed = false;
+    std::string recorded_at;
+};
+
 struct AutoDevVerification {
     std::string verification_id;
     std::string job_id;
@@ -163,6 +175,7 @@ nlohmann::json ToJson(const AutoDevJob& job);
 nlohmann::json ToJson(const AutoDevTask& task);
 nlohmann::json ToJson(const AutoDevTurn& turn);
 nlohmann::json ToJson(const AutoDevSnapshot& snapshot);
+nlohmann::json ToJson(const AutoDevRollback& rollback);
 nlohmann::json ToJson(const AutoDevVerification& verification);
 nlohmann::json ToJson(const AutoDevDiffGuard& diff_guard);
 nlohmann::json ToJson(const AutoDevAcceptanceGate& acceptance);
@@ -171,6 +184,7 @@ AutoDevJob AutoDevJobFromJson(const nlohmann::json& json);
 AutoDevTask AutoDevTaskFromJson(const nlohmann::json& json);
 AutoDevTurn AutoDevTurnFromJson(const nlohmann::json& json);
 AutoDevSnapshot AutoDevSnapshotFromJson(const nlohmann::json& json);
+AutoDevRollback AutoDevRollbackFromJson(const nlohmann::json& json);
 AutoDevVerification AutoDevVerificationFromJson(const nlohmann::json& json);
 AutoDevDiffGuard AutoDevDiffGuardFromJson(const nlohmann::json& json);
 AutoDevAcceptanceGate AutoDevAcceptanceGateFromJson(const nlohmann::json& json);
