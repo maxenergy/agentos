@@ -49,6 +49,7 @@ void PrintUsage() {
         << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev snapshots job_id=<job_id>\n"
         << "  agentos autodev rollback-soft job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev rollback-hard job_id=<job_id> task_id=<task_id> approval=hard_rollback_approved\n"
         << "  agentos autodev rollbacks job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"
@@ -594,6 +595,39 @@ int RunRollbackSoft(const std::filesystem::path& workspace, const int argc, char
     PrintStringList("target_files:", result.rollback.target_files);
     std::cout << "reason:      " << result.rollback.reason << '\n'
               << "\nSoft rollback only restores tracked task files in the job worktree. It does not clean untracked files or touch the target repo.\n";
+    return 0;
+}
+
+int RunRollbackHard(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    const auto task_id_it = options.find("task_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev rollback-hard failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev rollback-hard failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+    if (task_id_it == options.end() || task_id_it->second.empty()) {
+        std::cerr << "autodev rollback-hard failed: task_id is required\n";
+        return 1;
+    }
+    std::optional<std::string> approval;
+    if (const auto it = options.find("approval"); it != options.end() && !it->second.empty()) {
+        approval = it->second;
+    }
+
+    AutoDevStateStore store(workspace);
+    const auto result = store.rollback_hard(job_id_it->second, task_id_it->second, approval);
+    if (!result.success) {
+        std::cerr << "autodev rollback-hard failed: " << result.error_message << '\n'
+                  << "rollback_id: " << result.rollback.rollback_id << '\n'
+                  << "destructive: true\n"
+                  << "executed:    false\n";
+        return 1;
+    }
     return 0;
 }
 
@@ -1471,6 +1505,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "rollback-soft" || subcommand == "rollback_soft") {
         return RunRollbackSoft(workspace, argc, argv);
+    }
+    if (subcommand == "rollback-hard" || subcommand == "rollback_hard") {
+        return RunRollbackHard(workspace, argc, argv);
     }
     if (subcommand == "rollbacks") {
         return RunRollbacks(workspace, argc, argv);

@@ -1848,6 +1848,102 @@ AutoDevRollbackResult AutoDevStateStore::rollback_soft(
     return result;
 }
 
+AutoDevRollbackResult AutoDevStateStore::rollback_hard(
+    const std::string& job_id,
+    const std::string& task_id,
+    const std::optional<std::string>& approval) {
+    std::string load_error;
+    auto maybe_job = load_job(job_id, &load_error);
+    if (!maybe_job.has_value()) {
+        AutoDevRollbackResult result;
+        result.error_message = load_error;
+        return result;
+    }
+    AutoDevJob job = std::move(*maybe_job);
+    const auto fail = [](AutoDevJob job, const std::string& message) {
+        AutoDevRollbackResult result;
+        result.error_message = message;
+        result.job = std::move(job);
+        return result;
+    };
+
+    if (task_id.empty()) {
+        return fail(std::move(job), "task_id is required");
+    }
+    if (job.isolation_status != "ready" || !std::filesystem::exists(job.job_worktree_path)) {
+        return fail(std::move(job), "workspace isolation is not ready");
+    }
+    if (!job.spec_revision.has_value() || !job.spec_hash.has_value()) {
+        return fail(std::move(job), "no approved frozen spec is recorded on the job");
+    }
+
+    auto maybe_tasks = load_tasks(job_id, &load_error);
+    if (!maybe_tasks.has_value()) {
+        return fail(std::move(job), load_error);
+    }
+    const auto task_it = std::find_if(maybe_tasks->begin(), maybe_tasks->end(), [&task_id](const AutoDevTask& task) {
+        return task.task_id == task_id;
+    });
+    if (task_it == maybe_tasks->end()) {
+        return fail(std::move(job), "AutoDev task not found: " + task_id);
+    }
+    const AutoDevTask task = *task_it;
+
+    nlohmann::json rollback_records = nlohmann::json::array();
+    if (std::filesystem::exists(rollbacks_path(job_id))) {
+        try {
+            rollback_records = nlohmann::json::parse(ReadFile(rollbacks_path(job_id)));
+            if (!rollback_records.is_array()) {
+                rollback_records = nlohmann::json::array();
+            }
+        } catch (...) {
+            rollback_records = nlohmann::json::array();
+        }
+    }
+
+    AutoDevRollback rollback;
+    rollback.rollback_id = NextRollbackId(rollback_records);
+    rollback.job_id = job.job_id;
+    rollback.task_id = task.task_id;
+    rollback.mode = "hard";
+    rollback.destructive = true;
+    rollback.executed = false;
+    rollback.recorded_at = IsoUtcNow();
+    if (!approval.has_value() || *approval != "hard_rollback_approved") {
+        rollback.status = "approval_required";
+        rollback.reason = "hard rollback requires approval=hard_rollback_approved";
+    } else {
+        rollback.status = "blocked";
+        rollback.reason = "hard rollback execution is not implemented";
+    }
+
+    rollback_records.push_back(ToJson(rollback));
+    WriteFileAtomically(rollbacks_path(job.job_id), rollback_records.dump(2) + "\n");
+    append_event(job.job_id, nlohmann::json{
+        {"type", "autodev.rollback.denied"},
+        {"job_id", job.job_id},
+        {"status", job.status},
+        {"phase", job.phase},
+        {"task_id", task.task_id},
+        {"rollback_id", rollback.rollback_id},
+        {"mode", rollback.mode},
+        {"rollback_status", rollback.status},
+        {"destructive", rollback.destructive},
+        {"executed", rollback.executed},
+        {"reason", rollback.reason},
+        {"at", rollback.recorded_at},
+    });
+
+    AutoDevRollbackResult result;
+    result.success = false;
+    result.error_message = rollback.reason;
+    result.job = std::move(job);
+    result.task = std::move(task);
+    result.rollback = std::move(rollback);
+    result.rollbacks_path = this->rollbacks_path(job_id);
+    return result;
+}
+
 AutoDevVerifyTaskResult AutoDevStateStore::verify_task(
     const std::string& job_id,
     const std::string& task_id,

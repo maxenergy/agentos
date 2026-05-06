@@ -175,6 +175,10 @@ public:
         const std::string& reason);
     AutoDevSnapshotResult record_task_snapshot(const std::string& job_id, const std::string& task_id);
     AutoDevRollbackResult rollback_soft(const std::string& job_id, const std::string& task_id);
+    AutoDevRollbackResult rollback_hard(
+        const std::string& job_id,
+        const std::string& task_id,
+        const std::optional<std::string>& approval);
     AutoDevVerifyTaskResult verify_task(
         const std::string& job_id,
         const std::string& task_id,

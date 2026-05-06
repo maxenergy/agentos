@@ -2883,6 +2883,28 @@ void TestAutoDevCommands() {
         "autodev rollbacks should include rollback mode");
     Expect(rollbacks_after_soft.output.find("target_files: README.md") != std::string::npos,
         "autodev rollbacks should include rollback target files");
+    const auto rollback_hard_denied = RunAgentos(workspace, {
+        "autodev",
+        "rollback-hard",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(rollback_hard_denied.exit_code != 0,
+        "autodev rollback-hard should fail without explicit approval");
+    Expect(rollback_hard_denied.output.find("hard rollback requires approval=hard_rollback_approved") != std::string::npos,
+        "autodev rollback-hard should explain the approval gate");
+    Expect(rollback_hard_denied.output.find("destructive: true") != std::string::npos,
+        "autodev rollback-hard denial should disclose destructive intent");
+    Expect(rollback_hard_denied.output.find("executed:    false") != std::string::npos,
+        "autodev rollback-hard denial should not execute rollback");
+    const auto rollbacks_after_hard = RunAgentos(workspace, {"autodev", "rollbacks", "job_id=" + executable_job_id});
+    Expect(rollbacks_after_hard.exit_code == 0,
+        "autodev rollbacks should list denied hard rollback facts");
+    Expect(rollbacks_after_hard.output.find("rollback_id: rollback-002") != std::string::npos,
+        "autodev rollbacks should include denied hard rollback fact");
+    Expect(rollbacks_after_hard.output.find("mode:        hard") != std::string::npos,
+        "autodev rollbacks should show hard rollback mode");
+    Expect(rollbacks_after_hard.output.find("status:      approval_required") != std::string::npos,
+        "autodev rollbacks should show hard rollback approval gate status");
 
     const auto failing_verify_submit = RunAgentos(workspace, {
         "autodev",
@@ -3022,6 +3044,8 @@ void TestAutoDevCommands() {
         "autodev execute-next-task should append a snapshot recorded event");
     Expect(executable_events.output.find("autodev.rollback.recorded") != std::string::npos,
         "autodev rollback-soft should append a rollback recorded event");
+    Expect(executable_events.output.find("autodev.rollback.denied") != std::string::npos,
+        "autodev rollback-hard should append a denied rollback event");
     Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
         "autodev verify-task should append a verification completed event");
     Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,

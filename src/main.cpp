@@ -660,6 +660,7 @@ void PrintUsage() {
         << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
         << "  agentos autodev snapshots job_id=<job_id>\n"
         << "  agentos autodev rollback-soft job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev rollback-hard job_id=<job_id> task_id=<task_id> approval=hard_rollback_approved\n"
         << "  agentos autodev rollbacks job_id=<job_id>\n"
         << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
         << "  agentos autodev verifications job_id=<job_id>\n"

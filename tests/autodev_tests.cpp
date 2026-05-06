@@ -902,6 +902,22 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     const auto rollbacks_after_soft = store.load_rollbacks(submit.job.job_id, &rollbacks_error);
     Expect(rollbacks_after_soft.has_value() && rollbacks_after_soft->size() == 1,
         "load_rollbacks should read recorded soft rollback facts");
+    const auto hard_rollback = store.rollback_hard(submit.job.job_id, "task-001", std::nullopt);
+    Expect(!hard_rollback.success,
+        "rollback_hard should fail without explicit approval");
+    Expect(hard_rollback.rollback.rollback_id == "rollback-002",
+        "hard rollback denial should append a rollback fact");
+    Expect(hard_rollback.rollback.mode == "hard",
+        "hard rollback denial should record hard rollback mode");
+    Expect(hard_rollback.rollback.status == "approval_required",
+        "hard rollback denial should record approval_required status");
+    Expect(hard_rollback.rollback.destructive,
+        "hard rollback denial should mark the request as destructive");
+    Expect(!hard_rollback.rollback.executed,
+        "hard rollback denial should not execute rollback");
+    const auto rollbacks_after_hard = store.load_rollbacks(submit.job.job_id, &rollbacks_error);
+    Expect(rollbacks_after_hard.has_value() && rollbacks_after_hard->size() == 2,
+        "load_rollbacks should read denied hard rollback facts");
 
     Expect(std::filesystem::exists(store.turns_path(submit.job.job_id)),
         "recording execution blocked event should create turns.json");
@@ -951,6 +967,8 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
         "events.ndjson should record snapshot event");
     Expect(events.find("\"type\":\"autodev.rollback.recorded\"") != std::string::npos,
         "events.ndjson should record rollback event");
+    Expect(events.find("\"type\":\"autodev.rollback.denied\"") != std::string::npos,
+        "events.ndjson should record denied hard rollback event");
     Expect(events.find("\"turn_id\":\"turn-001\"") != std::string::npos,
         "execution blocked event should link to the synthetic turn record");
     Expect(events.find("\"prompt_artifact\"") != std::string::npos,
