@@ -72,6 +72,12 @@ docs/schemas/AUTODEV_SPEC.schema.json
 
 `agentos autodev validate-spec` enforces the supported `schema_version` and the core shape used by the runtime before it snapshots a pending spec revision. Empty `tasks` are allowed at validation time so generated goal skeletons can be reviewed, but `approve-spec` blocks execution until tasks can be materialized.
 
+## Blocked Recovery
+
+`agentos autodev recover-blocked job_id=<job_id> [skill_pack_path=<path>]` is a conservative recovery helper for blocked setup gates. It reruns the recoverable runtime gate implied by `next_action`, such as workspace preparation after the target repo is cleaned, skill-pack loading after a path or manifest fix, goal-doc generation after prerequisites are ready, or spec validation after `AUTODEV_SPEC.json` is fixed.
+
+The command does not approve specs, mark tasks passed, run Codex execution, or mark jobs done. Jobs in `awaiting_approval` still require an explicit hash-bound `approve-spec` command.
+
 ## Authority Boundary
 
 Codex may read and modify files under the job worktree, including `docs/goal/*`. Codex cannot mark a task passed or a job done by editing worktree files.
@@ -83,5 +89,6 @@ Only AgentOS runtime gates mutate authoritative state:
 - `acceptance-gate` may mark a task passed when latest verification and diff facts pass.
 - `final-review` may advance a job to `pr_ready`.
 - `complete-job` / `mark-done` may advance a `pr_ready` job with latest passed final review to `done`.
+- `recover-blocked` may rerun setup gates selected from runtime `next_action`; it cannot approve specs or start execution.
 - `cleanup-worktree` may remove a job worktree only after the job is `done` or `cancelled`; runtime facts remain in the AgentOS store.
 - `pause`, `resume`, and `cancel` currently mutate job state and append events only; they do not interrupt or terminate a Codex process.

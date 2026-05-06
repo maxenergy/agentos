@@ -2428,7 +2428,7 @@ void TestAutoDevCommands() {
     Expect(generated_status.exit_code == 0, "autodev status should read generated goal docs job");
     Expect(generated_status.output.find("Phase: requirements_grilling") != std::string::npos,
         "autodev status should show requirements_grilling after goal docs generation");
-    Expect(generated_status.output.find("agentos autodev validate_spec job_id=" + job_id) != std::string::npos,
+    Expect(generated_status.output.find("agentos autodev validate-spec job_id=" + job_id) != std::string::npos,
         "autodev status should show validate_spec next action");
 
     const auto validate_spec = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + job_id});
@@ -2458,13 +2458,55 @@ void TestAutoDevCommands() {
         "autodev status should show before_code_execution after spec validation");
     Expect(validated_status.output.find("revision:       rev-001") != std::string::npos,
         "autodev status should show spec revision");
-    Expect(validated_status.output.find("agentos autodev approve_spec job_id=" + job_id + " spec_hash=" + spec_hash) != std::string::npos,
+    Expect(validated_status.output.find("agentos autodev approve-spec job_id=" + job_id + " spec_hash=" + spec_hash) != std::string::npos,
         "autodev status should show hash-bound approve_spec next action");
 
     const auto approve_empty = RunAgentos(workspace, {"autodev", "approve-spec", "job_id=" + job_id, "spec_hash=" + spec_hash});
     Expect(approve_empty.exit_code != 0, "autodev approve-spec should block empty generated task skeleton");
     Expect(approve_empty.output.find("tasks must not be empty") != std::string::npos,
         "autodev approve-spec should explain empty tasks blocker");
+    const auto blocked_spec_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + job_id});
+    Expect(blocked_spec_summary.exit_code == 0,
+        "autodev summary should work for blocked jobs before tasks.json exists");
+    Expect(blocked_spec_summary.output.find("recovery:      Fix docs/goal/AUTODEV_SPEC.json") != std::string::npos,
+        "autodev summary should show spec recovery guidance for approval-blocked jobs");
+    {
+        std::ofstream spec(std::filesystem::path(planned_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Fix login 500\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Document login fix\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"README.md remains present\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto recover_spec = RunAgentos(workspace, {"autodev", "recover-blocked", "job_id=" + job_id});
+    Expect(recover_spec.exit_code == 0,
+        "autodev recover-blocked should rerun spec validation after AUTODEV_SPEC is fixed");
+    Expect(recover_spec.output.find("attempted_action: validate-spec") != std::string::npos,
+        "autodev recover-blocked should report spec validation recovery action");
+    Expect(recover_spec.output.find("status:      awaiting_approval") != std::string::npos,
+        "autodev recover-blocked should move fixed spec back to awaiting approval");
+    const auto recover_awaiting_approval = RunAgentos(workspace, {"autodev", "recover-blocked", "job_id=" + job_id});
+    Expect(recover_awaiting_approval.exit_code != 0,
+        "autodev recover-blocked should not approve specs implicitly");
+    Expect(recover_awaiting_approval.output.find("spec approval requires explicit approve-spec") != std::string::npos,
+        "autodev recover-blocked should explain explicit approval requirement");
     const auto tasks_before_approval = RunAgentos(workspace, {"autodev", "tasks", "job_id=" + job_id});
     Expect(tasks_before_approval.exit_code != 0,
         "autodev tasks should fail before runtime tasks are materialized");
@@ -2478,6 +2520,69 @@ void TestAutoDevCommands() {
         "autodev events should include submit event");
     Expect(events_result.output.find("autodev.spec.approval_blocked") != std::string::npos,
         "autodev events should include approval blocked event");
+
+    const auto dirty_target = workspace / "dirty_target";
+    InitGitRepoForCliTest(dirty_target);
+    {
+        std::ofstream dirty_file(dirty_target / "README.md", std::ios::binary | std::ios::app);
+        dirty_file << "dirty\n";
+    }
+    const auto dirty_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + dirty_target.string(),
+        "objective=Recover dirty workspace",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(dirty_submit.exit_code == 0,
+        "autodev submit should allow dirty target recovery fixture setup");
+    const auto dirty_job_id = ExtractLineValue(dirty_submit.output, "job_id:");
+    const auto dirty_prepare = RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + dirty_job_id});
+    Expect(dirty_prepare.exit_code != 0,
+        "autodev prepare-workspace should block dirty target recovery fixture");
+    const auto dirty_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + dirty_job_id});
+    Expect(dirty_status.output.find("Recovery:") != std::string::npos &&
+               dirty_status.output.find("recover-blocked job_id=" + dirty_job_id) != std::string::npos,
+        "autodev status should show workspace recovery guidance");
+    (void)std::system((std::string("git -C ") + QuoteShellArg(dirty_target.string()) + " add README.md").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(dirty_target.string()) +
+                       " commit -m recover-dirty >/dev/null 2>&1").c_str());
+    const auto recover_dirty = RunAgentos(workspace, {"autodev", "recover-blocked", "job_id=" + dirty_job_id});
+    Expect(recover_dirty.exit_code == 0,
+        "autodev recover-blocked should rerun prepare-workspace after dirty target is fixed");
+    Expect(recover_dirty.output.find("attempted_action: prepare-workspace") != std::string::npos,
+        "autodev recover-blocked should report workspace recovery action");
+    Expect(recover_dirty.output.find("status:      running") != std::string::npos,
+        "autodev recover-blocked should unblock clean workspace jobs");
+
+    const auto missing_skill_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Recover missing skill pack"});
+    Expect(missing_skill_submit.exit_code == 0,
+        "autodev submit should allow missing skill pack recovery fixture setup");
+    const auto missing_skill_job_id = ExtractLineValue(missing_skill_submit.output, "job_id:");
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + missing_skill_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare missing skill recovery fixture");
+    const auto missing_skill_load = RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + missing_skill_job_id});
+    Expect(missing_skill_load.exit_code != 0,
+        "autodev load-skill-pack should block when skill_pack_path is missing");
+    const auto missing_skill_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + missing_skill_job_id});
+    Expect(missing_skill_summary.exit_code == 0,
+        "autodev summary should work for missing skill pack blocked jobs");
+    Expect(missing_skill_summary.output.find("skill_pack_path=<path>") != std::string::npos,
+        "autodev summary should show missing skill pack recovery guidance");
+    const auto recover_skill = RunAgentos(workspace, {
+        "autodev",
+        "recover-blocked",
+        "job_id=" + missing_skill_job_id,
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(recover_skill.exit_code == 0,
+        "autodev recover-blocked should load provided skill pack path");
+    Expect(recover_skill.output.find("attempted_action: load-skill-pack") != std::string::npos,
+        "autodev recover-blocked should report skill pack recovery action");
+    Expect(recover_skill.output.find("status:      running") != std::string::npos,
+        "autodev recover-blocked should unblock skill pack jobs");
 
     const auto executable_submit = RunAgentos(workspace, {
         "autodev",
@@ -2694,7 +2799,7 @@ void TestAutoDevCommands() {
         "autodev acceptance-gate should not mark the job done");
     Expect(accepted_status.output.find("Phase: final_review") != std::string::npos,
         "autodev acceptance-gate should advance all-passed jobs to final_review");
-    Expect(accepted_status.output.find("agentos autodev final_review job_id=" + executable_job_id) != std::string::npos,
+    Expect(accepted_status.output.find("agentos autodev final-review job_id=" + executable_job_id) != std::string::npos,
         "autodev status should show final_review as the next action");
     Expect(accepted_status.output.find("passed: 1") != std::string::npos,
         "autodev status should count accepted task as passed");
@@ -2880,7 +2985,7 @@ void TestAutoDevCommands() {
         "autodev status should not leave stale failed final review jobs at pr_ready");
     Expect(stale_status.output.find("Phase: final_review") != std::string::npos,
         "autodev status should show final_review after stale pr_ready is invalidated");
-    Expect(stale_status.output.find("agentos autodev final_review job_id=" + executable_job_id) != std::string::npos,
+    Expect(stale_status.output.find("agentos autodev final-review job_id=" + executable_job_id) != std::string::npos,
         "autodev status should point stale failed final review jobs back to final_review");
     const auto failed_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id});
     Expect(failed_summary.exit_code == 0,

@@ -143,6 +143,73 @@ nlohmann::json ProgressJson(const AutoDevProgressView& progress) {
     };
 }
 
+std::string AutoDevCommandForNextAction(const AutoDevJob& job) {
+    const auto command = [&]() {
+        if (job.next_action == "prepare_workspace" ||
+            job.next_action == "commit_or_allow_dirty_target" ||
+            job.next_action == "fix_workspace_or_use_git_worktree" ||
+            job.next_action == "fix_workspace_or_use_in_place" ||
+            job.next_action == "fix_workspace_path") {
+            return std::string("prepare-workspace");
+        }
+        if (job.next_action == "load_skill_pack" ||
+            job.next_action == "declare_skill_pack" ||
+            job.next_action == "fix_skill_pack") {
+            return std::string("load-skill-pack");
+        }
+        if (job.next_action == "generate_goal_docs") {
+            return std::string("generate-goal-docs");
+        }
+        if (job.next_action == "validate_spec" || job.next_action == "fix_autodev_spec") {
+            return std::string("validate-spec");
+        }
+        if (job.next_action == "approve_spec") {
+            return std::string("approve-spec");
+        }
+        if (job.next_action == "final_review") {
+            return std::string("final-review");
+        }
+        if (job.next_action == "complete_job") {
+            return std::string("complete-job");
+        }
+        return job.next_action;
+    }();
+    if (command.empty() || command == "none") {
+        return {};
+    }
+    std::string rendered = "agentos autodev " + command + " job_id=" + job.job_id;
+    if (command == "approve-spec" && job.spec_hash.has_value()) {
+        rendered += " spec_hash=" + *job.spec_hash;
+    }
+    return rendered;
+}
+
+std::string AutoDevRecoveryHint(const AutoDevJob& job) {
+    if (job.status == "blocked") {
+        const auto command = AutoDevCommandForNextAction(job);
+        if (job.next_action == "commit_or_allow_dirty_target") {
+            return "Commit/stash target repo changes, then run: agentos autodev recover-blocked job_id=" + job.job_id;
+        }
+        if (job.next_action == "declare_skill_pack") {
+            return "Provide a skill pack path: agentos autodev recover-blocked job_id=" + job.job_id + " skill_pack_path=<path>";
+        }
+        if (job.next_action == "fix_skill_pack") {
+            return "Fix the skill pack, then run: agentos autodev recover-blocked job_id=" + job.job_id;
+        }
+        if (job.next_action == "fix_autodev_spec") {
+            return "Fix docs/goal/AUTODEV_SPEC.json in the job worktree, then run: agentos autodev recover-blocked job_id=" + job.job_id;
+        }
+        if (!command.empty()) {
+            return "Run: agentos autodev recover-blocked job_id=" + job.job_id + " (or " + command + ")";
+        }
+        return "Inspect blocker and events, then rerun the corrected AutoDev gate.";
+    }
+    if (job.status == "awaiting_approval" && job.next_action == "approve_spec") {
+        return "Approve the frozen spec explicitly: " + AutoDevCommandForNextAction(job);
+    }
+    return {};
+}
+
 void PrintJson(const nlohmann::json& json) {
     std::cout << json.dump(2) << '\n';
 }
@@ -160,6 +227,7 @@ void PrintUsage() {
         << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
         << "  agentos autodev validate-spec job_id=<job_id>\n"
         << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
+        << "  agentos autodev recover-blocked job_id=<job_id> [skill_pack_path=<path>]\n"
         << "  agentos autodev tasks job_id=<job_id>\n"
         << "  agentos autodev turns job_id=<job_id>\n"
         << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
@@ -439,6 +507,110 @@ int RunApproveSpec(const std::filesystem::path& workspace, const int argc, char*
               << "tasks_file:    " << result.tasks_path.string() << '\n'
               << "next_action:   " << result.job.next_action << '\n'
               << "\nThe frozen spec is approved. Codex execution was not started by this command.\n";
+    return 0;
+}
+
+int RunRecoverBlocked(const std::filesystem::path& workspace, const int argc, char* argv[]) {
+    const auto options = ParseOptionsFromArgs(argc, argv, 3);
+    const auto job_id_it = options.find("job_id");
+    if (job_id_it == options.end() || job_id_it->second.empty()) {
+        std::cerr << "autodev recover-blocked failed: job_id is required\n";
+        return 1;
+    }
+    if (!IsValidAutoDevJobId(job_id_it->second)) {
+        std::cerr << "autodev recover-blocked failed: invalid job_id: " << job_id_it->second << '\n';
+        return 1;
+    }
+
+    AutoDevStateStore store(workspace);
+    std::string error;
+    const auto loaded_job = store.load_job(job_id_it->second, &error);
+    if (!loaded_job.has_value()) {
+        std::cerr << "autodev recover-blocked failed: " << error << '\n';
+        return 1;
+    }
+
+    const auto print_job = [](const AutoDevJob& job) {
+        std::cout << "job_id:      " << job.job_id << '\n'
+                  << "status:      " << job.status << '\n'
+                  << "phase:       " << job.phase << '\n'
+                  << "next_action: " << job.next_action << '\n';
+        if (job.blocker.has_value()) {
+            std::cout << "blocker:     " << *job.blocker << '\n';
+        }
+        const auto recovery_hint = AutoDevRecoveryHint(job);
+        if (!recovery_hint.empty()) {
+            std::cout << "recovery:    " << recovery_hint << '\n';
+        }
+    };
+
+    const auto fail_with_job = [&](const AutoDevJob& job, const std::string& message) {
+        std::cerr << "autodev recover-blocked failed: " << message << '\n';
+        print_job(job);
+        return 1;
+    };
+
+    const auto job = *loaded_job;
+    if (job.status == "awaiting_approval" && job.next_action == "approve_spec") {
+        return fail_with_job(job, "spec approval requires explicit approve-spec");
+    }
+    if (job.status != "blocked") {
+        return fail_with_job(job, "job is not blocked");
+    }
+
+    std::string attempted_action;
+    bool success = false;
+    std::string failure;
+    AutoDevJob result_job;
+
+    if (job.next_action == "prepare_workspace" ||
+        job.next_action == "commit_or_allow_dirty_target" ||
+        job.next_action == "fix_workspace_or_use_git_worktree" ||
+        job.next_action == "fix_workspace_or_use_in_place" ||
+        job.next_action == "fix_workspace_path") {
+        attempted_action = "prepare-workspace";
+        const auto result = store.prepare_workspace(job.job_id);
+        success = result.success;
+        failure = result.error_message;
+        result_job = result.job;
+    } else if (job.next_action == "load_skill_pack" ||
+               job.next_action == "declare_skill_pack" ||
+               job.next_action == "fix_skill_pack") {
+        attempted_action = "load-skill-pack";
+        std::optional<std::filesystem::path> skill_pack_path;
+        if (const auto it = options.find("skill_pack_path"); it != options.end() && !it->second.empty()) {
+            skill_pack_path = std::filesystem::path(it->second);
+        }
+        const auto result = store.load_skill_pack(job.job_id, skill_pack_path);
+        success = result.success;
+        failure = result.error_message;
+        result_job = result.job;
+    } else if (job.next_action == "generate_goal_docs") {
+        attempted_action = "generate-goal-docs";
+        const auto result = store.generate_goal_docs(job.job_id);
+        success = result.success;
+        failure = result.error_message;
+        result_job = result.job;
+    } else if (job.next_action == "validate_spec" || job.next_action == "fix_autodev_spec") {
+        attempted_action = "validate-spec";
+        const auto result = store.validate_spec(job.job_id);
+        success = result.success;
+        failure = result.error_message;
+        result_job = result.job;
+    } else {
+        return fail_with_job(job, "blocked next_action is not recoverable by this command");
+    }
+
+    if (!success) {
+        std::cerr << "autodev recover-blocked failed while running " << attempted_action << ": " << failure << '\n';
+        print_job(result_job.job_id.empty() ? job : result_job);
+        return 1;
+    }
+
+    std::cout << "AutoDev blocked job recovered\n"
+              << "attempted_action: " << attempted_action << '\n';
+    print_job(result_job);
+    std::cout << "Recovery command only reran the blocked runtime gate; it did not approve specs or start Codex execution.\n";
     return 0;
 }
 
@@ -1427,11 +1599,8 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
         std::cerr << "autodev summary failed: " << error << '\n';
         return 1;
     }
-    const auto tasks = store.load_tasks(job_id_it->second, &error);
-    if (!tasks.has_value()) {
-        std::cerr << "autodev summary failed: " << error << '\n';
-        return 1;
-    }
+    const auto loaded_tasks = store.load_tasks(job_id_it->second, nullptr);
+    const auto tasks = loaded_tasks.value_or(std::vector<AutoDevTask>{});
 
     const auto snapshots = store.load_snapshots(job_id_it->second, nullptr).value_or(std::vector<AutoDevSnapshot>{});
     const auto verifications = store.load_verifications(job_id_it->second, nullptr).value_or(std::vector<AutoDevVerification>{});
@@ -1466,12 +1635,12 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
     };
 
     std::size_t passed_tasks = 0;
-    for (const auto& task : *tasks) {
+    for (const auto& task : tasks) {
         if (task.status == "passed") {
             ++passed_tasks;
         }
     }
-    const auto progress = ComputeProgress(*job, *tasks);
+    const auto progress = ComputeProgress(*job, tasks);
     if (WantsJson(options)) {
         PrintJson(nlohmann::json{
             {"job", ToJson(*job)},
@@ -1484,7 +1653,7 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
                 {"final_reviews", final_reviews.size()},
                 {"repairs", repairs.size()},
             }},
-            {"tasks", RecordsJson(*tasks)},
+            {"tasks", RecordsJson(tasks)},
             {"snapshots", RecordsJson(snapshots)},
             {"verifications", RecordsJson(verifications)},
             {"diffs", RecordsJson(diffs)},
@@ -1501,19 +1670,26 @@ int RunSummary(const std::filesystem::path& workspace, const int argc, char* arg
               << "phase:         " << job->phase << '\n'
               << "next_action:   " << job->next_action << '\n'
               << "spec_revision: " << job->spec_revision.value_or("(none)") << '\n'
-              << "tasks:         " << passed_tasks << "/" << tasks->size() << '\n'
+              << "tasks:         " << passed_tasks << "/" << tasks.size() << '\n'
               << "facts:         snapshots=" << snapshots.size()
               << " verifications=" << verifications.size()
               << " diffs=" << diffs.size()
               << " acceptances=" << acceptances.size()
               << " final_reviews=" << final_reviews.size()
               << " repairs=" << repairs.size() << '\n';
+    if (job->blocker.has_value()) {
+        std::cout << "blocker:       " << *job->blocker << '\n';
+    }
+    const auto recovery_hint = AutoDevRecoveryHint(*job);
+    if (!recovery_hint.empty()) {
+        std::cout << "recovery:      " << recovery_hint << '\n';
+    }
 
     std::cout << "\nProgress:\n";
     PrintProgress("  ", progress);
 
     std::cout << "\nTasks:\n";
-    for (const auto& task : *tasks) {
+    for (const auto& task : tasks) {
         const auto verification = latest_verification(task.task_id);
         const auto diff = latest_diff(task.task_id);
         const auto acceptance = latest_acceptance(task.task_id);
@@ -1833,15 +2009,21 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
     if (job->next_action == "none") {
         std::cout << "  none";
     } else {
-        std::cout << "  agentos autodev "
-                  << (job->next_action == "prepare_workspace" ? "prepare-workspace" : job->next_action)
-                  << " job_id=" << job->job_id;
-        if (job->next_action == "approve_spec" && job->spec_hash.has_value()) {
-            std::cout << " spec_hash=" << *job->spec_hash;
-        }
+        std::cout << "  " << AutoDevCommandForNextAction(*job);
     }
     std::cout << '\n'
               << '\n';
+    if (job->blocker.has_value()) {
+        std::cout << "Blocker:\n"
+                  << "  " << *job->blocker << '\n'
+                  << '\n';
+    }
+    const auto recovery_hint = AutoDevRecoveryHint(*job);
+    if (!recovery_hint.empty()) {
+        std::cout << "Recovery:\n"
+                  << "  " << recovery_hint << '\n'
+                  << '\n';
+    }
     if (job->isolation_status == "ready") {
         std::cout << "Workspace is ready. Future AutoDev writes must use the job worktree.\n";
     } else {
@@ -1881,6 +2063,9 @@ int RunAutoDevCommand(const std::filesystem::path& workspace, const int argc, ch
     }
     if (subcommand == "approve-spec" || subcommand == "approve_spec") {
         return RunApproveSpec(workspace, argc, argv);
+    }
+    if (subcommand == "recover-blocked" || subcommand == "recover_blocked") {
+        return RunRecoverBlocked(workspace, argc, argv);
     }
     if (subcommand == "tasks") {
         return RunTasks(workspace, argc, argv);
