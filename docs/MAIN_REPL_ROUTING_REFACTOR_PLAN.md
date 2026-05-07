@@ -109,6 +109,14 @@ natural language goes to the configured `main` agent with recent context, and
    - Cover the browser/low-frequency continuation scenario with a real
      interactive main-agent fixture.
 
+9. Provider-native main-agent message history: done
+   - Split main-agent chat requests into provider-native system/user/assistant
+     messages instead of sending one large user prompt.
+   - Parse recent REPL transcript turns into message roles before calling
+     OpenAI-compatible and Anthropic-compatible providers.
+   - Send Gemini/Vertex requests with `systemInstruction` plus user/model
+     contents so the same context boundary is preserved there.
+
 ## Non-goals For This Batch
 
 - Persist chat sessions across process restarts.
