@@ -5,6 +5,7 @@
 #include "auth/secure_token_store.hpp"
 #include "auth/session_store.hpp"
 #include "cli/agents_commands.hpp"
+#include "cli/autodev_commands.hpp"
 #include "cli/auth_commands.hpp"
 #include "cli/cli_specs_commands.hpp"
 #include "cli/diagnostics_commands.hpp"
@@ -47,6 +48,7 @@
 #include "skills/builtin/host_info_skill.hpp"
 #include "skills/builtin/http_fetch_skill.hpp"
 #include "skills/builtin/learn_skill.hpp"
+#include "skills/builtin/news_search_skill.hpp"
 #include "skills/builtin/research_skill.hpp"
 #include "skills/builtin/workflow_run_skill.hpp"
 #include "storage/main_agent_store.hpp"
@@ -645,6 +647,48 @@ void PrintUsage() {
         << "  agentos interactive\n"
         << "  agentos serve [port=18080] [host=127.0.0.1]\n"
         << "  agentos agents\n"
+        << "  agentos autodev submit target_repo_path=<path> objective=<text> [skill_pack_path=<path>] [isolation_mode=git_worktree|in_place] [worktree_cleanup_policy=keep_until_done|delete_on_done|keep_always]\n"
+        << "  agentos autodev jobs [format=text|json]\n"
+        << "  agentos autodev list [format=text|json]\n"
+        << "  agentos autodev status job_id=<job_id>\n"
+        << "  agentos autodev status job_id=<job_id> --watch [iterations=1] [interval_ms=1000]\n"
+        << "  agentos autodev watch job_id=<job_id> [iterations=1] [interval_ms=1000]\n"
+        << "  agentos autodev summary job_id=<job_id>\n"
+        << "  agentos autodev prepare-workspace job_id=<job_id>\n"
+        << "  agentos autodev load-skill-pack job_id=<job_id> [skill_pack_path=<path>]\n"
+        << "  agentos autodev generate-goal-docs job_id=<job_id>\n"
+        << "  agentos autodev validate-spec job_id=<job_id>\n"
+        << "  agentos autodev approve-spec job_id=<job_id> spec_hash=<sha256> [spec_revision=rev-001]\n"
+        << "  agentos autodev recover-blocked job_id=<job_id> [skill_pack_path=<path>]\n"
+        << "  agentos autodev recover-crash job_id=<job_id>\n"
+        << "  agentos autodev tasks job_id=<job_id>\n"
+        << "  agentos autodev turns job_id=<job_id>\n"
+        << "  agentos autodev snapshot-task job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev snapshots job_id=<job_id>\n"
+        << "  agentos autodev rollback-soft job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev rollback-hard job_id=<job_id> task_id=<task_id> approval=hard_rollback_approved\n"
+        << "  agentos autodev rollbacks job_id=<job_id>\n"
+        << "  agentos autodev repairs job_id=<job_id>\n"
+        << "  agentos autodev repair-next job_id=<job_id>\n"
+        << "  agentos autodev repair-task job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev verify-task job_id=<job_id> task_id=<task_id> [related_turn_id=<turn_id>]\n"
+        << "  agentos autodev verifications job_id=<job_id>\n"
+        << "  agentos autodev diff-guard job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev diffs job_id=<job_id>\n"
+        << "  agentos autodev acceptance-gate job_id=<job_id> task_id=<task_id>\n"
+        << "  agentos autodev acceptances job_id=<job_id>\n"
+        << "  agentos autodev final-review job_id=<job_id>\n"
+        << "  agentos autodev final-reviews job_id=<job_id>\n"
+        << "  agentos autodev complete-job job_id=<job_id>\n"
+        << "  agentos autodev pause job_id=<job_id>\n"
+        << "  agentos autodev resume job_id=<job_id>\n"
+        << "  agentos autodev cancel job_id=<job_id>\n"
+        << "  agentos autodev cleanup-worktree job_id=<job_id>\n"
+        << "  agentos autodev pr-summary job_id=<job_id>\n"
+        << "  agentos autodev events job_id=<job_id> [format=text|json] [type=<event_type>] [since=<iso8601>]\n"
+        << "  agentos autodev run-job job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
+        << "  agentos autodev run-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
+        << "  agentos autodev execute-next-task job_id=<job_id> [execution_adapter=codex_cli|codex_app_server] [codex_cli_command=<command>] [app_server_url=<url>]\n"
         << "  agentos cli-specs validate\n"
         << "  agentos diagnostics [format=text|json]\n"
         << "  agentos plugins\n"
@@ -838,6 +882,7 @@ int main(int argc, char* argv[]) {
     runtime.skill_registry.register_skill(std::make_shared<FileWriteSkill>());
     runtime.skill_registry.register_skill(std::make_shared<FilePatchSkill>());
     runtime.skill_registry.register_skill(std::make_shared<HttpFetchSkill>(runtime.cli_host));
+    runtime.skill_registry.register_skill(std::make_shared<NewsSearchSkill>(runtime.cli_host));
     runtime.skill_registry.register_skill(std::make_shared<HostInfoSkill>());
     runtime.skill_registry.register_skill(std::make_shared<LearnSkill>(
         runtime.skill_registry, runtime.cli_host, runtime.plugin_host,
@@ -910,6 +955,10 @@ int main(int argc, char* argv[]) {
 
     if (argc >= 2 && std::string(argv[1]) == "agents") {
         return RunAgentsCommand(runtime.agent_registry);
+    }
+
+    if (argc >= 2 && std::string(argv[1]) == "autodev") {
+        return RunAutoDevCommand(workspace, argc, argv);
     }
 
     if (argc >= 2 && std::string(argv[1]) == "cli-specs") {

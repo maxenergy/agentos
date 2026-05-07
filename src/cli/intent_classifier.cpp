@@ -1,6 +1,8 @@
 #include "cli/intent_classifier.hpp"
 
-#include <algorithm>
+#include "cli/interactive_intent_registry.hpp"
+#include "cli/interactive_route_policy.hpp"
+
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -22,6 +24,13 @@ std::string MakeRouteTaskId() {
 
 bool RegexAny(const std::string& line, const std::string& pattern) {
     return std::regex_search(line, std::regex(pattern, std::regex_constants::icase));
+}
+
+bool LooksLikeWorkspaceMutationRequest(const std::string& line) {
+    static const std::regex mutation_re(
+        R"((\b(write|create|build|develop|implement|scaffold|modify|edit|patch|code|program|app|install|setup|configure|add|save|persist)\b)|\bgenerate\b.{0,60}\b(file|code|project|repo|repository|plugin|skill|command|manifest|doc|document|artifact)\b|编写|创建|修改|安装|配置|新增|添加|写入|写文件|保存|保存为文件|落地|安装到|接入到\s*\.agents|加入到\s*\.agents|生成.{0,60}(文件|代码|项目|仓库|插件|技能|命令|manifest|文档|产物|交付|PPT|大纲))",
+        std::regex_constants::icase);
+    return std::regex_search(line, mutation_re);
 }
 
 }  // namespace
@@ -54,36 +63,14 @@ std::string ExecutionModeName(const InteractiveExecutionMode mode) {
     return "sync";
 }
 
-namespace {
-
-void ApplyExecutionMode(RouteDecisionExplanation& decision) {
-    switch (decision.route) {
-    case InteractiveRouteKind::development_agent:
-    case InteractiveRouteKind::research_agent:
-        decision.execution_mode = InteractiveExecutionMode::async_job;
-        break;
-    case InteractiveRouteKind::local_intent:
-    case InteractiveRouteKind::direct_skill:
-    case InteractiveRouteKind::chat_agent:
-    case InteractiveRouteKind::unknown_command:
-        decision.execution_mode = InteractiveExecutionMode::sync;
-        break;
-    }
-}
-
-}  // namespace
-
 bool LooksLikeExplicitDevelopmentChangeRequest(const std::string& line) {
     static const std::regex skill_creation_re(
-        R"((\b(create|generate|install|add|build|scaffold|configure|integrate)\b).{0,40}\b(skills?|tools?|commands?)\b|(\b(skills?|tools?|commands?)\b).{0,40}\b(create|generate|install|add|build|scaffold|configure|integrate)\b|(创建|生成|安装|新增|添加|接入|配置|获得|获取).{0,40}(技能|工具|命令)|(技能|工具|命令).{0,40}(创建|生成|安装|新增|添加|接入|配置|获得|获取))",
+        R"((\b(create|generate|install|add|build|scaffold|configure)\b).{0,40}\b(skills?|tools?|commands?)\b|(\b(skills?|tools?|commands?)\b).{0,40}\b(create|generate|install|add|build|scaffold|configure)\b|(创建|生成|安装|新增|添加|配置|写入|保存).{0,40}(技能|工具|命令)|(技能|工具|命令).{0,40}(创建|生成|安装|新增|添加|配置|写入|保存))",
         std::regex_constants::icase);
     if (std::regex_search(line, skill_creation_re)) {
         return true;
     }
-    static const std::regex dev_change_re(
-        R"((\b(write|create|build|develop|continue|implement|generate|scaffold|modify|edit|patch|code|program|app|project|repo|repository|files?|install|setup|configure|add|claude\s+code|codex)\b)|编写|创建|实现|生成|修改|开发|继续|安装|配置|新增|添加|代码|程序|项目|仓库|输出文件|写文件)",
-        std::regex_constants::icase);
-    return std::regex_search(line, dev_change_re);
+    return LooksLikeWorkspaceMutationRequest(line);
 }
 
 bool LooksLikeDevelopmentRequest(const std::string& line) {
@@ -104,52 +91,16 @@ bool LooksLikeResearchRequest(const std::string& line) {
 }
 
 bool LooksLikeRuntimeSelfDescriptionRequest(const std::string& line) {
-    static const std::regex self_description_re(
-        R"((\b(what\s+(skills?|abilities|capabilities|agents?|adapters?)|list\s+(skills?|agents?|adapters?)|show\s+(skills?|agents?|adapters?)|available\s+(skills?|agents?|adapters?)|how\s+to\s+use\s+agentos|usage|help|commands?|what\s+can\s+you\s+do|how\s+do\s+i\s+use\s+agentos)\b)|你.*(有什么|有哪些|会什么|能做什么).*(技能|能力|代理|智能体)|有哪些.*(技能|能力|agent|agents|代理|智能体|命令)|(技能|能力|agent|agents|代理|智能体).*(有哪些|如何用|怎么用|如何使用)|列出.*(技能|能力|代理|智能体)|如何使用\s*AgentOS|AgentOS.*(使用方法|怎么用|如何用)|使用方法|帮助|你能做什么)",
-        std::regex_constants::icase);
-    return std::regex_search(line, self_description_re);
+    return LooksLikeRuntimeSelfDescriptionIntent(line);
 }
 
 bool LooksLikeHostInfoRequest(const std::string& line) {
-    static const std::regex host_re(
-        R"((\b(your|host|machine|server)\s*(ip|hostname|address)\b)|(\bip\s*address\b)|(\blocal\s*ip\b)|(\bhostname\b)|(你的\s*ip)|(主机(的)?\s*(ip|地址|名))|(本机(的)?\s*(ip|地址)))",
-        std::regex_constants::icase);
-    return std::regex_search(line, host_re);
+    return LooksLikeHostInfoIntent(line);
 }
 
 bool LooksLikeSpecificSkillUsageRequest(const std::string& line,
                                         const SkillRegistry& skill_registry) {
-    auto manifests = skill_registry.list();
-    std::sort(manifests.begin(), manifests.end(),
-              [](const SkillManifest& lhs, const SkillManifest& rhs) {
-                  return lhs.name.size() > rhs.name.size();
-              });
-
-    auto to_lower = [](std::string value) {
-        std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char ch) {
-            return static_cast<char>(std::tolower(ch));
-        });
-        return value;
-    };
-    const auto lower_line = to_lower(line);
-
-    bool has_mention = false;
-    for (const auto& manifest : manifests) {
-        if (manifest.name.empty()) {
-            continue;
-        }
-        if (lower_line.find(to_lower(manifest.name)) != std::string::npos) {
-            has_mention = true;
-            break;
-        }
-    }
-    if (!has_mention) {
-        return false;
-    }
-    static const std::regex usage_re(
-        R"((\b(how\s+to\s+use|usage|help|show|inspect|schema|args?|arguments?|examples?|what\s+does)\b)|如何使用|怎么使用|如何用|怎么用|用法|参数|示例|例子|是什么|能做什么)",
-        std::regex_constants::icase);
-    return std::regex_search(line, usage_re);
+    return LooksLikeSpecificSkillUsageIntent(line, skill_registry);
 }
 
 RouteDecisionExplanation ClassifyInteractiveRequest(
@@ -164,96 +115,46 @@ RouteDecisionExplanation ClassifyInteractiveRequest(
     const RegisteredSkillUseChecker& looks_like_registered_skill_use,
     const RegisteredSkillResolver& resolve_registered_skill) {
     RouteDecisionExplanation decision;
-    decision.task_id = MakeRouteTaskId();
-    decision.user_request = line;
+    const auto task_id = MakeRouteTaskId();
 
-    const bool looks_development = LooksLikeDevelopmentRequest(line);
-    const bool looks_research = LooksLikeResearchRequest(line);
-    const bool looks_artifact =
-        RegexAny(line, R"((\b(ppt|pptx|docx|xlsx|presentation|slides?|3d|model|render|diagram|artifact|file|skill|skills?)\b)|文件|产物|交付|幻灯片|演示文稿|三维|机械结构图|技能|skill)");
+    InteractiveRouteProposal proposal;
+    proposal.task_id = task_id;
+    proposal.user_request = line;
+    proposal.signals = InteractiveRouteSignals{
+        .development = LooksLikeDevelopmentRequest(line),
+        .research = LooksLikeResearchRequest(line),
+        .workspace_mutation = LooksLikeWorkspaceMutationRequest(line),
+        .artifact = RegexAny(line, R"((\b(ppt|pptx|docx|xlsx|presentation|slides?|3d|model|render|diagram|artifact|file|skill|skills?)\b)|文件|产物|交付|幻灯片|演示文稿|三维|机械结构图|技能|skill)"),
+        .multi_step_analysis = RegexAny(line, R"((\b(review|audit|analy[sz]e|debug|diagnose|why|compare)\b)|审核|分析|排查|诊断|为什么|比较)"),
+    };
+    const InteractiveRouteTargets targets{
+        .chat = resolve_chat_target ? resolve_chat_target() : std::string{},
+        .development = resolve_dev_target ? resolve_dev_target() : std::string{},
+        .research = resolve_research_target ? resolve_research_target() : std::string{},
+    };
 
-    if (!looks_development && !looks_research &&
-        LooksLikeSpecificSkillUsageRequest(line, skill_registry)) {
-        decision.route = InteractiveRouteKind::local_intent;
-        decision.score -= 4;
-        decision.reasons.push_back("mentions a registered skill and asks for its usage");
-        decision.selected_target = "interactive_runtime";
-        ApplyExecutionMode(decision);
-        return decision;
-    }
-
-    if (looks_like_registered_skill_use && looks_like_registered_skill_use(line)) {
-        decision.route = InteractiveRouteKind::direct_skill;
-        decision.score += 5;
-        decision.reasons.push_back("asks to use a registered skill as a tool");
-        const auto resolved = resolve_registered_skill ? resolve_registered_skill(line) : std::string{};
-        decision.selected_target = resolved.empty() ? "interactive_runtime" : resolved;
-        ApplyExecutionMode(decision);
-        return decision;
-    }
-
-    if (!looks_development && !looks_research &&
-        (LooksLikeRuntimeSelfDescriptionRequest(line) || LooksLikeHostInfoRequest(line))) {
-        decision.route = InteractiveRouteKind::local_intent;
-        decision.score -= 5;
-        decision.reasons.push_back("matches runtime self-description or host-info local intent");
-        decision.selected_target = "interactive_runtime";
-        ApplyExecutionMode(decision);
-        return decision;
+    if (const auto local_intent = MatchHardLocalInteractiveIntent(line, skill_registry);
+        local_intent.has_value()) {
+        proposal.route = local_intent->route;
+        proposal.score += local_intent->score;
+        proposal.reasons.push_back(local_intent->reason);
+        proposal.selected_target = local_intent->selected_target;
+        proposal.authoritative = true;
+        return MakeInteractiveRouteVerdict(proposal, targets).decision;
     }
 
-    if (skill_registry.find("host_info") &&
-        !looks_development && !looks_research &&
-        LooksLikeHostInfoRequest(line)) {
-        decision.route = InteractiveRouteKind::direct_skill;
-        decision.score -= 4;
-        decision.reasons.push_back("directly maps to registered host_info skill");
-        decision.selected_target = "host_info";
-        ApplyExecutionMode(decision);
-        return decision;
-    }
+    proposal.route = InteractiveRouteKind::chat_agent;
+    proposal.selected_target = targets.chat;
+    proposal.score += 1;
+    proposal.reasons.push_back("free-form natural language is handled by main");
+    proposal.authoritative = true;
 
-    if (looks_development) {
-        decision.route = InteractiveRouteKind::development_agent;
-        decision.score += 4;
-        decision.reasons.push_back("requires file/code/artifact style development work");
-        decision.selected_target = resolve_dev_target ? resolve_dev_target() : std::string{};
-    }
-    if (looks_research) {
-        if (decision.route != InteractiveRouteKind::development_agent) {
-            decision.route = InteractiveRouteKind::research_agent;
-            decision.selected_target = resolve_research_target ? resolve_research_target() : std::string{};
-        }
-        decision.score += 3;
-        decision.reasons.push_back("requires current external research or integration analysis");
-    }
-    if (looks_artifact) {
-        decision.score += 4;
-        decision.reasons.push_back("mentions concrete deliverables or artifacts");
-        if (decision.route == InteractiveRouteKind::chat_agent) {
-            decision.route = InteractiveRouteKind::development_agent;
-            decision.selected_target = resolve_dev_target ? resolve_dev_target() : std::string{};
-        }
-    }
-    if (RegexAny(line, R"((\b(review|audit|analy[sz]e|debug|diagnose|why|compare)\b)|审核|分析|排查|诊断|为什么|比较)")) {
-        decision.score += 2;
-        decision.reasons.push_back("requires multi-step analysis");
-    }
-
-    if (decision.reasons.empty()) {
-        decision.route = InteractiveRouteKind::chat_agent;
-        decision.selected_target = resolve_chat_target ? resolve_chat_target() : std::string{};
-        decision.reasons.push_back("no direct skill, development, or research trigger matched");
-    }
-    if (decision.selected_target.empty()) {
-        decision.selected_target = decision.route == InteractiveRouteKind::chat_agent
-            ? (resolve_chat_target ? resolve_chat_target() : std::string{})
-            : "unavailable";
-    }
-    ApplyExecutionMode(decision);
+    decision = MakeInteractiveRouteVerdict(proposal, targets).decision;
     (void)usage_snapshot;
     (void)workspace;
     (void)agent_registry;
+    (void)looks_like_registered_skill_use;
+    (void)resolve_registered_skill;
     return decision;
 }
 
@@ -333,7 +234,7 @@ void PrintRouteDecision(const RouteDecisionExplanation& decision,
             std::cout << "需要联网研究或集成分析";
             break;
         case InteractiveRouteKind::chat_agent:
-            std::cout << "未匹配到本地 skill、开发或研究触发条件";
+            std::cout << "交由主代理结合上下文判断";
             break;
         case InteractiveRouteKind::unknown_command:
             std::cout << "命令不存在";

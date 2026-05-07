@@ -1,7 +1,12 @@
 #include "cli/interactive_commands.hpp"
 
 #include "core/execution/agent_event_runtime_store.hpp"
+#include "cli/interactive_chat_state.hpp"
+#include "cli/interactive_main_context.hpp"
+#include "cli/interactive_route_action_executor.hpp"
 #include "cli/intent_classifier.hpp"
+#include "cli/interactive_intent_registry.hpp"
+#include "cli/main_route_action.hpp"
 #include "storage/main_agent_store.hpp"
 #include "utils/signal_cancellation.hpp"
 
@@ -9,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <conio.h>
+#include <io.h>
 #endif
 
 #include <algorithm>
@@ -19,6 +25,7 @@
 #include <condition_variable>
 #include <cwchar>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -49,6 +56,7 @@ namespace {
 
 constexpr int kInteractiveChatTimeoutMs = 120000;
 
+std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 120);
 std::string MakeTaskId(const std::string& prefix) {
     const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::system_clock::now().time_since_epoch())
@@ -188,7 +196,7 @@ std::string ReadTextFile(const std::filesystem::path& path) {
     return buffer.str();
 }
 
-std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 120) {
+std::string ShortenForConsole(const std::string& text, std::size_t max_chars) {
     if (text.size() <= max_chars) {
         return text;
     }
@@ -238,10 +246,42 @@ bool LooksLikeDetailedMemoryQuestion(const std::string& line) {
 }
 
 bool LooksLikeModelIdentityQuestion(const std::string& line) {
-    static const std::regex model_re(
-        R"((\b(what\s+(model|llm)\s+(are|is)\s+you|what\s+is\s+your\s+model|model\s+name|current\s+model|which\s+model)\b)|你.*(是什么|哪个|什么).*(模型|model)|当前.*(模型|model)|底层.*(模型|model)|使用.*(模型|model)|模型.*(名字|名称|是什么|哪个))",
-        std::regex_constants::icase);
-    return std::regex_search(line, model_re);
+    return LooksLikeModelIdentityIntent(line);
+}
+
+bool TryConfigureMainAgentFromNaturalLanguage(const std::string& line,
+                                              const std::filesystem::path& workspace) {
+    if (!LooksLikeMainAgentConfigIntent(line)) {
+        return false;
+    }
+
+    const auto ollama_model = ExtractOllamaModelName(line);
+    if (!ollama_model.has_value() || ollama_model->empty()) {
+        std::cout << "这是本地 main-agent 配置任务，不需要 Codex。\n"
+                  << "我还不能从这句话里可靠解析模型名。可以直接使用：\n"
+                  << "  main-agent set provider=openai-chat base_url=http://127.0.0.1:11434/v1 model=<ollama-model> api_key=EMPTY\n\n";
+        return true;
+    }
+
+    MainAgentConfig config;
+    config.provider_kind = "openai-chat";
+    config.base_url = "http://127.0.0.1:11434/v1";
+    config.model = *ollama_model;
+    config.api_key = "EMPTY";
+
+    const MainAgentStore store(workspace / "runtime" / "main_agent.tsv");
+    if (!store.save(config)) {
+        std::cerr << "main-agent: failed to write " << store.path().string() << "\n\n";
+        return true;
+    }
+
+    std::cout << "main-agent: saved\n"
+              << "provider_kind: " << config.provider_kind << '\n'
+              << "base_url:      " << config.base_url << '\n'
+              << "model:         " << config.model << '\n'
+              << "api_key:       (set, literal placeholder)\n"
+              << "config_path:   " << store.path().string() << "\n\n";
+    return true;
 }
 
 bool LooksLikeSkillListQuestion(const std::string& line) {
@@ -270,119 +310,6 @@ bool LooksLikeBrowserConnectionError(const std::string& line) {
         R"((ERR_CONNECTION_REFUSED|connection\s+refused|refused\s+to\s+connect|site\s+can'?t\s+be\s+reached|127\.0\.0\.1.*refused|localhost.*refused|checking\s+the\s+connection|checking\s+the\s+proxy\s+and\s+the\s+firewall|代理|防火墙|无法访问|拒绝连接))",
         std::regex_constants::icase);
     return std::regex_search(line, error_re);
-}
-
-std::string StripPoliteTaskWords(std::string query) {
-    static const std::array<std::string, 10> words = {
-        "你帮我", "帮我", "请", "搜索", "查找", "找", "一下", "小红书", "我已经登录了", "已经登录了"
-    };
-    for (const auto& word : words) {
-        std::size_t pos = std::string::npos;
-        while ((pos = query.find(word)) != std::string::npos) {
-            query.erase(pos, word.size());
-        }
-    }
-    for (char& ch : query) {
-        if (ch == '，' || ch == '。' || ch == ',' || ch == '.' || ch == ':' || ch == ';') {
-            ch = ' ';
-        }
-    }
-    const auto start = query.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) {
-        return {};
-    }
-    const auto end = query.find_last_not_of(" \t\r\n");
-    return query.substr(start, end - start + 1);
-}
-
-std::string StripTrailingSentencePunctuation(std::string query) {
-    while (!query.empty()) {
-        const char ch = query.back();
-        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' ||
-            ch == '.' || ch == ',' || ch == ':' || ch == ';' ||
-            ch == '!' || ch == '?') {
-            query.pop_back();
-            continue;
-        }
-        break;
-    }
-    static const std::array<std::string, 6> suffixes = {"。", "，", "！", "？", "；", "："};
-    bool removed = true;
-    while (removed) {
-        removed = false;
-        for (const auto& suffix : suffixes) {
-            if (query.size() >= suffix.size() &&
-                query.compare(query.size() - suffix.size(), suffix.size(), suffix) == 0) {
-                query.erase(query.size() - suffix.size());
-                removed = true;
-                break;
-            }
-        }
-    }
-    return query;
-}
-
-std::optional<std::string> TextAfterLastSearchTrigger(const std::string& line) {
-    static const std::array<std::string, 7> triggers = {
-        "搜索", "查找", "帮我找", "帮我搜", "找", "搜", "search"
-    };
-    std::size_t best_pos = std::string::npos;
-    std::string best_trigger;
-    for (const auto& trigger : triggers) {
-        auto pos = line.find(trigger);
-        while (pos != std::string::npos) {
-            if (best_pos == std::string::npos || pos > best_pos) {
-                best_pos = pos;
-                best_trigger = trigger;
-            }
-            pos = line.find(trigger, pos + trigger.size());
-        }
-    }
-    if (best_pos == std::string::npos) {
-        return std::nullopt;
-    }
-    auto query = StripTrailingSentencePunctuation(line.substr(best_pos + best_trigger.size()));
-    query = StripPoliteTaskWords(query);
-    if (query.empty()) {
-        return std::nullopt;
-    }
-    return query;
-}
-
-std::optional<std::string> ExtractXiaohongshuSearchQuery(const std::string& line,
-                                                         const SkillRegistry& skill_registry) {
-    if (!skill_registry.find("xiaohongshu_search")) {
-        return std::nullopt;
-    }
-    static const std::regex xhs_re(
-        R"((小红书|xiaohongshu|rednote|xhs).*(搜索|查找|找|热门|热搜|top\s*\d+|趋势|话题|笔记)|(搜索|查找|找).*(小红书|xiaohongshu|rednote|xhs))",
-        std::regex_constants::icase);
-    if (!std::regex_search(line, xhs_re)) {
-        return std::nullopt;
-    }
-
-    std::smatch quoted;
-    static const std::regex quoted_re(R"(["'“”‘’]([^"'“”‘’]+)["'“”‘’])");
-    if (std::regex_search(line, quoted, quoted_re) && quoted.size() >= 2) {
-        return quoted[1].str();
-    }
-
-    auto query = TextAfterLastSearchTrigger(line).value_or("");
-    if (query.empty()) {
-        query = StripPoliteTaskWords(line);
-    }
-    query = StripTrailingSentencePunctuation(query);
-    if (query.empty()) {
-        query = "热门话题 top5";
-    }
-    if (query.find("热门") == std::string::npos &&
-        query.find("热搜") == std::string::npos &&
-        query.find("top") == std::string::npos &&
-        query.find("Top") == std::string::npos &&
-        query.find("话题") == std::string::npos) {
-        query += " 热门";
-    }
-    return query;
 }
 
 std::vector<std::pair<std::string, SkillStats>> TopSkillsByCalls(
@@ -834,49 +761,6 @@ void PrintSkillUsageGuide(const SkillManifest& manifest) {
     std::cout << '\n';
 }
 
-TaskRunResult RunDirectSkillFromNaturalLanguage(const std::string& skill_name,
-                                                const StringMap& arguments,
-                                                const std::string& objective,
-                                                AgentLoop& loop,
-                                                const std::filesystem::path& workspace) {
-    TaskRequest task{
-        .task_id = MakeTaskId("interactive-skill"),
-        .task_type = skill_name,
-        .objective = objective,
-        .workspace_path = workspace,
-        .inputs = arguments,
-    };
-    task.allow_network = true;
-    task.timeout_ms = 120000;
-    return loop.run(task);
-}
-
-std::optional<std::filesystem::path> ExtractExistingWorkspacePath(const std::string& line) {
-    auto existing_directory = [](const std::string& text) -> std::optional<std::filesystem::path> {
-        std::filesystem::path candidate = text;
-        std::error_code ec;
-        if (std::filesystem::exists(candidate, ec) && std::filesystem::is_directory(candidate, ec)) {
-            return std::filesystem::weakly_canonical(candidate, ec);
-        }
-        return std::nullopt;
-    };
-
-    static const std::regex quoted_path_re(R"(["']((?:[A-Za-z]:[\\/]|/)[^"']+)["'])");
-    for (std::sregex_iterator it(line.begin(), line.end(), quoted_path_re), end; it != end; ++it) {
-        if (auto path = existing_directory((*it)[1].str()); path.has_value()) {
-            return path;
-        }
-    }
-
-    static const std::regex plain_path_re(R"((?:[A-Za-z]:[\\/]|/)[A-Za-z0-9_.@$~+%#(){}\[\]\-\\/]+)");
-    for (std::sregex_iterator it(line.begin(), line.end(), plain_path_re), end; it != end; ++it) {
-        if (auto path = existing_directory(it->str()); path.has_value()) {
-            return path;
-        }
-    }
-    return std::nullopt;
-}
-
 // ── Banner ──────────────────────────────────────────────────────────────────
 
 class ConsoleCodePageGuard {
@@ -943,7 +827,7 @@ int Utf8ExpectedContinuationCount(const unsigned char byte) {
 }
 
 std::size_t Utf8PreviousCodepointStart(const std::string& value, std::size_t cursor) {
-    cursor = std::min(cursor, value.size());
+    cursor = (std::min)(cursor, value.size());
     if (cursor == 0) {
         return 0;
     }
@@ -955,7 +839,7 @@ std::size_t Utf8PreviousCodepointStart(const std::string& value, std::size_t cur
 }
 
 std::size_t Utf8NextCodepointEnd(const std::string& value, std::size_t cursor) {
-    cursor = std::min(cursor, value.size());
+    cursor = (std::min)(cursor, value.size());
     if (cursor >= value.size()) {
         return value.size();
     }
@@ -1011,6 +895,17 @@ void PrintHelp() {
         << "  agents                            List registered agent adapters\n"
         << "  skills                            List registered skills\n"
         << "  status                            Show runtime status summary\n"
+        << "  context show                      Show persisted main-agent REPL context\n"
+        << "  context clear                     Clear persisted main-agent REPL context\n"
+        << "  context list                      List named main-agent REPL contexts\n"
+        << "  context delete <name>             Delete a named main-agent REPL context\n"
+        << "  context rename <old> <new>        Rename a main-agent REPL context\n"
+        << "  context export <name> [path]      Export a persisted context transcript\n"
+        << "  context privacy [digest|none|verbatim]\n"
+        << "                                    Show or set context sent to main-agent\n"
+        << "  context trace tail [n] [--pretty] Show recent main-agent routing trace records\n"
+        << "  context trace clear               Clear main-agent routing trace records\n"
+        << "  context use <name>                Switch to a named main-agent REPL context\n"
         << "  memory summary                    Show memory summary\n"
         << "  memory stats                      Show skill/agent stats\n"
         << "  memory lessons                    Show lesson store\n"
@@ -1084,10 +979,17 @@ std::string ResolveChatTarget(const AgentRegistry& agent_registry,
 }
 
 void RunChatPrompt(const std::string& prompt,
+                   SkillRegistry& skill_registry,
                    AgentRegistry& agent_registry,
                    AgentLoop& loop,
                    AuditLogger& audit_logger,
-                   const std::filesystem::path& workspace) {
+                   const std::filesystem::path& workspace,
+                   std::vector<ChatTranscriptTurn>* chat_history = nullptr,
+                   PendingRouteAction* pending_route_action = nullptr,
+                   bool allow_route_actions = true,
+                   std::optional<std::string> transcript_user_prompt = std::nullopt,
+                   std::optional<std::filesystem::path> chat_session_path = std::nullopt,
+                   ContextPrivacyLevel context_privacy = ContextPrivacyLevel::digest) {
     const auto target = ResolveChatTarget(agent_registry, workspace);
     if (target.empty()) {
         std::cerr
@@ -1111,13 +1013,28 @@ void RunChatPrompt(const std::string& prompt,
     // GEMINI.md / CLAUDE.md / AGENTS.md from cwd — the workspace_path
     // is just where the audit log lives and where curl temp files get
     // staged. No scratch dir or override files needed.
+    const auto trace_task_id = MakeTaskId("interactive-chat");
     TaskRequest task{
-        .task_id = MakeTaskId("interactive-chat"),
+        .task_id = trace_task_id,
         .task_type = "chat",
         .objective = prompt,
         .workspace_path = workspace,
     };
     task.preferred_target = target;
+    task.inputs["intent_hint"] =
+        "contextual_repl_turn; inspect conversation_context first; answer ordinary continuations, "
+        "clarifications, constraint updates, and follow-ups directly; request a registered AgentOS "
+        "capability only when the live turn explicitly needs tool, agent, code, research, or file "
+        "execution now";
+    if (chat_history != nullptr) {
+        const auto context = RenderRecentChatContext(*chat_history, context_privacy);
+        if (!context.empty()) {
+            task.inputs["conversation_context"] = context;
+        }
+    }
+    if (pending_route_action != nullptr && pending_route_action->active && allow_route_actions) {
+        task.inputs["pending_route_action"] = RenderPendingRouteActionContext(*pending_route_action);
+    }
     // Chat hits an external LLM CLI/REST round-trip, which routinely takes
     // longer than the TaskRequest default of 5000ms. Keep the interactive
     // default aligned with main-agent's default_timeout_ms.
@@ -1128,6 +1045,17 @@ void RunChatPrompt(const std::string& prompt,
     std::cout << "(routing to " << target
               << " — 120s ceiling, falls back to gemini/anthropic/openai/qwen on failure; Ctrl-C to cancel)"
               << std::endl;
+
+    AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+        {"event", "main_request"},
+        {"task_id", task.task_id},
+        {"target", target},
+        {"context_privacy", ContextPrivacyLevelName(context_privacy)},
+        {"conversation_context_sent", task.inputs.contains("conversation_context")},
+        {"pending_route_action_sent", task.inputs.contains("pending_route_action")},
+        {"allow_route_actions", allow_route_actions},
+        {"prompt_chars", prompt.size()},
+    });
 
     const auto result = RunChatWithFallback(task, agent_registry, loop, target);
 
@@ -1140,6 +1068,70 @@ void RunChatPrompt(const std::string& prompt,
         long duration_ms = 0;
         for (const auto& step : result.steps) {
             duration_ms += step.duration_ms;
+        }
+        const auto parsed_action = allow_route_actions
+            ? ParseMainRouteAction(result.summary)
+            : std::optional<MainRouteAction>{};
+        AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+            {"event", "main_response"},
+            {"task_id", task.task_id},
+            {"target", target},
+            {"success", true},
+            {"duration_ms", duration_ms},
+            {"summary_empty", result.summary.empty()},
+            {"route_action_requested", parsed_action.has_value()},
+            {"route_action_target_kind", parsed_action.has_value() ? parsed_action->target_kind : std::string{}},
+            {"route_action_target", parsed_action.has_value() ? parsed_action->target : std::string{}},
+        });
+        if (allow_route_actions) {
+            if (const auto action = parsed_action; action.has_value()) {
+                std::cout << "(main requested " << action->action
+                          << " target=" << action->target_kind << ":" << action->target << ")\n";
+                const auto action_result = ExecuteMainRouteAction(
+                    *action,
+                    skill_registry,
+                    agent_registry,
+                    workspace,
+                    loop,
+                    audit_logger,
+                    [](const TaskRunResult& failed_result) { PrintResult(failed_result); });
+                bool pending_after_action = false;
+                if (pending_route_action != nullptr) {
+                    if (!action_result.success && action_result.error_code == "InvalidRouteSkillInput") {
+                        pending_route_action->active = true;
+                        pending_route_action->action = *action;
+                        pending_route_action->error_code = action_result.error_code;
+                        pending_route_action->error_message = action_result.error_message;
+                    } else {
+                        *pending_route_action = {};
+                    }
+                    pending_after_action = pending_route_action->active;
+                }
+                AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+                    {"event", "route_action_result"},
+                    {"task_id", task.task_id},
+                    {"action", action->action},
+                    {"target_kind", action->target_kind},
+                    {"target", action->target},
+                    {"success", action_result.success},
+                    {"error_code", action_result.error_code},
+                    {"pending_after_action", pending_after_action},
+                });
+                const auto synthesis_prompt = BuildRouteActionResultPrompt(prompt, *action, action_result);
+                RunChatPrompt(synthesis_prompt,
+                              skill_registry,
+                              agent_registry,
+                              loop,
+                              audit_logger,
+                              workspace,
+                              chat_history,
+                              pending_route_action,
+                              false,
+                              prompt,
+                              chat_session_path,
+                              context_privacy);
+                return;
+            }
         }
         if (result.summary.empty()) {
             // Some adapters (notably codex_cli) finish successfully without
@@ -1170,7 +1162,24 @@ void RunChatPrompt(const std::string& prompt,
             std::cout << ", " << duration_ms << "ms";
         }
         std::cout << ")\n\n";
+        if (chat_history != nullptr) {
+            AppendChatTranscript(
+                *chat_history,
+                transcript_user_prompt.value_or(prompt),
+                result.summary);
+            SaveChatTranscript(
+                chat_session_path.value_or(MainContextSessionPath(workspace, "repl-default")),
+                *chat_history);
+        }
     } else {
+        AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+            {"event", "main_response"},
+            {"task_id", task.task_id},
+            {"target", target},
+            {"success", false},
+            {"error_code", result.error_code},
+            {"route_action_requested", false},
+        });
         std::cerr << "chat failed (" << target << "): "
                   << (result.error_code.empty() ? "<no error_code>" : result.error_code);
         if (!result.error_message.empty()) {
@@ -1178,82 +1187,6 @@ void RunChatPrompt(const std::string& prompt,
         }
         std::cerr << "\naudit_log: " << audit_logger.log_path().string() << '\n';
     }
-}
-
-TaskRequest BuildDevelopmentTaskRequest(const std::string& prompt,
-                                        const std::filesystem::path& default_workspace,
-                                        std::filesystem::path& task_workspace) {
-    const auto workspace_override = ExtractExistingWorkspacePath(prompt);
-    task_workspace = workspace_override.value_or(default_workspace);
-    const auto root_task_id = MakeTaskId("dev");
-
-    TaskRequest task{
-        .task_id = root_task_id,
-        .task_type = "development_request",
-        .objective = prompt,
-        .workspace_path = task_workspace,
-    };
-    task.preferred_target = "development_request";
-    task.idempotency_key = task.task_id;
-    task.inputs["objective"] = prompt;
-    task.inputs["interactive"] = "true";
-    task.inputs["root_task_id"] = root_task_id;
-    task.timeout_ms = 0;
-    return task;
-}
-
-TaskRunResult ExecuteDevelopmentTask(const TaskRequest& task,
-                                     AgentLoop& loop,
-                                     AuditLogger& audit_logger) {
-    auto task_cancel = InstallSignalCancellation();
-    const auto result = loop.run(task, std::move(task_cancel));
-    if (!result.success && result.error_code != "AcceptanceFailed" &&
-        result.error_code != "AcceptanceBlocked") {
-        PrintResult(result);
-    }
-    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-    return result;
-}
-
-void RunDevelopmentPrompt(const std::string& prompt,
-                          AgentLoop& loop,
-                          AuditLogger& audit_logger,
-                          const std::filesystem::path& default_workspace) {
-    std::filesystem::path task_workspace;
-    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
-    if (task_workspace != default_workspace) {
-        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
-    }
-    (void)ExecuteDevelopmentTask(task, loop, audit_logger);
-}
-
-TaskRequest BuildResearchTaskRequest(const std::string& prompt,
-                                      const std::filesystem::path& workspace) {
-    TaskRequest task{
-        .task_id = MakeTaskId("research"),
-        .task_type = "research_request",
-        .objective = prompt,
-        .workspace_path = workspace,
-    };
-    task.preferred_target = "research_request";
-    task.idempotency_key = task.task_id;
-    task.inputs["objective"] = prompt;
-    task.inputs["interactive"] = "true";
-    task.allow_network = true;
-    task.timeout_ms = 0;
-    return task;
-}
-
-TaskRunResult ExecuteResearchTask(const TaskRequest& task,
-                                  AgentLoop& loop,
-                                  AuditLogger& audit_logger) {
-    auto task_cancel = InstallSignalCancellation();
-    const auto result = loop.run(task, std::move(task_cancel));
-    if (!result.success) {
-        PrintResult(result);
-    }
-    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-    return result;
 }
 
 struct BackgroundJob {
@@ -1320,58 +1253,401 @@ void ListBackgroundJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
     std::cout << '\n';
 }
 
-void StartBackgroundTask(const std::string& kind,
-                         const std::string& prompt,
-                         const TaskRequest& task,
-                         const std::filesystem::path& task_workspace,
-                         AgentLoop& loop,
-                         AuditLogger& audit_logger,
-                         std::vector<std::shared_ptr<BackgroundJob>>& jobs,
-                         std::function<TaskRunResult(const TaskRequest&, AgentLoop&, AuditLogger&)> execute) {
-    auto job = std::make_shared<BackgroundJob>();
-    job->id = task.inputs.count("root_task_id") > 0 ? task.inputs.at("root_task_id") : task.task_id;
-    job->kind = kind;
-    job->objective = prompt;
-    job->workspace = task_workspace;
-    job->started_at = std::chrono::steady_clock::now();
-    job->worker = std::thread([job, task, &loop, &audit_logger, execute = std::move(execute)]() mutable {
-        const auto result = execute(task, loop, audit_logger);
-        {
-            std::lock_guard<std::mutex> lock(job->mutex);
-            job->success = result.success;
-            job->duration_ms = result.duration_ms;
-            job->error_code = result.error_code;
-            job->error_message = result.error_message;
-        }
-        job->finished.store(true);
-    });
-    jobs.push_back(job);
-
-    std::cout << "(background " << kind << " job started: " << job->id << ")\n"
-              << "Use `jobs` to inspect progress. Status files will appear under:\n"
-              << "  " << (task_workspace / "runtime" / "agents").string() << "\n\n";
-}
-
-void StartBackgroundDevelopmentPrompt(const std::string& prompt,
-                                      AgentLoop& loop,
-                                      AuditLogger& audit_logger,
-                                      const std::filesystem::path& default_workspace,
-                                      std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
-    std::filesystem::path task_workspace;
-    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
-    if (task_workspace != default_workspace) {
-        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
+void HandleContextCommand(const std::vector<std::string>& tokens,
+                          const std::filesystem::path& workspace,
+                          std::string& chat_session_name,
+                          std::filesystem::path& chat_session_path,
+                          std::vector<ChatTranscriptTurn>& chat_history,
+                          ContextPrivacyLevel& context_privacy,
+                          PendingRouteAction& pending_route_action) {
+    if (tokens.size() < 2) {
+        std::cerr << "Usage: context show|clear|list|use|delete|rename|export|privacy|trace\n";
+        return;
     }
-    StartBackgroundTask("development", prompt, task, task_workspace, loop, audit_logger, jobs, ExecuteDevelopmentTask);
+
+    const auto sub = tokens[1];
+    if (sub == "show") {
+        PrintMainContextSummary(chat_session_path, chat_session_name, chat_history);
+        return;
+    }
+    if (sub == "list") {
+        PrintMainContextList(workspace, chat_session_name);
+        return;
+    }
+    if (sub == "trace") {
+        if (tokens.size() < 3) {
+            std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
+            return;
+        }
+        const auto trace_path = MainRoutingTracePath(workspace);
+        if (tokens[2] == "tail") {
+            std::size_t count = 10;
+            bool pretty = false;
+            bool saw_count = false;
+            bool valid_tail_args = true;
+            for (std::size_t i = 3; i < tokens.size(); ++i) {
+                if (tokens[i] == "--pretty") {
+                    pretty = true;
+                    continue;
+                }
+                const auto parsed = ParsePositiveSize(tokens[i]);
+                if (!parsed.has_value() || saw_count) {
+                    valid_tail_args = false;
+                    break;
+                }
+                count = std::min<std::size_t>(*parsed, 100);
+                saw_count = true;
+            }
+            if (!valid_tail_args) {
+                std::cerr << "Usage: context trace tail [n] [--pretty]\n";
+                return;
+            }
+            const auto lines = TailTextFile(trace_path, count);
+            std::cout << "AgentOS main routing trace\n"
+                      << "  path:  " << trace_path.string() << '\n'
+                      << "  lines: " << lines.size() << '\n'
+                      << "  format: " << (pretty ? "pretty" : "jsonl") << "\n";
+            if (lines.empty()) {
+                std::cout << "  (empty)\n\n";
+                return;
+            }
+            for (const auto& trace_line : lines) {
+                std::cout << (pretty ? FormatRoutingTraceLine(trace_line) : trace_line) << '\n';
+            }
+            std::cout << '\n';
+            return;
+        }
+        if (tokens[2] == "clear") {
+            ClearMainRoutingTrace(workspace);
+            std::cout << "AgentOS main routing trace cleared\n"
+                      << "  path: " << trace_path.string() << "\n\n";
+            return;
+        }
+        std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
+        return;
+    }
+    if (sub == "use") {
+        if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
+            std::cerr << "Usage: context use <name>\n"
+                      << "Context names may contain letters, numbers, '.', '_' and '-'.\n";
+            return;
+        }
+        chat_session_name = tokens[2];
+        chat_session_path = MainContextSessionPath(workspace, chat_session_name);
+        chat_history = LoadChatTranscript(chat_session_path);
+        context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
+        pending_route_action = {};
+        SaveCurrentMainContextName(workspace, chat_session_name);
+        std::cout << "AgentOS main context selected\n"
+                  << "  session: " << chat_session_name << '\n'
+                  << "  privacy: " << ContextPrivacyLevelName(context_privacy) << '\n'
+                  << "  path:    " << chat_session_path.string() << '\n'
+                  << "  turns:   " << chat_history.size() << "\n\n";
+        return;
+    }
+    if (sub == "delete") {
+        if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
+            std::cerr << "Usage: context delete <name>\n";
+            return;
+        }
+        const auto name = tokens[2];
+        std::error_code ec;
+        const bool removed_session = std::filesystem::remove(MainContextSessionPath(workspace, name), ec);
+        if (ec) {
+            std::cerr << "context delete failed: " << ec.message() << '\n';
+            return;
+        }
+        const bool removed_privacy = std::filesystem::remove(MainContextPrivacyPath(workspace, name), ec);
+        if (ec) {
+            std::cerr << "context delete failed: " << ec.message() << '\n';
+            return;
+        }
+        if (chat_session_name == name) {
+            chat_session_name = "repl-default";
+            chat_session_path = MainContextSessionPath(workspace, chat_session_name);
+            chat_history = LoadChatTranscript(chat_session_path);
+            context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
+            pending_route_action = {};
+            SaveCurrentMainContextName(workspace, chat_session_name);
+        }
+        std::cout << "AgentOS main context deleted\n"
+                  << "  session: " << name << '\n'
+                  << "  removed_session: " << (removed_session ? "true" : "false") << '\n'
+                  << "  removed_privacy: " << (removed_privacy ? "true" : "false") << '\n'
+                  << "  active: " << chat_session_name << "\n\n";
+        return;
+    }
+    if (sub == "rename") {
+        if (tokens.size() < 4 ||
+            !IsValidContextName(tokens[2]) ||
+            !IsValidContextName(tokens[3]) ||
+            tokens[2] == tokens[3]) {
+            std::cerr << "Usage: context rename <old> <new>\n";
+            return;
+        }
+        const auto old_name = tokens[2];
+        const auto new_name = tokens[3];
+        const auto old_session = MainContextSessionPath(workspace, old_name);
+        const auto new_session = MainContextSessionPath(workspace, new_name);
+        const auto old_privacy = MainContextPrivacyPath(workspace, old_name);
+        const auto new_privacy = MainContextPrivacyPath(workspace, new_name);
+        std::error_code ec;
+        const bool old_session_exists = std::filesystem::exists(old_session, ec);
+        const bool old_privacy_exists = !ec && std::filesystem::exists(old_privacy, ec);
+        if (ec) {
+            std::cerr << "context rename failed: " << ec.message() << '\n';
+            return;
+        }
+        if (!old_session_exists && !old_privacy_exists) {
+            std::cerr << "context rename failed: source context not found\n";
+            return;
+        }
+        if (std::filesystem::exists(new_session, ec) || std::filesystem::exists(new_privacy, ec)) {
+            std::cerr << "context rename failed: destination context already exists\n";
+            return;
+        }
+        if (ec) {
+            std::cerr << "context rename failed: " << ec.message() << '\n';
+            return;
+        }
+        if (old_session_exists) {
+            std::filesystem::create_directories(new_session.parent_path(), ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+            std::filesystem::rename(old_session, new_session, ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+        }
+        if (old_privacy_exists) {
+            std::filesystem::create_directories(new_privacy.parent_path(), ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+            std::filesystem::rename(old_privacy, new_privacy, ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+        }
+        if (chat_session_name == old_name) {
+            chat_session_name = new_name;
+            chat_session_path = new_session;
+            chat_history = LoadChatTranscript(chat_session_path);
+            context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
+            pending_route_action = {};
+            SaveCurrentMainContextName(workspace, chat_session_name);
+        }
+        std::cout << "AgentOS main context renamed\n"
+                  << "  from: " << old_name << '\n'
+                  << "  to:   " << new_name << '\n'
+                  << "  active: " << chat_session_name << "\n\n";
+        return;
+    }
+    if (sub == "export") {
+        if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
+            std::cerr << "Usage: context export <name> [path]\n";
+            return;
+        }
+        const auto name = tokens[2];
+        const auto source = MainContextSessionPath(workspace, name);
+        std::error_code ec;
+        if (!std::filesystem::exists(source, ec)) {
+            std::cerr << "context export failed: source context not found\n";
+            return;
+        }
+        const auto destination = tokens.size() >= 4
+            ? std::filesystem::path(tokens[3])
+            : workspace / "runtime" / "main_agent" / "exports" / (name + ".json");
+        if (!destination.parent_path().empty()) {
+            std::filesystem::create_directories(destination.parent_path(), ec);
+            if (ec) {
+                std::cerr << "context export failed: " << ec.message() << '\n';
+                return;
+            }
+        }
+        std::filesystem::copy_file(
+            source,
+            destination,
+            std::filesystem::copy_options::overwrite_existing,
+            ec);
+        if (ec) {
+            std::cerr << "context export failed: " << ec.message() << '\n';
+            return;
+        }
+        std::cout << "AgentOS main context exported\n"
+                  << "  session: " << name << '\n'
+                  << "  source:  " << source.string() << '\n'
+                  << "  path:    " << destination.string() << "\n\n";
+        return;
+    }
+    if (sub == "privacy") {
+        if (tokens.size() == 2) {
+            std::cout << "AgentOS main context privacy\n"
+                      << "  session: " << chat_session_name << '\n'
+                      << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
+            return;
+        }
+        if (tokens[2] != "digest" && tokens[2] != "none" && tokens[2] != "verbatim") {
+            std::cerr << "Usage: context privacy [digest|none|verbatim]\n";
+            return;
+        }
+        context_privacy = ParseContextPrivacyLevel(tokens[2]);
+        SaveMainContextPrivacy(workspace, chat_session_name, context_privacy);
+        pending_route_action = {};
+        std::cout << "AgentOS main context privacy updated\n"
+                  << "  session: " << chat_session_name << '\n'
+                  << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
+        return;
+    }
+    if (sub == "clear") {
+        chat_history.clear();
+        pending_route_action = {};
+        std::error_code ec;
+        const bool removed = std::filesystem::remove(chat_session_path, ec);
+        if (ec) {
+            std::cerr << "context clear failed: " << ec.message() << '\n';
+            return;
+        }
+        std::cout << "AgentOS main context cleared\n"
+                  << "  session: " << chat_session_name << '\n'
+                  << "  path:    " << chat_session_path.string() << '\n'
+                  << "  removed: " << (removed ? "true" : "false") << "\n\n";
+        return;
+    }
+    std::cerr << "Unknown context subcommand: " << sub << '\n';
 }
 
-void StartBackgroundResearchPrompt(const std::string& prompt,
-                                   AgentLoop& loop,
-                                   AuditLogger& audit_logger,
-                                   const std::filesystem::path& workspace,
-                                   std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
-    const auto task = BuildResearchTaskRequest(prompt, workspace);
-    StartBackgroundTask("research", prompt, task, workspace, loop, audit_logger, jobs, ExecuteResearchTask);
+void HandleMemoryCommand(const std::vector<std::string>& tokens,
+                         const MemoryManager& memory_manager) {
+    if (tokens.size() < 2) {
+        std::cerr << "Usage: memory summary|stats|lessons|workflows|stored-workflows\n";
+        return;
+    }
+    const auto sub = tokens[1];
+    if (sub == "summary") {
+        std::cout << "task_log_entries: " << memory_manager.task_log().size() << '\n';
+        std::cout << "workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "stats") {
+        const auto& skill_stats = memory_manager.skill_stats();
+        const auto& agent_stats = memory_manager.agent_stats();
+        std::cout << "Skill stats (" << skill_stats.size() << "):\n";
+        for (const auto& [name, stats] : skill_stats) {
+            std::cout << "  " << name
+                      << "  calls=" << stats.total_calls
+                      << "  success=" << stats.success_calls
+                      << "  avg_ms=" << stats.avg_latency_ms
+                      << '\n';
+        }
+        std::cout << "Agent stats (" << agent_stats.size() << "):\n";
+        for (const auto& [name, stats] : agent_stats) {
+            std::cout << "  " << name
+                      << "  runs=" << stats.total_runs
+                      << "  success=" << stats.success_runs
+                      << "  avg_ms=" << stats.avg_duration_ms
+                      << '\n';
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "lessons") {
+        const auto lessons = memory_manager.lesson_store().list();
+        if (lessons.empty()) {
+            std::cout << "No lessons recorded.\n";
+        } else {
+            std::cout << "Lessons (" << lessons.size() << "):\n";
+            for (const auto& lesson : lessons) {
+                std::cout << "  " << lesson.summary
+                          << "  count=" << lesson.occurrence_count
+                          << "  error=" << lesson.error_code
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "workflows") {
+        const auto candidates = memory_manager.workflow_candidates();
+        if (candidates.empty()) {
+            std::cout << "No workflow candidates.\n";
+        } else {
+            std::cout << "Workflow candidates (" << candidates.size() << "):\n";
+            for (const auto& wf : candidates) {
+                std::cout << "  " << wf.name
+                          << "  trigger=" << wf.trigger_task_type
+                          << "  score=" << wf.score
+                          << "  use=" << wf.use_count
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "stored-workflows") {
+        const auto stored = memory_manager.workflow_store().list();
+        if (stored.empty()) {
+            std::cout << "No stored workflows.\n";
+        } else {
+            std::cout << "Stored workflows (" << stored.size() << "):\n";
+            for (const auto& wf : stored) {
+                std::cout << "  " << wf.name
+                          << "  trigger=" << wf.trigger_task_type
+                          << "  enabled=" << (wf.enabled ? "true" : "false")
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    std::cerr << "Unknown memory subcommand: " << sub << '\n';
+}
+
+void HandleScheduleCommand(const std::vector<std::string>& tokens,
+                           const Scheduler& scheduler) {
+    if (tokens.size() < 2) {
+        std::cerr << "Usage: schedule list|history\n";
+        return;
+    }
+    const auto sub = tokens[1];
+    if (sub == "list") {
+        const auto tasks = scheduler.list();
+        if (tasks.empty()) {
+            std::cout << "No scheduled tasks.\n";
+        } else {
+            for (const auto& t : tasks) {
+                std::cout << "  " << t.schedule_id
+                          << "  enabled=" << (t.enabled ? "true" : "false")
+                          << "  task=" << t.task.task_type
+                          << "  runs=" << t.run_count
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "history") {
+        const auto records = scheduler.run_history();
+        if (records.empty()) {
+            std::cout << "No scheduler run history.\n";
+        } else {
+            for (const auto& r : records) {
+                std::cout << "  " << r.schedule_id
+                          << "  task_id=" << r.task_id
+                          << "  success=" << (r.success ? "true" : "false")
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    std::cerr << "Unknown schedule subcommand: " << sub << '\n';
 }
 
 UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
@@ -1560,9 +1836,9 @@ void RedrawInputLine(const std::string& prompt,
                      const std::size_t cursor) {
     std::cout << "\r" << prompt << line << "\x1b[K";
 #ifdef _WIN32
-    const auto right = line.size() - std::min(cursor, line.size());
+    const auto right = line.size() - (std::min)(cursor, line.size());
 #else
-    const auto right = DisplayColumns(line.substr(std::min(cursor, line.size())));
+    const auto right = DisplayColumns(line.substr((std::min)(cursor, line.size())));
 #endif
     if (right > 0) {
         std::cout << "\x1b[" << right << "D";
@@ -1848,6 +2124,11 @@ int RunInteractiveCommand(
     std::vector<std::shared_ptr<BackgroundJob>> background_jobs;
     const auto history_path = workspace / "runtime" / "repl_history.txt";
     std::vector<std::string> line_history = LoadReplHistory(history_path);
+    std::string chat_session_name = LoadCurrentMainContextName(workspace);
+    std::filesystem::path chat_session_path = MainContextSessionPath(workspace, chat_session_name);
+    std::vector<ChatTranscriptTurn> chat_history = LoadChatTranscript(chat_session_path);
+    ContextPrivacyLevel context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
+    PendingRouteAction pending_route_action;
 
     std::string line;
     while (true) {
@@ -1968,128 +2249,36 @@ int RunInteractiveCommand(
             std::cout << "  background_jobs: " << background_jobs.size() << '\n';
             std::cout << "  scheduled_tasks: " << scheduler.list().size() << '\n';
             std::cout << "  workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
+            std::cout << "  main_context: " << chat_session_name << '\n';
+            std::cout << "  main_context_turns: " << chat_history.size() << '\n';
+            std::cout << "  main_context_privacy: " << ContextPrivacyLevelName(context_privacy) << '\n';
+            std::cout << "  main_routing_trace: " << MainRoutingTracePath(workspace).string() << '\n';
             std::cout << "  audit_log: " << audit_logger.log_path().string() << '\n';
             std::cout << '\n';
             continue;
         }
 
+        // ── context subcommands ────────────────────────────────────────
+        if (command == "context") {
+            HandleContextCommand(tokens,
+                                 workspace,
+                                 chat_session_name,
+                                 chat_session_path,
+                                 chat_history,
+                                 context_privacy,
+                                 pending_route_action);
+            continue;
+        }
+
         // ── memory subcommands ──────────────────────────────────────────
         if (command == "memory") {
-            if (tokens.size() < 2) {
-                std::cerr << "Usage: memory summary|stats|lessons|workflows|stored-workflows\n";
-                continue;
-            }
-            const auto sub = tokens[1];
-            if (sub == "summary") {
-                std::cout << "task_log_entries: " << memory_manager.task_log().size() << '\n';
-                std::cout << "workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
-                std::cout << '\n';
-            } else if (sub == "stats") {
-                const auto& skill_stats = memory_manager.skill_stats();
-                const auto& agent_stats = memory_manager.agent_stats();
-                std::cout << "Skill stats (" << skill_stats.size() << "):\n";
-                for (const auto& [name, stats] : skill_stats) {
-                    std::cout << "  " << name
-                              << "  calls=" << stats.total_calls
-                              << "  success=" << stats.success_calls
-                              << "  avg_ms=" << stats.avg_latency_ms
-                              << '\n';
-                }
-                std::cout << "Agent stats (" << agent_stats.size() << "):\n";
-                for (const auto& [name, stats] : agent_stats) {
-                    std::cout << "  " << name
-                              << "  runs=" << stats.total_runs
-                              << "  success=" << stats.success_runs
-                              << "  avg_ms=" << stats.avg_duration_ms
-                              << '\n';
-                }
-                std::cout << '\n';
-            } else if (sub == "lessons") {
-                const auto lessons = memory_manager.lesson_store().list();
-                if (lessons.empty()) {
-                    std::cout << "No lessons recorded.\n";
-                } else {
-                    std::cout << "Lessons (" << lessons.size() << "):\n";
-                    for (const auto& lesson : lessons) {
-                        std::cout << "  " << lesson.summary
-                                  << "  count=" << lesson.occurrence_count
-                                  << "  error=" << lesson.error_code
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else if (sub == "workflows") {
-                const auto candidates = memory_manager.workflow_candidates();
-                if (candidates.empty()) {
-                    std::cout << "No workflow candidates.\n";
-                } else {
-                    std::cout << "Workflow candidates (" << candidates.size() << "):\n";
-                    for (const auto& wf : candidates) {
-                        std::cout << "  " << wf.name
-                                  << "  trigger=" << wf.trigger_task_type
-                                  << "  score=" << wf.score
-                                  << "  use=" << wf.use_count
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else if (sub == "stored-workflows") {
-                const auto stored = memory_manager.workflow_store().list();
-                if (stored.empty()) {
-                    std::cout << "No stored workflows.\n";
-                } else {
-                    std::cout << "Stored workflows (" << stored.size() << "):\n";
-                    for (const auto& wf : stored) {
-                        std::cout << "  " << wf.name
-                                  << "  trigger=" << wf.trigger_task_type
-                                  << "  enabled=" << (wf.enabled ? "true" : "false")
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else {
-                std::cerr << "Unknown memory subcommand: " << sub << '\n';
-            }
+            HandleMemoryCommand(tokens, memory_manager);
             continue;
         }
 
         // ── schedule subcommands ────────────────────────────────────────
         if (command == "schedule") {
-            if (tokens.size() < 2) {
-                std::cerr << "Usage: schedule list|history\n";
-                continue;
-            }
-            const auto sub = tokens[1];
-            if (sub == "list") {
-                const auto tasks = scheduler.list();
-                if (tasks.empty()) {
-                    std::cout << "No scheduled tasks.\n";
-                } else {
-                    for (const auto& t : tasks) {
-                        std::cout << "  " << t.schedule_id
-                                  << "  enabled=" << (t.enabled ? "true" : "false")
-                                  << "  task=" << t.task.task_type
-                                  << "  runs=" << t.run_count
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else if (sub == "history") {
-                const auto records = scheduler.run_history();
-                if (records.empty()) {
-                    std::cout << "No scheduler run history.\n";
-                } else {
-                    for (const auto& r : records) {
-                        std::cout << "  " << r.schedule_id
-                                  << "  task_id=" << r.task_id
-                                  << "  success=" << (r.success ? "true" : "false")
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else {
-                std::cerr << "Unknown schedule subcommand: " << sub << '\n';
-            }
+            HandleScheduleCommand(tokens, scheduler);
             continue;
         }
 
@@ -2106,7 +2295,19 @@ int RunInteractiveCommand(
             const std::string prompt = (prompt_start == std::string::npos)
                 ? std::string{}
                 : line.substr(prompt_start);
-            RunChatPrompt(prompt, agent_registry, loop, audit_logger, workspace);
+            RunChatPrompt(
+                prompt,
+                skill_registry,
+                agent_registry,
+                loop,
+                audit_logger,
+                workspace,
+                &chat_history,
+                &pending_route_action,
+                true,
+                std::nullopt,
+                chat_session_path,
+                context_privacy);
             continue;
         }
 
@@ -2138,33 +2339,18 @@ int RunInteractiveCommand(
             [&agent_registry, &workspace]() { return ResolveChatTarget(agent_registry, workspace); },
             [&skill_registry]() { return skill_registry.find("development_request") ? "development_request" : ""; },
             [&skill_registry]() { return skill_registry.find("research_request") ? "research_request" : ""; },
-            [&skill_registry](const std::string& text) {
-                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value();
-            },
-            [&skill_registry](const std::string& text) {
-                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value()
-                    ? std::string("xiaohongshu_search")
-                    : std::string{};
-            });
+            [](const std::string&) { return false; },
+            [](const std::string&) { return std::string{}; });
         WriteRouteDecision(workspace, route_decision);
         PrintRouteDecision(route_decision, RuntimeLanguage::English);
 
         switch (route_decision.route) {
         case InteractiveRouteKind::direct_skill:
-            if (const auto xhs_query = ExtractXiaohongshuSearchQuery(line, skill_registry); xhs_query.has_value()) {
-                std::cout << "(运行 skill xiaohongshu_search query=\"" << *xhs_query << "\")\n";
-                const auto result = RunDirectSkillFromNaturalLanguage(
-                    "xiaohongshu_search",
-                    StringMap{{"query", *xhs_query}},
-                    line,
-                    loop,
-                    workspace);
-                PrintResult(result);
-                std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-                continue;
-            }
             break;
         case InteractiveRouteKind::local_intent:
+            if (TryConfigureMainAgentFromNaturalLanguage(line, workspace)) {
+                continue;
+            }
             if (LooksLikeModelIdentityQuestion(line)) {
                 PrintMainModelIdentity(agent_registry, workspace);
                 continue;
@@ -2196,18 +2382,52 @@ int RunInteractiveCommand(
             }
             break;
         case InteractiveRouteKind::development_agent:
-            StartBackgroundDevelopmentPrompt(line, loop, audit_logger, workspace, background_jobs);
-            continue;
         case InteractiveRouteKind::research_agent:
-            StartBackgroundResearchPrompt(line, loop, audit_logger, workspace, background_jobs);
+            RunChatPrompt(
+                line,
+                skill_registry,
+                agent_registry,
+                loop,
+                audit_logger,
+                workspace,
+                &chat_history,
+                &pending_route_action,
+                true,
+                std::nullopt,
+                chat_session_path,
+                context_privacy);
             continue;
         case InteractiveRouteKind::chat_agent:
-            RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);
+            RunChatPrompt(
+                line,
+                skill_registry,
+                agent_registry,
+                loop,
+                audit_logger,
+                workspace,
+                &chat_history,
+                &pending_route_action,
+                true,
+                std::nullopt,
+                chat_session_path,
+                context_privacy);
             continue;
         case InteractiveRouteKind::unknown_command:
             break;
         }
-        RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);
+        RunChatPrompt(
+            line,
+            skill_registry,
+            agent_registry,
+            loop,
+            audit_logger,
+            workspace,
+            &chat_history,
+            &pending_route_action,
+            true,
+            std::nullopt,
+            chat_session_path,
+            context_privacy);
     }
 
     for (const auto& job : background_jobs) {

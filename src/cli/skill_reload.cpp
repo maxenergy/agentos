@@ -41,6 +41,7 @@ std::unordered_set<std::string> ProtectedSkillNames() {
         "file_write",
         "file_patch",
         "http_fetch",
+        "news_search",
         "host_info",
         "learn_skill",
         "development_request",

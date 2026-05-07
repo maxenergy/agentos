@@ -1,11 +1,14 @@
-# G004 REPL Development And Research Dispatch
+# G004 REPL Main-First Dispatch
 
 Status: done
 Depends on: G002
 
 ## Objective
 
-Wire REPL free-form classification to dispatch `development_request` and `research_request` through normal Skill/Agent routing.
+Keep hard REPL commands local, but route free-form natural language to the
+configured `main` agent first. `main` may answer directly or request a
+structured AgentOS route action when a registered skill/agent is materially
+needed.
 
 ## Context
 
@@ -23,9 +26,11 @@ Allowed files:
 - `src/cli/interactive_commands.cpp`
 - `src/cli/interactive_commands.hpp`
 - `src/cli/intent_classifier.*`
+- `src/cli/main_route_action.*`
 - `src/skills/builtin/development_skill.*`
 - `src/skills/builtin/research_skill.*`
 - `tests/cli_integration_tests.cpp`
+- `tests/main_route_action_tests.cpp`
 
 Out of scope:
 
@@ -35,17 +40,31 @@ Out of scope:
 
 ## Requirements
 
-- After slash-command dispatch, REPL calls `ClassifyInteractiveRequest`.
-- `development_agent` routes to `loop.run({task_type:"development_request", ...})`.
-- `research_agent` routes to `loop.run({task_type:"research_request", ...})`.
-- Other input still falls through to chat fallback.
-- Routed requests are visible in audit and memory like normal tasks.
+- After slash-command dispatch, REPL calls `ClassifyInteractiveRequest` only
+  for hard-local intent detection and route-decision audit.
+- Free-form natural language routes to `chat_agent -> main`.
+- The `main` prompt receives live registered skills/agents, recent REPL chat
+  context, and the structured `agentos_route_action` contract.
+- If `main` emits a route action, the REPL executes the requested registered
+  target through normal AgentOS routing and sends the compact result back to
+  `main` for synthesis.
+- Route actions are validated against live registries and skill input schemas
+  before execution.
+- Missing required inputs are returned to `main` as clarification-oriented
+  tool results; the REPL keeps a pending route action for the next user turn.
+- Routed action executions remain visible in audit and memory like normal
+  tasks.
 
 ## Acceptance
 
-- CLI integration coverage proves development and research paths invoke registered skills.
-- Chat fallback behavior remains unchanged for non-classified free-form text.
-- No `runtime/skill_routes.tsv` loader is introduced unless a separate lifecycle is explicitly justified.
+- Routing eval coverage proves research/development-shaped natural language
+  stays on `main` instead of being preempted by the REPL.
+- Main prompt coverage proves recent context and the structured route action
+  contract are present.
+- Route action coverage proves invalid targets, missing inputs, high-risk
+  actions, and missing-input follow-up context are handled.
+- No `runtime/skill_routes.tsv` loader is introduced unless a separate
+  lifecycle is explicitly justified.
 
 ## Verification
 
@@ -57,7 +76,10 @@ git diff --check
 
 Completed verification:
 
-- `cmake --build build-codex-g014 --target agentos_cli_integration_tests`
-- `ctest --test-dir build-codex-g014 -R agentos_cli_integration_tests --output-on-failure`
+- `ctest --test-dir build --output-on-failure -R "agentos_cli_integration_tests|agentos_main_route_action_tests|agentos_main_agent_prompt_tests|agentos_intent_classifier_tests|agentos_routing_eval_tests"`
+- `cmake --build build`
+- `ctest --test-dir build --output-on-failure`
+- `git diff --check`
 
-Note: repo-wide `git diff --check` currently reports pre-existing whitespace/line-ending diagnostics in unrelated modified files, so a focused diff check was used for this packet.
+Latest result: focused tests passed, full suite passed `24/24`, and
+`git diff --check` passed.

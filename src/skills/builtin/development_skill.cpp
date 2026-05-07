@@ -462,6 +462,14 @@ DevelopmentAcceptance ReviewDevelopmentResult(const TaskRequest& task,
         }
     }
 
+    if (result.error_code == "Cancelled") {
+        review.warnings.push_back("secondary agent was cancelled");
+        review.repairable = false;
+        review.accepted = false;
+        review.status = "cancelled";
+        return review;
+    }
+
     if (!result.success) {
         review.warnings.push_back("secondary agent returned failure");
     }
@@ -822,7 +830,11 @@ SkillResult DevelopmentSkill::execute(const SkillCall& call) {
         }
         if (!attempts.back().acceptance.repairable) {
             if (interactive) {
-                std::cout << "(primary agent stopped repair loop because the remaining failure appears to be an environment blocker)\n";
+                if (attempts.back().acceptance.status == "cancelled") {
+                    std::cout << "(development task was cancelled; repair loop stopped)\n";
+                } else {
+                    std::cout << "(primary agent stopped repair loop because the remaining failure appears to be an environment blocker)\n";
+                }
             }
             break;
         }
@@ -886,6 +898,9 @@ SkillResult DevelopmentSkill::execute(const SkillCall& call) {
             for (const auto& warning : final_attempt.acceptance.warnings) {
                 std::cout << "  - " << warning << '\n';
             }
+        } else if (final_attempt.acceptance.status == "cancelled") {
+            std::cout << "Primary acceptance: cancelled after " << attempts.size() << " attempt(s).\n";
+            std::cout << "Repair loop stopped because the development task was cancelled.\n";
         } else {
             std::cout << "Primary acceptance: failed after " << attempts.size() << " attempt(s).\n";
             if (!final_attempt.acceptance.repairable) {
@@ -914,11 +929,14 @@ SkillResult DevelopmentSkill::execute(const SkillCall& call) {
     skill_result.json_output = output.dump();
     skill_result.duration_ms = duration_ms();
     if (!skill_result.success) {
-        skill_result.error_code = final_attempt.acceptance.status == "blocked"
-            ? "AcceptanceBlocked"
-            : "AcceptanceFailed";
-        skill_result.error_message =
-            "development acceptance status=" + final_attempt.acceptance.status;
+        if (final_attempt.acceptance.status == "blocked") {
+            skill_result.error_code = "AcceptanceBlocked";
+        } else if (final_attempt.acceptance.status == "cancelled") {
+            skill_result.error_code = "Cancelled";
+        } else {
+            skill_result.error_code = "AcceptanceFailed";
+        }
+        skill_result.error_message = "development acceptance status=" + final_attempt.acceptance.status;
     }
     return skill_result;
 }

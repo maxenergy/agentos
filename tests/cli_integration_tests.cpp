@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -35,6 +36,25 @@ std::filesystem::path FreshWorkspace(const std::string& name) {
     std::filesystem::remove_all(workspace);
     std::filesystem::create_directories(workspace);
     return workspace;
+}
+
+void CreateAutoDevSkillPackFixture(const std::filesystem::path& root) {
+    const std::vector<std::string> steps = {
+        "00-understand-system",
+        "01-grill-requirements",
+        "02-spec-freeze",
+        "03-impact-analysis",
+        "04-task-slice",
+        "05-goal-pack",
+        "07-verify-loop",
+        "08-goal-review",
+    };
+    for (const auto& step : steps) {
+        const auto dir = root / step;
+        std::filesystem::create_directories(dir);
+        std::ofstream skill(dir / "SKILL.md", std::ios::binary);
+        skill << "---\nname: " << step << "\n---\n# " << step << "\n";
+    }
 }
 
 std::string QuoteShellArg(const std::string& value) {
@@ -77,6 +97,27 @@ std::string QuoteShellArg(const std::string& value) {
     quoted.push_back('\'');
     return quoted;
 #endif
+}
+
+std::string NullRedirect() {
+#ifdef _WIN32
+    return " >NUL 2>&1";
+#else
+    return " >/dev/null 2>&1";
+#endif
+}
+
+void InitGitRepoForCliTest(const std::filesystem::path& repo) {
+    std::filesystem::create_directories(repo);
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " init" + NullRedirect()).c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " config user.email test@example.com").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " config user.name Test").c_str());
+    {
+        std::ofstream readme(repo / "README.md", std::ios::binary);
+        readme << "fixture\n";
+    }
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " add README.md").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " commit -m initial" + NullRedirect()).c_str());
 }
 
 int DecodeProcessStatus(const int status) {
@@ -229,7 +270,6 @@ CommandResult RunAgentosInPtyWithInput(
 
     std::string output;
     std::size_t next_input_chunk = 0;
-    std::size_t prompt_search_start = 0;
     int status = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -245,14 +285,15 @@ CommandResult RunAgentosInPtyWithInput(
             }
             break;
         }
-        while (next_input_chunk < input_chunks.size()) {
-            const auto prompt_pos = output.find("agentos> ", prompt_search_start);
-            if (prompt_pos == std::string::npos) {
-                break;
+        if (next_input_chunk < input_chunks.size()) {
+            constexpr std::string_view prompt = "agentos> ";
+            if (output.size() < prompt.size() ||
+                output.compare(output.size() - prompt.size(), prompt.size(), prompt) != 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            } else {
+                const auto& chunk = input_chunks[next_input_chunk++];
+                (void)write(master_fd, chunk.data(), chunk.size());
             }
-            prompt_search_start = prompt_pos + 9;
-            const auto& chunk = input_chunks[next_input_chunk++];
-            (void)write(master_fd, chunk.data(), chunk.size());
         }
         const pid_t done = waitpid(pid, &status, WNOHANG);
         if (done == pid) {
@@ -279,12 +320,55 @@ std::string ReadTextFile(const std::filesystem::path& path) {
     return buffer.str();
 }
 
+std::string EscapeJsonBackslashes(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char ch : value) {
+        if (ch == '\\') {
+            escaped += "\\\\";
+        } else {
+            escaped.push_back(ch);
+        }
+    }
+    return escaped;
+}
+
 std::string ExtractTokenValue(const std::string& text, const std::string& key) {
     const auto start = text.find(key);
     if (start == std::string::npos) {
         return "";
     }
     const auto value_start = start + key.size();
+    const auto value_end = text.find_first_of(" \r\n", value_start);
+    return text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start);
+}
+
+std::string TrimAscii(std::string value) {
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+std::string ExtractLineValue(const std::string& text, const std::string& key) {
+    const auto start = text.find(key);
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto value_start = start + key.size();
+    const auto value_end = text.find_first_of("\r\n", value_start);
+    return TrimAscii(text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start));
+}
+
+std::string ExtractApprovalId(const std::string& text) {
+    const std::string prefix = "approval ";
+    const auto start = text.find(prefix);
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto value_start = start + prefix.size();
     const auto value_end = text.find_first_of(" \r\n", value_start);
     return text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start);
 }
@@ -345,6 +429,377 @@ void WriteCurlTokenFixture(const std::filesystem::path& bin_dir) {
         std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
         std::filesystem::perm_options::add);
 #endif
+}
+
+void WriteMainRouteActionCurlFixture(const std::filesystem::path& bin_dir,
+                                     const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"host_info\\\",\\\"brief\\\":\\\"GOAL: inspect host info for REPL route action test. FORMAT: concise JSON-backed summary. SUCCESS: host_info skill runs.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"objective\\\":\\\"inspect host info\\\"}}}\"}}]}\n"
+        << ") else (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"route action synthesis complete\"}}]}\n"
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"host_info\",\"brief\":\"GOAL: inspect host info for REPL route action test. FORMAT: concise JSON-backed summary. SUCCESS: host_info skill runs.\",\"mode\":\"sync\",\"arguments\":{\"objective\":\"inspect host info\"}}}"}}]})"
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"route action synthesis complete"}}]})"
+        << "\nJSON\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
+void WriteMainRouteActionMissingInputCurlFixture(const std::filesystem::path& bin_dir,
+                                                const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"news_search\\\",\\\"brief\\\":\\\"GOAL: search news.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{}}}\"}}]}\n"
+        << ") else (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"route action validation synthesis complete\"}}]}\n"
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"news_search\",\"brief\":\"GOAL: search news.\",\"mode\":\"sync\",\"arguments\":{}}}"}}]})"
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"route action validation synthesis complete"}}]})"
+        << "\nJSON\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
+void WriteMainRouteActionContextCurlFixture(const std::filesystem::path& bin_dir,
+                                           const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"news_search\\\",\\\"brief\\\":\\\"GOAL: search news.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{}}}\"}}]}\n"
+        << ") else if \"%COUNT%\"==\"1\" (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"please provide query\"}}]}\n"
+        << ") else if \"%COUNT%\"==\"2\" (\n"
+        << "  echo 3>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"news_search\\\",\\\"brief\\\":\\\"GOAL: search news with supplied query.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"query\\\":\\\"AI browser\\\"}}}\"}}]}\n"
+        << ") else (\n"
+        << "  echo 4>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"context ok\"}}]}\n"
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "body=''\n"
+        << "prev=''\n"
+        << "for arg in \"$@\"; do\n"
+        << "  if [ \"$prev\" = '-d' ]; then body=${arg#@}; fi\n"
+        << "  prev=$arg\n"
+        << "done\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"news_search\",\"brief\":\"GOAL: search news.\",\"mode\":\"sync\",\"arguments\":{}}}"}}]})"
+        << "\nJSON\n"
+        << "elif [ \"$count\" = \"1\" ]; then\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"please provide query"}}]})"
+        << "\nJSON\n"
+        << "elif [ \"$count\" = \"2\" ]; then\n"
+        << "  printf '3\\n' > \"$counter\"\n"
+        << "  if grep -q 'AGENTOS ROUTE ACTION RESULT' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"context leaked internal route result"}}]})"
+        << "\nJSON\n"
+        << "  elif grep -q 'REPL CONTEXT DIGEST' \"$body\" && grep -q 'search news through main' \"$body\" && grep -q 'please provide query' \"$body\" && grep -q 'PENDING AGENTOS ROUTE ACTION' \"$body\" && grep -q 'news_search' \"$body\" && grep -q 'query' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"news_search\",\"brief\":\"GOAL: search news with supplied query.\",\"mode\":\"sync\",\"arguments\":{\"query\":\"AI browser\"}}}"}}]})"
+        << "\nJSON\n"
+        << "  else\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"context missing pending route action"}}]})"
+        << "\nJSON\n"
+        << "  fi\n"
+        << "else\n"
+        << "  printf '4\\n' > \"$counter\"\n"
+        << "  if grep -q 'PENDING AGENTOS ROUTE ACTION' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"pending leaked after success"}}]})"
+        << "\nJSON\n"
+        << "  else\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"context ok"}}]})"
+        << "\nJSON\n"
+        << "  fi\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
+#ifndef _WIN32
+void WriteMainContextContinuationCurlFixture(const std::filesystem::path& bin_dir,
+                                             const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "body=''\n"
+        << "prev=''\n"
+        << "for arg in \"$@\"; do\n"
+        << "  if [ \"$prev\" = '-d' ]; then body=${arg#@}; fi\n"
+        << "  prev=$arg\n"
+        << "done\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"建议把批处理节奏、交付格式和后续处理边界写清楚。"}}]})"
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  if grep -q '\"role\":\"system\"' \"$body\" && "
+           "grep -q 'REPL CONTEXT DIGEST' \"$body\" && "
+           "grep -q '这个批处理方案应该如何安排？' \"$body\" && "
+           "grep -q '建议把批处理节奏' \"$body\" && "
+           "grep -q '补充一下节奏' \"$body\" && "
+           "grep -q 'contextual_repl_turn' \"$body\" && "
+           "grep -q 'continuation of the prior topic' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"contextual continuation ok"}}]})"
+        << "\nJSON\n"
+        << "  else\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"contextual continuation missing"}}]})"
+        << "\nJSON\n"
+        << "  fi\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+}
+
+void WriteMainSimpleChatCurlFixture(const std::filesystem::path& bin_dir,
+                                    const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "next=$((count + 1))\n"
+        << "printf '%s\\n' \"$next\" > \"$counter\"\n"
+        << "printf '{\"choices\":[{\"message\":{\"content\":\"simple reply %s\"}}]}\\n' \"$next\"\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+}
+#endif
+
+void WriteMainRouteActionHighRiskCurlFixture(const std::filesystem::path& bin_dir,
+                                             const std::filesystem::path& counter_path,
+                                             const std::string& approval_id = {}) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n";
+    if (approval_id.empty()) {
+        output
+            << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"high_risk_smoke\\\",\\\"brief\\\":\\\"GOAL: run high-risk smoke skill. SUCCESS: approval gate is exercised.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"message\\\":\\\"first-pass\\\"}}}\"}}]}\n";
+    } else {
+        output
+            << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"high_risk_smoke\\\",\\\"brief\\\":\\\"GOAL: run approved high-risk smoke skill. SUCCESS: skill executes after approval.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"message\\\":\\\"approved-pass\\\",\\\"allow_high_risk\\\":\\\"true\\\",\\\"approval_id\\\":\\\"" << approval_id << "\\\"}}}\"}}]}\n";
+    }
+    output
+        << ") else (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << (approval_id.empty()
+            ? "  echo {\"choices\":[{\"message\":{\"content\":\"approval required synthesis\"}}]}\n"
+            : "  echo {\"choices\":[{\"message\":{\"content\":\"approved route synthesis\"}}]}\n")
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n";
+    if (approval_id.empty()) {
+        output
+            << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"high_risk_smoke\",\"brief\":\"GOAL: run high-risk smoke skill. SUCCESS: approval gate is exercised.\",\"mode\":\"sync\",\"arguments\":{\"message\":\"first-pass\"}}}"}}]})";
+    } else {
+        output
+            << "{\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"high_risk_smoke\\\",\\\"brief\\\":\\\"GOAL: run approved high-risk smoke skill. SUCCESS: skill executes after approval.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"message\\\":\\\"approved-pass\\\",\\\"allow_high_risk\\\":\\\"true\\\",\\\"approval_id\\\":\\\"" << approval_id << "\\\"}}}\"}}]}";
+    }
+    output
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << (approval_id.empty()
+            ? R"({"choices":[{"message":{"content":"approval required synthesis"}}]})"
+            : R"({"choices":[{"message":{"content":"approved route synthesis"}}]})")
+        << "\nJSON\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
+std::filesystem::path WriteAutoDevCodexCliFixture(const std::filesystem::path& bin_dir) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "autodev_codex_fixture.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "powershell -NoProfile -NonInteractive -Command \"$input | Out-Null\"\n"
+        << "echo codex fixture update>> README.md\n"
+        << "echo fixture codex completed\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "autodev_codex_fixture";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "cat >/dev/null\n"
+        << "printf '%s\\n' 'codex fixture update' >> README.md\n"
+        << "printf '%s\\n' 'fixture codex completed'\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+    return fixture_path;
+}
+
+std::filesystem::path WriteLongAutoDevCodexCliFixture(
+    const std::filesystem::path& bin_dir,
+    const std::filesystem::path& marker_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "autodev_long_codex_fixture.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "powershell -NoProfile -NonInteractive -Command \"$input | Out-Null\"\n"
+        << "echo started>" << marker_path.string() << "\n"
+        << "ping -n 11 127.0.0.1 > NUL\n"
+        << "echo long fixture completed>> README.md\n"
+        << "echo completed\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "autodev_long_codex_fixture";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "cat >/dev/null\n"
+        << "printf '%s\\n' started > " << QuoteShellArg(marker_path.string()) << "\n"
+        << "sleep 10\n"
+        << "printf '%s\\n' 'long fixture completed' >> README.md\n"
+        << "printf '%s\\n' completed\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+    return fixture_path;
 }
 
 #ifndef _WIN32
@@ -1546,14 +2001,7 @@ void TestTrustCommands() {
     Expect(approval_request.exit_code == 0, "trust approval-request should succeed");
     Expect(approval_request.output.find("status=pending") != std::string::npos,
         "trust approval-request should create pending approvals");
-    const auto approval_prefix = std::string("approval ");
-    const auto approval_start = approval_request.output.find(approval_prefix);
-    std::string approval_id;
-    if (approval_start != std::string::npos) {
-        const auto value_start = approval_start + approval_prefix.size();
-        const auto value_end = approval_request.output.find(' ', value_start);
-        approval_id = approval_request.output.substr(value_start, value_end - value_start);
-    }
+    const auto approval_id = ExtractApprovalId(approval_request.output);
     Expect(!approval_id.empty(), "trust approval-request id should be parseable");
 
     const auto approval_approve = RunAgentos(workspace, {
@@ -2158,21 +2606,16 @@ void TestInteractiveFreeFormDispatch() {
             workspace,
             {"interactive"},
             "please build a small command line tool\nexit\n");
-        Expect(result.exit_code == 0, "interactive development dispatch should exit cleanly");
-        Expect(result.output.find("(route: development_agent -> development_request") != std::string::npos,
-            "interactive development free-form text should be classified as a development route");
-        Expect(result.output.find("mode=async_job") != std::string::npos,
-            "interactive development route should declare async job execution mode");
-        Expect(result.output.find("(background development job started: dev-") != std::string::npos,
-            "interactive development dispatch should enqueue a background job");
-        Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
-            "interactive development dispatch should invoke the registered development_request skill");
+        Expect(result.exit_code == 0, "interactive development-shaped input should exit cleanly");
+        Expect(result.output.find("(route: chat_agent") != std::string::npos,
+            "interactive development-shaped free-form text should route to main first");
+        Expect(result.output.find("mode=sync") != std::string::npos,
+            "main-first development-shaped route should declare sync mode");
+        Expect(result.output.find("main-agent is not configured") != std::string::npos,
+            "main-first development-shaped route should preserve the main-agent setup hint");
         const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
-        Expect(audit.find("development_request") != std::string::npos,
-            "interactive development dispatch should be visible in audit as a normal task");
-        const auto task_log = ReadTextFile(workspace / "runtime" / "memory" / "task_log.tsv");
-        Expect(task_log.find("development_request") != std::string::npos,
-            "interactive development dispatch should be visible in memory as a normal task");
+        Expect(audit.find("development_request") == std::string::npos,
+            "interactive development-shaped text should not preemptively invoke development_request");
     }
 
     {
@@ -2185,23 +2628,16 @@ void TestInteractiveFreeFormDispatch() {
             workspace,
             {"interactive"},
             "please research current provider integration details\nexit\n");
-        Expect(result.exit_code == 0, "interactive research dispatch should exit cleanly");
-        Expect(result.output.find("(route: research_agent -> research_request") != std::string::npos,
-            "interactive research free-form text should be classified as a research route");
-        Expect(result.output.find("mode=async_job") != std::string::npos,
-            "interactive research route should declare async job execution mode");
-        Expect(result.output.find("(background research job started: research-") != std::string::npos,
-            "interactive research dispatch should enqueue a background job");
-        Expect(result.output.find("Use `jobs` to inspect progress") != std::string::npos,
-            "interactive research dispatch should return a job inspection hint");
-        Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
-            "interactive research dispatch should invoke the registered research_request skill");
+        Expect(result.exit_code == 0, "interactive research-shaped input should exit cleanly");
+        Expect(result.output.find("(route: chat_agent") != std::string::npos,
+            "interactive research-shaped free-form text should route to main first");
+        Expect(result.output.find("mode=sync") != std::string::npos,
+            "main-first research-shaped route should declare sync mode");
+        Expect(result.output.find("main-agent is not configured") != std::string::npos,
+            "main-first research-shaped route should preserve the main-agent setup hint");
         const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
-        Expect(audit.find("research_request") != std::string::npos,
-            "interactive research dispatch should be visible in audit as a normal task");
-        const auto task_log = ReadTextFile(workspace / "runtime" / "memory" / "task_log.tsv");
-        Expect(task_log.find("research_request") != std::string::npos,
-            "interactive research dispatch should be visible in memory as a normal task");
+        Expect(audit.find("research_request") == std::string::npos,
+            "interactive research-shaped text should not preemptively invoke research_request");
     }
 
     {
@@ -2223,33 +2659,17 @@ void TestInteractiveFreeFormDispatch() {
 
 #ifndef _WIN32
     {
-        const auto workspace = FreshWorkspace("interactive_exit_running_job");
-        const auto bin_dir = workspace / "bin";
-        WriteSleepingCodexFixture(bin_dir);
-        SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
-        SetEnvForTest("AGENTOS_DEV_MAX_ATTEMPTS", "1");
-
-        const auto result = RunAgentosWithStdin(
-            workspace,
-            {"interactive"},
-            "please build a small command line tool\nexit\nexit --wait\n");
-        Expect(result.exit_code == 0, "interactive exit --wait should exit cleanly after a running job");
-        Expect(result.output.find("background job(s) still running") != std::string::npos,
-            "interactive exit should report running jobs instead of blocking immediately");
-        Expect(result.output.find("exit --wait") != std::string::npos,
-            "interactive exit should tell the user how to wait explicitly");
-        SetEnvForTest("AGENTOS_DEV_MAX_ATTEMPTS", "");
-    }
-
-    {
         const auto workspace = FreshWorkspace("interactive_utf8_pty_dispatch");
-        SetEnvForTest("PATH", old_path);
+        const auto empty_bin = workspace / "empty-bin";
+        std::filesystem::create_directories(empty_bin);
+        SetEnvForTest("PATH", empty_bin.string());
 
         const auto result = RunAgentosInPtyWithInput(
             workspace,
             {"interactive"},
             "你好\nexit\n");
-        Expect(result.exit_code == 0, "interactive UTF-8 pty dispatch should exit cleanly");
+        Expect(result.exit_code == 0,
+            "interactive UTF-8 pty dispatch should exit cleanly; output=" + result.output);
         Expect(result.output.find("你好") != std::string::npos,
             "interactive raw terminal input should preserve UTF-8 text");
         Expect(result.output.find("(route: chat_agent") != std::string::npos,
@@ -2258,6 +2678,2109 @@ void TestInteractiveFreeFormDispatch() {
 #endif
 
     SetEnvForTest("PATH", old_path);
+}
+
+void TestInteractiveMainRouteActionLoop() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_route_counter.txt";
+    WriteMainRouteActionCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "inspect host through main\nexit\n");
+    Expect(result.exit_code == 0, "interactive main route action loop should exit cleanly");
+    Expect(result.output.find("(main requested call_capability target=skill:host_info)") != std::string::npos,
+        "REPL should detect and announce main route action");
+    Expect(result.output.find("route action synthesis complete") != std::string::npos,
+        "REPL should feed route result back to main for synthesis");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "main curl fixture should be called twice: action then synthesis");
+
+    const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("host_info") != std::string::npos,
+        "route action execution should invoke host_info through normal task audit");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainRouteActionValidationLoop() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_validation_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_route_validation_counter.txt";
+    WriteMainRouteActionMissingInputCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent validation fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "search news through main\nexit\n");
+    Expect(result.exit_code == 0, "interactive main route action validation loop should exit cleanly");
+    Expect(result.output.find("(main requested call_capability target=skill:news_search)") != std::string::npos,
+        "REPL should announce the invalid route action target");
+    Expect(result.output.find("route action validation synthesis complete") != std::string::npos,
+        "REPL should feed validation failure back to main for synthesis");
+    Expect(result.output.find("success: false") == std::string::npos,
+        "validation failure should not be dumped as raw task output before synthesis");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "main curl fixture should be called twice: invalid action then synthesis");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainRouteActionContextAfterClarification() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_context_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_route_context_counter.txt";
+    WriteMainRouteActionContextCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent context fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "search news through main\nAI browser\nthanks\nexit\n");
+    Expect(result.exit_code == 0, "interactive main route action context loop should exit cleanly");
+    Expect(result.output.find("please provide query") != std::string::npos,
+        "first route validation synthesis should ask for the missing query");
+    Expect(result.output.find("context ok") != std::string::npos,
+        "third turn should receive clean context after successful retry");
+    Expect(result.output.find("context leaked internal route result") == std::string::npos,
+        "recent chat context should not contain the internal route result prompt");
+    Expect(result.output.find("context missing pending route action") == std::string::npos,
+        "second turn should include pending route action context");
+    Expect(result.output.find("pending leaked after success") == std::string::npos,
+        "pending route action should clear after successful retry");
+    Expect(ReadTextFile(counter_path).find("4") != std::string::npos,
+        "main curl fixture should be called for invalid action, clarification, retry, and final synthesis");
+
+    const auto trace = ReadTextFile(workspace / "runtime" / "main_agent" / "routing_trace.jsonl");
+    Expect(trace.find("\"event\":\"main_request\"") != std::string::npos,
+        "main routing trace should record main requests");
+    Expect(trace.find("\"context_privacy\":\"digest\"") != std::string::npos,
+        "main routing trace should record context privacy");
+    Expect(trace.find("\"pending_route_action_sent\":true") != std::string::npos,
+        "main routing trace should record pending route action context");
+    Expect(trace.find("\"route_action_requested\":true") != std::string::npos,
+        "main routing trace should record main-requested route actions");
+    Expect(trace.find("\"event\":\"route_action_result\"") != std::string::npos,
+        "main routing trace should record route action execution results");
+    Expect(trace.find("\"pending_after_action\":true") != std::string::npos,
+        "main routing trace should record pending state after missing input");
+    Expect(trace.find("\"pending_after_action\":false") != std::string::npos,
+        "main routing trace should record pending state after successful retry");
+
+    const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("\"query\":\"AI browser\"") != std::string::npos ||
+               audit.find("\"query\": \"AI browser\"") != std::string::npos ||
+               audit.find("AI browser") != std::string::npos,
+        "successful retry should invoke news_search with the supplied query");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+#ifndef _WIN32
+void TestInteractiveMainReceivesContextForContinuationTurns() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_context_continuation");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_context_continuation_counter.txt";
+    WriteMainContextContinuationCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent continuation fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "这个批处理方案应该如何安排？\n"
+        "补充一下节奏：每批处理完成后，下一批通常间隔几个小时。\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive continuation context loop should exit cleanly");
+    Expect(result.output.find("(route: chat_agent") != std::string::npos,
+        "continuation turns should still enter the main conversational route");
+    Expect(result.output.find("contextual continuation ok") != std::string::npos,
+        "second turn should reach main with prior REPL context and contextual routing guidance");
+    Expect(result.output.find("contextual continuation missing") == std::string::npos,
+        "second turn should not lose prior context before main decides routing");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "main continuation fixture should be called once per user turn");
+    const auto trace = ReadTextFile(workspace / "runtime" / "main_agent" / "routing_trace.jsonl");
+    Expect(trace.find("\"conversation_context_sent\":true") != std::string::npos,
+        "main routing trace should show continuation context was sent");
+    Expect(trace.find("\"context_privacy\":\"digest\"") != std::string::npos,
+        "main routing trace should show default digest privacy");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainRestoresPersistedContextAcrossReplRestarts() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_persisted_context");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_persisted_context_counter.txt";
+    WriteMainContextContinuationCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent persisted-context fixture config should save");
+
+    const auto first = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "这个批处理方案应该如何安排？\nexit\n");
+    Expect(first.exit_code == 0, "first interactive persisted-context session should exit cleanly");
+    const auto session_path = workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json";
+    Expect(std::filesystem::exists(session_path),
+        "first interactive session should persist main-agent REPL context");
+    Expect(ReadTextFile(session_path).find("建议把批处理节奏") != std::string::npos,
+        "persisted main-agent REPL context should include assistant reply");
+
+    const auto second = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "补充一下节奏：每批处理完成后，下一批通常间隔几个小时。\nexit\n");
+    Expect(second.exit_code == 0, "second interactive persisted-context session should exit cleanly");
+    Expect(second.output.find("contextual continuation ok") != std::string::npos,
+        "second REPL process should restore persisted context before calling main");
+    Expect(second.output.find("contextual continuation missing") == std::string::npos,
+        "second REPL process should not lose persisted context");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "persisted-context fixture should be called once per REPL process");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainContextShowAndClearCommands() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_context_commands");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_context_commands_counter.txt";
+    WriteMainContextContinuationCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent context command fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "这个批处理方案应该如何安排？\n"
+        "context show\n"
+        "status\n"
+        "context clear\n"
+        "context show\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context show/clear command session should exit cleanly");
+    Expect(result.output.find("AgentOS main context") != std::string::npos,
+        "context show should print the main context heading");
+    Expect(result.output.find("turns:   1") != std::string::npos,
+        "context show should report the persisted turn count before clear");
+    Expect(result.output.find("这个批处理方案应该如何安排？") != std::string::npos,
+        "context show should print the stored user turn");
+    Expect(result.output.find("main_context_turns: 1") != std::string::npos,
+        "status should include current main context turn count");
+    Expect(result.output.find("AgentOS main context cleared") != std::string::npos,
+        "context clear should print a clear confirmation");
+    Expect(result.output.find("turns:   0") != std::string::npos,
+        "context show after clear should report an empty context");
+    Expect(!std::filesystem::exists(workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json"),
+        "context clear should remove the persisted context file");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainNamedContextUseAndListCommands() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_named_contexts");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_named_contexts_counter.txt";
+    WriteMainSimpleChatCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent named context fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "context use alpha\n"
+        "alpha topic\n"
+        "context use beta\n"
+        "beta topic\n"
+        "context list\n"
+        "status\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive named context command session should exit cleanly");
+    Expect(result.output.find("session: alpha") != std::string::npos,
+        "context use alpha should select alpha");
+    Expect(result.output.find("session: beta") != std::string::npos,
+        "context use beta should select beta");
+    Expect(result.output.find("  alpha turns=1") != std::string::npos,
+        "context list should include alpha with one turn");
+    Expect(result.output.find("* beta turns=1") != std::string::npos,
+        "context list should mark beta as active with one turn");
+    Expect(result.output.find("main_context: beta") != std::string::npos,
+        "status should show the active named context");
+    Expect(std::filesystem::exists(workspace / "runtime" / "main_agent" / "sessions" / "alpha.json"),
+        "alpha context should persist to its own file");
+    Expect(std::filesystem::exists(workspace / "runtime" / "main_agent" / "sessions" / "beta.json"),
+        "beta context should persist to its own file");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "current_context.txt").find("beta") != std::string::npos,
+        "context use should persist the current named context");
+
+    const auto persisted = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "status\n"
+        "context list\n"
+        "exit\n");
+    Expect(persisted.exit_code == 0, "interactive named context persistence session should exit cleanly");
+    Expect(persisted.output.find("main_context: beta") != std::string::npos,
+        "interactive restart should restore the selected named context");
+    Expect(persisted.output.find("* beta turns=1") != std::string::npos,
+        "context list after restart should mark the restored named context active");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainContextPrivacyCommands() {
+    const auto workspace = FreshWorkspace("interactive_main_context_privacy");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "status\n"
+        "context privacy\n"
+        "context privacy none\n"
+        "status\n"
+        "context use alpha\n"
+        "context privacy verbatim\n"
+        "context use beta\n"
+        "context privacy\n"
+        "context use alpha\n"
+        "context privacy\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context privacy command session should exit cleanly");
+    Expect(result.output.find("main_context_privacy: digest") != std::string::npos,
+        "status should show default digest privacy");
+    Expect(result.output.find("privacy: none") != std::string::npos,
+        "context privacy none should update the current context");
+    Expect(result.output.find("main_context_privacy: none") != std::string::npos,
+        "status should show updated none privacy");
+    Expect(result.output.find("session: beta\n  privacy: digest") != std::string::npos,
+        "new named contexts should default to digest privacy");
+    Expect(result.output.find("session: alpha\n  privacy: verbatim") != std::string::npos,
+        "context use should restore per-context privacy");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "privacy" / "repl-default.txt").find("none") != std::string::npos,
+        "context privacy should persist repl-default privacy");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "privacy" / "alpha.txt").find("verbatim") != std::string::npos,
+        "context privacy should persist named context privacy");
+}
+
+void TestInteractiveMainContextTraceCommands() {
+    const auto workspace = FreshWorkspace("interactive_main_context_trace_commands");
+    const auto trace_path = workspace / "runtime" / "main_agent" / "routing_trace.jsonl";
+    std::filesystem::create_directories(trace_path.parent_path());
+    {
+        std::ofstream output(trace_path, std::ios::binary);
+        output
+            << R"({"event":"main_request","task_id":"one","context_privacy":"digest"})" << '\n'
+            << R"({"event":"main_response","task_id":"two","route_action_requested":false,"success":true})" << '\n'
+            << R"({"event":"route_action_result","task_id":"three","target_kind":"skill","target":"host_info","success":true,"pending_after_action":false})" << '\n';
+    }
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "context trace tail 2\n"
+        "context trace tail --pretty\n"
+        "context trace tail 2 --pretty\n"
+        "context trace clear\n"
+        "context trace tail\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context trace command session should exit cleanly");
+    Expect(result.output.find("AgentOS main routing trace") != std::string::npos,
+        "context trace tail should print trace heading");
+    Expect(result.output.find("\"task_id\":\"one\"") == std::string::npos,
+        "context trace tail 2 should omit older trace records");
+    Expect(result.output.find("\"task_id\":\"two\"") != std::string::npos,
+        "context trace tail 2 should print second trace record");
+    Expect(result.output.find("\"task_id\":\"three\"") != std::string::npos,
+        "context trace tail 2 should print newest trace record");
+    Expect(result.output.find("format: pretty") != std::string::npos,
+        "context trace tail --pretty should report pretty format");
+    Expect(result.output.find("main_request task=one") != std::string::npos,
+        "context trace tail --pretty should format main request records");
+    Expect(result.output.find("main_response task=two success=true route_action=false") != std::string::npos,
+        "context trace tail --pretty should format main response records");
+    Expect(result.output.find("route_action_result task=three target=skill:host_info success=true pending_after=false") != std::string::npos,
+        "context trace tail --pretty should format route action result records");
+    Expect(result.output.find("AgentOS main routing trace cleared") != std::string::npos,
+        "context trace clear should print confirmation");
+    Expect(result.output.find("(empty)") != std::string::npos,
+        "context trace tail after clear should report empty trace");
+    Expect(ReadTextFile(trace_path).empty(),
+        "context trace clear should truncate routing trace file");
+}
+
+void TestInteractiveMainContextLifecycleCommands() {
+    const auto workspace = FreshWorkspace("interactive_main_context_lifecycle");
+    const auto sessions_dir = workspace / "runtime" / "main_agent" / "sessions";
+    const auto privacy_dir = workspace / "runtime" / "main_agent" / "privacy";
+    std::filesystem::create_directories(sessions_dir);
+    std::filesystem::create_directories(privacy_dir);
+    {
+        std::ofstream session(sessions_dir / "alpha.json", std::ios::binary);
+        session
+            << R"({"schema":"agentos.repl_chat_transcript.v1","turns":[{"user":"alpha turn","assistant":"alpha reply"}]})"
+            << '\n';
+    }
+    {
+        std::ofstream privacy(privacy_dir / "alpha.txt", std::ios::binary);
+        privacy << "none\n";
+    }
+    {
+        std::ofstream current(workspace / "runtime" / "main_agent" / "current_context.txt", std::ios::binary);
+        current << "alpha\n";
+    }
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "status\n"
+        "context rename alpha gamma\n"
+        "context use gamma\n"
+        "context export gamma\n"
+        "context delete gamma\n"
+        "status\n"
+        "context list\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context lifecycle command session should exit cleanly");
+    Expect(result.output.find("main_context: alpha") != std::string::npos,
+        "interactive startup should restore alpha context");
+    Expect(result.output.find("AgentOS main context renamed") != std::string::npos,
+        "context rename should print confirmation");
+    Expect(result.output.find("session: gamma") != std::string::npos,
+        "context use gamma should select renamed context");
+    Expect(result.output.find("AgentOS main context exported") != std::string::npos,
+        "context export should print confirmation");
+    Expect(result.output.find("AgentOS main context deleted") != std::string::npos,
+        "context delete should print confirmation");
+    Expect(result.output.find("active: repl-default") != std::string::npos,
+        "deleting the active context should switch back to repl-default");
+    Expect(!std::filesystem::exists(sessions_dir / "alpha.json"),
+        "context rename should remove old session file");
+    Expect(!std::filesystem::exists(sessions_dir / "gamma.json"),
+        "context delete should remove renamed session file");
+    Expect(!std::filesystem::exists(privacy_dir / "alpha.txt"),
+        "context rename should remove old privacy file");
+    Expect(!std::filesystem::exists(privacy_dir / "gamma.txt"),
+        "context delete should remove renamed privacy file");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "exports" / "gamma.json").find("alpha turn") != std::string::npos,
+        "context export should copy the renamed session transcript");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "current_context.txt").find("repl-default") != std::string::npos,
+        "deleting the active context should persist repl-default as current");
+}
+#endif
+
+void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_high_risk_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto spec_dir = workspace / "runtime" / "cli_specs" / "learned";
+    std::filesystem::create_directories(spec_dir);
+    {
+        std::ofstream spec(spec_dir / "high_risk_smoke.tsv", std::ios::binary);
+        spec
+            << "high_risk_smoke\t"
+            << "High-risk smoke skill for REPL route action approval.\t"
+#ifdef _WIN32
+            << "cmd\t/c,echo,approved:{{message}}\t"
+#else
+            << "/bin/echo\tapproved:{{message}}\t"
+#endif
+            << "message\t"
+            << "text\t"
+            << "high\t"
+            << "process.spawn\t"
+            << "3000\t"
+            << R"({"type":"object","properties":{"message":{"type":"string"}},"required":["message"]})" << '\t'
+            << R"({"type":"object","required":["stdout","stderr","exit_code"]})" << '\t'
+            << "131072\n";
+    }
+
+    const auto first_counter = workspace / "main_route_high_risk_first_counter.txt";
+    WriteMainRouteActionHighRiskCurlFixture(bin_dir, first_counter);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent high-risk fixture config should save");
+
+    const auto blocked = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "please perform the approval smoke action\nexit\n");
+    Expect(blocked.exit_code == 0, "high-risk route action blocked run should exit cleanly");
+    Expect(blocked.output.find("(main requested call_capability target=skill:high_risk_smoke)") != std::string::npos,
+        "REPL should announce high-risk route action request");
+    Expect(blocked.output.find("approval required synthesis") != std::string::npos,
+        "REPL should feed high-risk approval requirement back to main");
+    Expect(ReadTextFile(first_counter).find("2") != std::string::npos,
+        "high-risk blocked fixture should call main twice");
+
+    auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("approved:first-pass") == std::string::npos,
+        "high-risk route action should not execute before approval");
+
+    const auto approval_request = RunAgentos(workspace, {
+        "trust", "approval-request",
+        "subject=main-route-skill:high_risk_smoke",
+        "reason=smoke",
+        "requested_by=local-user"});
+    Expect(approval_request.exit_code == 0, "high-risk smoke approval request should succeed");
+    const auto approval_id = ExtractApprovalId(approval_request.output);
+    Expect(!approval_id.empty(), "high-risk smoke approval id should parse");
+    const auto approval_approve = RunAgentos(workspace, {
+        "trust", "approval-approve",
+        "approval=" + approval_id,
+        "approved_by=smoke-admin"});
+    Expect(approval_approve.exit_code == 0, "high-risk smoke approval approve should succeed");
+
+    const auto approved_counter = workspace / "main_route_high_risk_approved_counter.txt";
+    WriteMainRouteActionHighRiskCurlFixture(bin_dir, approved_counter, approval_id);
+    const auto approved = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "please perform the approved approval smoke action\nexit\n");
+    Expect(approved.exit_code == 0, "approved high-risk route action run should exit cleanly");
+    Expect(approved.output.find("approved route synthesis") != std::string::npos,
+        "REPL should synthesize approved high-risk route result");
+    Expect(ReadTextFile(approved_counter).find("2") != std::string::npos,
+        "approved high-risk fixture should call main twice");
+
+    audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("approved:approved-pass") != std::string::npos,
+        "approved high-risk route action should execute after approval");
+    Expect(audit.find("\"target_name\":\"high_risk_smoke\"") != std::string::npos ||
+               audit.find("\"target_name\": \"high_risk_smoke\"") != std::string::npos,
+        "audit should include high-risk smoke target execution");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestAutoDevCommands() {
+    const auto workspace = FreshWorkspace("autodev_cli");
+    const auto target = workspace / "target_app";
+    InitGitRepoForCliTest(target);
+    const auto skill_pack = workspace / "skills";
+    CreateAutoDevSkillPackFixture(skill_pack);
+
+    const auto submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Fix login 500",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(submit.exit_code == 0, "autodev submit should succeed");
+    Expect(submit.output.find("AutoDev job submitted") != std::string::npos,
+        "autodev submit should print success heading");
+    Expect(submit.output.find("isolation_status:   pending") != std::string::npos,
+        "autodev submit should report pending isolation");
+    Expect(submit.output.find("next_action:        prepare_workspace") != std::string::npos,
+        "autodev submit should report prepare_workspace next action");
+    Expect(submit.output.find("Workspace is not ready yet") != std::string::npos,
+        "autodev submit should make workspace readiness explicit");
+
+    const auto job_id = ExtractLineValue(submit.output, "job_id:");
+    Expect(job_id.rfind("autodev-", 0) == 0, "autodev submit should print generated job id");
+    const auto job_dir = workspace / "runtime" / "autodev" / "jobs" / job_id;
+    Expect(std::filesystem::exists(job_dir / "job.json"),
+        "autodev submit should create job.json in AgentOS runtime");
+    Expect(std::filesystem::exists(job_dir / "events.ndjson"),
+        "autodev submit should create events.ndjson in AgentOS runtime");
+
+    const auto job_json = ReadTextFile(job_dir / "job.json");
+    Expect(job_json.find("\"status\": \"submitted\"") != std::string::npos,
+        "job.json should record submitted status");
+    Expect(job_json.find("\"phase\": \"workspace_preparing\"") != std::string::npos,
+        "job.json should record workspace_preparing phase");
+    Expect(job_json.find("\"isolation_status\": \"pending\"") != std::string::npos,
+        "job.json should record pending isolation");
+    Expect(job_json.find("\"next_action\": \"prepare_workspace\"") != std::string::npos,
+        "job.json should record prepare_workspace next action");
+    Expect(job_json.find("\"status\": \"declared\"") != std::string::npos,
+        "job.json should record declared skill pack when skill_pack_path is provided");
+    Expect(job_json.find(EscapeJsonBackslashes(skill_pack.string())) != std::string::npos,
+        "job.json should record skill_pack_path");
+
+    const auto events = ReadTextFile(job_dir / "events.ndjson");
+    Expect(events.find("\"type\":\"autodev.job.submitted\"") != std::string::npos,
+        "events.ndjson should record submit event");
+    Expect(events.find("\"planned_worktree_path\"") != std::string::npos,
+        "events.ndjson should record planned worktree path");
+
+    const auto planned_worktree = ExtractLineValue(submit.output, "job_worktree_path:");
+    const auto planned_path = planned_worktree.substr(0, planned_worktree.find(" "));
+    Expect(!planned_path.empty(), "autodev submit should print planned worktree path");
+    Expect(!std::filesystem::exists(planned_path),
+        "autodev submit should not create planned worktree path");
+    Expect(!std::filesystem::exists(target / "runtime" / "autodev"),
+        "autodev submit should not write runtime facts into target repo");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "autodev submit should not write docs/goal into target repo");
+
+    const auto status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(status.exit_code == 0, "autodev status should read submitted job");
+    Expect(status.output.find("Job: " + job_id) != std::string::npos,
+        "autodev status should print job id");
+    Expect(status.output.find("Status: submitted") != std::string::npos,
+        "autodev status should print current status");
+    Expect(status.output.find("status:            pending") != std::string::npos,
+        "autodev status should print pending isolation");
+    Expect(status.output.find("agentos autodev prepare_workspace job_id=" + job_id) != std::string::npos ||
+               status.output.find("agentos autodev prepare-workspace job_id=" + job_id) != std::string::npos,
+        "autodev status should print prepare workspace next action");
+
+    const auto prepare = RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + job_id});
+    Expect(prepare.exit_code == 0, "autodev prepare-workspace should succeed for clean git repo");
+    Expect(prepare.output.find("AutoDev workspace prepared") != std::string::npos,
+        "autodev prepare-workspace should print success heading");
+    Expect(prepare.output.find("isolation_status:      ready") != std::string::npos,
+        "autodev prepare-workspace should report ready isolation");
+    Expect(std::filesystem::exists(std::filesystem::path(planned_path) / ".git"),
+        "autodev prepare-workspace should create planned git worktree");
+
+    const auto load_skill_pack = RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + job_id});
+    Expect(load_skill_pack.exit_code == 0, "autodev load-skill-pack should succeed for complete fixture");
+    Expect(load_skill_pack.output.find("AutoDev skill pack loaded") != std::string::npos,
+        "autodev load-skill-pack should print success heading");
+    Expect(load_skill_pack.output.find("skill_pack_status:  loaded") != std::string::npos,
+        "autodev load-skill-pack should report loaded status");
+    Expect(std::filesystem::exists(job_dir / "artifacts" / "skill_pack.snapshot.json"),
+        "autodev load-skill-pack should write runtime skill pack snapshot");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "autodev load-skill-pack should not generate docs/goal in target repo");
+
+    const auto loaded_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(loaded_status.exit_code == 0, "autodev status should read loaded skill pack job");
+    Expect(loaded_status.output.find("status: loaded") != std::string::npos,
+        "autodev status should show loaded skill pack");
+    Expect(loaded_status.output.find("hash:") != std::string::npos,
+        "autodev status should show skill pack manifest hash");
+
+    const auto generate_docs = RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + job_id});
+    Expect(generate_docs.exit_code == 0, "autodev generate-goal-docs should succeed after workspace and skill pack are ready");
+    Expect(generate_docs.output.find("AutoDev goal docs generated") != std::string::npos,
+        "autodev generate-goal-docs should print success heading");
+    Expect(generate_docs.output.find("files_written: 16") != std::string::npos,
+        "autodev generate-goal-docs should report skeleton file count");
+    Expect(std::filesystem::exists(std::filesystem::path(planned_path) / "docs" / "goal" / "GOAL.md"),
+        "autodev generate-goal-docs should write GOAL.md under job worktree");
+    Expect(std::filesystem::exists(std::filesystem::path(planned_path) / "docs" / "goal" / "AUTODEV_SPEC.json"),
+        "autodev generate-goal-docs should write AUTODEV_SPEC.json under job worktree");
+    Expect(!std::filesystem::exists(target / "docs" / "goal"),
+        "autodev generate-goal-docs should not write docs/goal into target repo");
+
+    const auto generated_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(generated_status.exit_code == 0, "autodev status should read generated goal docs job");
+    Expect(generated_status.output.find("Phase: requirements_grilling") != std::string::npos,
+        "autodev status should show requirements_grilling after goal docs generation");
+    Expect(generated_status.output.find("agentos autodev validate-spec job_id=" + job_id) != std::string::npos,
+        "autodev status should show validate_spec next action");
+
+    const auto validate_spec = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + job_id});
+    Expect(validate_spec.exit_code == 0, "autodev validate-spec should succeed for generated candidate spec");
+    Expect(validate_spec.output.find("AutoDev spec validated") != std::string::npos,
+        "autodev validate-spec should print success heading");
+    Expect(validate_spec.output.find("status:        awaiting_approval") != std::string::npos,
+        "autodev validate-spec should stop at awaiting approval");
+    Expect(validate_spec.output.find("approval_gate: before_code_execution") != std::string::npos,
+        "autodev validate-spec should report before_code_execution gate");
+    Expect(validate_spec.output.find("spec_revision: rev-001") != std::string::npos,
+        "autodev validate-spec should report first spec revision");
+    const auto spec_hash = ExtractLineValue(validate_spec.output, "spec_hash:");
+    Expect(spec_hash.size() == 64, "autodev validate-spec should print sha256 spec hash");
+    Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.normalized.json"),
+        "autodev validate-spec should write normalized spec snapshot under runtime store");
+    Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.sha256"),
+        "autodev validate-spec should write spec hash under runtime store");
+    Expect(std::filesystem::exists(job_dir / "spec_revisions" / "rev-001.status.json"),
+        "autodev validate-spec should write spec revision status under runtime store");
+
+    const auto validated_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + job_id});
+    Expect(validated_status.exit_code == 0, "autodev status should read validated spec job");
+    Expect(validated_status.output.find("Status: awaiting_approval") != std::string::npos,
+        "autodev status should show awaiting approval after spec validation");
+    Expect(validated_status.output.find("Approval gate: before_code_execution") != std::string::npos,
+        "autodev status should show before_code_execution after spec validation");
+    Expect(validated_status.output.find("revision:       rev-001") != std::string::npos,
+        "autodev status should show spec revision");
+    Expect(validated_status.output.find("agentos autodev approve-spec job_id=" + job_id + " spec_hash=" + spec_hash) != std::string::npos,
+        "autodev status should show hash-bound approve_spec next action");
+
+    const auto approve_empty = RunAgentos(workspace, {"autodev", "approve-spec", "job_id=" + job_id, "spec_hash=" + spec_hash});
+    Expect(approve_empty.exit_code != 0, "autodev approve-spec should block empty generated task skeleton");
+    Expect(approve_empty.output.find("tasks must not be empty") != std::string::npos,
+        "autodev approve-spec should explain empty tasks blocker");
+    const auto blocked_spec_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + job_id});
+    Expect(blocked_spec_summary.exit_code == 0,
+        "autodev summary should work for blocked jobs before tasks.json exists");
+    Expect(blocked_spec_summary.output.find("recovery:      Fix docs/goal/AUTODEV_SPEC.json") != std::string::npos,
+        "autodev summary should show spec recovery guidance for approval-blocked jobs");
+    {
+        std::ofstream spec(std::filesystem::path(planned_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Fix login 500\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Document login fix\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"README.md remains present\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto recover_spec = RunAgentos(workspace, {"autodev", "recover-blocked", "job_id=" + job_id});
+    Expect(recover_spec.exit_code == 0,
+        "autodev recover-blocked should rerun spec validation after AUTODEV_SPEC is fixed");
+    Expect(recover_spec.output.find("attempted_action: validate-spec") != std::string::npos,
+        "autodev recover-blocked should report spec validation recovery action");
+    Expect(recover_spec.output.find("status:      awaiting_approval") != std::string::npos,
+        "autodev recover-blocked should move fixed spec back to awaiting approval");
+    const auto recover_awaiting_approval = RunAgentos(workspace, {"autodev", "recover-blocked", "job_id=" + job_id});
+    Expect(recover_awaiting_approval.exit_code != 0,
+        "autodev recover-blocked should not approve specs implicitly");
+    Expect(recover_awaiting_approval.output.find("spec approval requires explicit approve-spec") != std::string::npos,
+        "autodev recover-blocked should explain explicit approval requirement");
+    const auto tasks_before_approval = RunAgentos(workspace, {"autodev", "tasks", "job_id=" + job_id});
+    Expect(tasks_before_approval.exit_code != 0,
+        "autodev tasks should fail before runtime tasks are materialized");
+    Expect(tasks_before_approval.output.find("AutoDev tasks not found") != std::string::npos,
+        "autodev tasks should explain missing tasks.json before approval");
+    const auto events_result = RunAgentos(workspace, {"autodev", "events", "job_id=" + job_id});
+    Expect(events_result.exit_code == 0, "autodev events should read append-only job history");
+    Expect(events_result.output.find("AutoDev events") != std::string::npos,
+        "autodev events should print heading");
+    Expect(events_result.output.find("autodev.job.submitted") != std::string::npos,
+        "autodev events should include submit event");
+    Expect(events_result.output.find("autodev.spec.approval_blocked") != std::string::npos,
+        "autodev events should include approval blocked event");
+
+    const auto dirty_target = workspace / "dirty_target";
+    InitGitRepoForCliTest(dirty_target);
+    {
+        std::ofstream dirty_file(dirty_target / "README.md", std::ios::binary | std::ios::app);
+        dirty_file << "dirty\n";
+    }
+    const auto dirty_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + dirty_target.string(),
+        "objective=Recover dirty workspace",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(dirty_submit.exit_code == 0,
+        "autodev submit should allow dirty target recovery fixture setup");
+    const auto dirty_job_id = ExtractLineValue(dirty_submit.output, "job_id:");
+    const auto dirty_prepare = RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + dirty_job_id});
+    Expect(dirty_prepare.exit_code != 0,
+        "autodev prepare-workspace should block dirty target recovery fixture");
+    const auto dirty_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + dirty_job_id});
+    Expect(dirty_status.output.find("Recovery:") != std::string::npos &&
+               dirty_status.output.find("recover-blocked job_id=" + dirty_job_id) != std::string::npos,
+        "autodev status should show workspace recovery guidance");
+    (void)std::system((std::string("git -C ") + QuoteShellArg(dirty_target.string()) + " add README.md").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(dirty_target.string()) +
+                       " commit -m recover-dirty" + NullRedirect()).c_str());
+    const auto recover_dirty = RunAgentos(workspace, {"autodev", "recover-blocked", "job_id=" + dirty_job_id});
+    Expect(recover_dirty.exit_code == 0,
+        "autodev recover-blocked should rerun prepare-workspace after dirty target is fixed");
+    Expect(recover_dirty.output.find("attempted_action: prepare-workspace") != std::string::npos,
+        "autodev recover-blocked should report workspace recovery action");
+    Expect(recover_dirty.output.find("status:      running") != std::string::npos,
+        "autodev recover-blocked should unblock clean workspace jobs");
+
+    const auto missing_skill_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Recover missing skill pack"});
+    Expect(missing_skill_submit.exit_code == 0,
+        "autodev submit should allow missing skill pack recovery fixture setup");
+    const auto missing_skill_job_id = ExtractLineValue(missing_skill_submit.output, "job_id:");
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + missing_skill_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare missing skill recovery fixture");
+    const auto missing_skill_load = RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + missing_skill_job_id});
+    Expect(missing_skill_load.exit_code != 0,
+        "autodev load-skill-pack should block when skill_pack_path is missing");
+    const auto missing_skill_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + missing_skill_job_id});
+    Expect(missing_skill_summary.exit_code == 0,
+        "autodev summary should work for missing skill pack blocked jobs");
+    Expect(missing_skill_summary.output.find("skill_pack_path=<path>") != std::string::npos,
+        "autodev summary should show missing skill pack recovery guidance");
+    const auto recover_skill = RunAgentos(workspace, {
+        "autodev",
+        "recover-blocked",
+        "job_id=" + missing_skill_job_id,
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(recover_skill.exit_code == 0,
+        "autodev recover-blocked should load provided skill pack path");
+    Expect(recover_skill.output.find("attempted_action: load-skill-pack") != std::string::npos,
+        "autodev recover-blocked should report skill pack recovery action");
+    Expect(recover_skill.output.find("status:      running") != std::string::npos,
+        "autodev recover-blocked should unblock skill pack jobs");
+
+    const auto executable_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Execute approved task preflight",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(executable_submit.exit_code == 0, "autodev submit should support a second executable fixture job");
+    const auto executable_job_id = ExtractLineValue(executable_submit.output, "job_id:");
+    const auto executable_planned_worktree = ExtractLineValue(executable_submit.output, "job_worktree_path:");
+    const auto executable_planned_path = executable_planned_worktree.substr(0, executable_planned_worktree.find(" "));
+    const auto executable_job_dir = workspace / "runtime" / "autodev" / "jobs" / executable_job_id;
+
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + executable_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare executable fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + executable_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load executable fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + executable_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate executable fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(executable_planned_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Execute approved task preflight\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Update README through execution adapter\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"README.md remains present\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto executable_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + executable_job_id});
+    Expect(executable_validate.exit_code == 0,
+        "autodev validate-spec should validate executable fixture spec");
+    const auto executable_spec_hash = ExtractLineValue(executable_validate.output, "spec_hash:");
+    const auto executable_approve = RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + executable_job_id,
+        "spec_hash=" + executable_spec_hash});
+    Expect(executable_approve.exit_code == 0,
+        "autodev approve-spec should approve executable fixture spec");
+    const auto executable_tasks_result = RunAgentos(workspace, {"autodev", "tasks", "job_id=" + executable_job_id});
+    Expect(executable_tasks_result.exit_code == 0,
+        "autodev tasks should list materialized executable task");
+    Expect(executable_tasks_result.output.find("retry:           0/3") != std::string::npos,
+        "autodev tasks should show default retry counters");
+    {
+        std::ofstream lock(executable_job_dir / "job.lock", std::ios::binary | std::ios::trunc);
+        lock << "held by test\n";
+    }
+    const auto locked_snapshot = RunAgentos(workspace, {
+        "autodev",
+        "snapshot-task",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(locked_snapshot.exit_code != 0,
+        "mutating AutoDev job commands should fail while the job runtime lock is held");
+    Expect(locked_snapshot.output.find("AutoDev job runtime lock") != std::string::npos,
+        "runtime lock failures should explain the locked job");
+    std::filesystem::remove(executable_job_dir / "job.lock");
+    const auto codex_fixture = WriteAutoDevCodexCliFixture(workspace / "bin");
+    const auto execute_next = RunAgentos(workspace, {
+        "autodev",
+        "execute-next-task",
+        "job_id=" + executable_job_id,
+        "codex_cli_command=" + codex_fixture.string()});
+    Expect(execute_next.exit_code == 0,
+        "autodev execute-next-task should run the configured Codex CLI command");
+    Expect(execute_next.output.find("AutoDev execution completed") != std::string::npos,
+        "autodev execute-next-task should print execution completion details");
+    Expect(execute_next.output.find("task_id:            task-001") != std::string::npos,
+        "autodev execute-next-task should select the first pending runtime task");
+    Expect(execute_next.output.find("turn_id:            turn-001") != std::string::npos,
+        "autodev execute-next-task should record the first execution turn");
+    Expect(execute_next.output.find("turn_status:        completed") != std::string::npos,
+        "autodev execute-next-task should record completed turn status");
+    Expect(execute_next.output.find("exit_code:          0") != std::string::npos,
+        "autodev execute-next-task should record the Codex CLI exit code");
+    Expect(execute_next.output.find("snapshot_id:        snapshot-001") != std::string::npos,
+        "autodev execute-next-task should print the snapshot id");
+    Expect(execute_next.output.find("adapter_kind:       codex_cli") != std::string::npos,
+        "autodev execute-next-task should expose the Codex CLI adapter kind");
+    const auto executable_tasks = ReadTextFile(executable_job_dir / "tasks.json");
+    Expect(executable_tasks.find("\"status\": \"pending\"") != std::string::npos,
+        "execute-next-task should leave runtime task status pending until acceptance gate runs");
+    const auto turns_result = RunAgentos(workspace, {"autodev", "turns", "job_id=" + executable_job_id});
+    Expect(turns_result.exit_code == 0,
+        "autodev turns should list execution turn records");
+    Expect(turns_result.output.find("AutoDev turns") != std::string::npos,
+        "autodev turns should print heading");
+    Expect(turns_result.output.find("turn_id:           turn-001") != std::string::npos,
+        "autodev turns should list the first synthetic turn id");
+    Expect(turns_result.output.find("status:            completed") != std::string::npos,
+        "autodev turns should show completed execution turn status");
+    Expect(turns_result.output.find("adapter_kind:      codex_cli") != std::string::npos,
+        "autodev turns should show adapter kind");
+    Expect(turns_result.output.find("changed_files:     README.md") != std::string::npos,
+        "autodev turns should show files changed by the Codex CLI fixture");
+    Expect(turns_result.output.find("prompt_artifact:") != std::string::npos,
+        "autodev turns should show prompt artifact path");
+    Expect(turns_result.output.find("response_artifact:") != std::string::npos,
+        "autodev turns should show response artifact path");
+    Expect(std::filesystem::exists(executable_job_dir / "prompts" / "turn-001.md"),
+        "execute-next-task should write prompt artifact under AgentOS runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "responses" / "turn-001.md"),
+        "execute-next-task should write response artifact under AgentOS runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "snapshots.json"),
+        "execute-next-task should write snapshots.json under AgentOS runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "snapshots" / "snapshot-001.json"),
+        "execute-next-task should write a per-snapshot artifact under AgentOS runtime store");
+    const auto snapshots_result = RunAgentos(workspace, {"autodev", "snapshots", "job_id=" + executable_job_id});
+    Expect(snapshots_result.exit_code == 0,
+        "autodev snapshots should list recorded snapshot facts");
+    Expect(snapshots_result.output.find("AutoDev snapshots") != std::string::npos,
+        "autodev snapshots should print heading");
+    Expect(snapshots_result.output.find("snapshot_id: snapshot-001") != std::string::npos,
+        "autodev snapshots should include snapshot-001");
+    const auto rollbacks_result = RunAgentos(workspace, {"autodev", "rollbacks", "job_id=" + executable_job_id});
+    Expect(rollbacks_result.exit_code == 0,
+        "autodev rollbacks should list rollback facts even before any rollback exists");
+    Expect(rollbacks_result.output.find("AutoDev rollbacks") != std::string::npos,
+        "autodev rollbacks should print heading");
+    Expect(rollbacks_result.output.find("total:  0") != std::string::npos,
+        "autodev rollbacks should show zero records before rollback commands run");
+    Expect(rollbacks_result.output.find("does not modify the worktree") != std::string::npos,
+        "autodev rollbacks should state that query is non-destructive");
+    const auto verify_task = RunAgentos(workspace, {
+        "autodev",
+        "verify-task",
+        "job_id=" + executable_job_id,
+        "task_id=task-001",
+        "related_turn_id=turn-001"});
+    Expect(verify_task.exit_code == 0,
+        "autodev verify-task should run task verify_command in job worktree");
+    Expect(verify_task.output.find("AutoDev task verified") != std::string::npos,
+        "autodev verify-task should print success heading");
+    Expect(verify_task.output.find("verification_id: verify-001") != std::string::npos,
+        "autodev verify-task should print verification id");
+    Expect(verify_task.output.find("passed:          true") != std::string::npos,
+        "autodev verify-task should report passed=true for true command");
+    Expect(verify_task.output.find("AcceptanceGate was not run") != std::string::npos,
+        "autodev verify-task should state that AcceptanceGate was not run");
+    Expect(verify_task.output.find("verify_report:") != std::string::npos,
+        "autodev verify-task should print VERIFY.md path");
+    Expect(std::filesystem::exists(executable_job_dir / "verification.json"),
+        "autodev verify-task should write verification.json under runtime store");
+    Expect(std::filesystem::exists(executable_job_dir / "logs" / "verify-001.output.txt"),
+        "autodev verify-task should write command output log under runtime store");
+    const auto verify_report_path = std::filesystem::path(executable_planned_path) / "docs" / "goal" / "VERIFY.md";
+    Expect(std::filesystem::exists(verify_report_path),
+        "autodev verify-task should write VERIFY.md summary under job worktree");
+    const auto verify_report = ReadTextFile(verify_report_path);
+    Expect(verify_report.find("It is NOT the source of truth for task completion") != std::string::npos,
+        "VERIFY.md should state summary-only authority boundary");
+    Expect(verify_report.find("verify-001") != std::string::npos,
+        "VERIFY.md should include verification id");
+    const auto verifications_result = RunAgentos(workspace, {"autodev", "verifications", "job_id=" + executable_job_id});
+    Expect(verifications_result.exit_code == 0,
+        "autodev verifications should list recorded verification facts");
+    Expect(verifications_result.output.find("AutoDev verifications") != std::string::npos,
+        "autodev verifications should print heading");
+    Expect(verifications_result.output.find("verification_id: verify-001") != std::string::npos,
+        "autodev verifications should include verify-001");
+    Expect(verifications_result.output.find("related_turn_id: turn-001") != std::string::npos,
+        "autodev verifications should include related turn id");
+    {
+        std::ofstream readme(std::filesystem::path(executable_planned_path) / "README.md",
+            std::ios::binary | std::ios::app);
+        readme << "allowed cli change\n";
+    }
+    const auto diff_guard_pass = RunAgentos(workspace, {
+        "autodev",
+        "diff-guard",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(diff_guard_pass.exit_code == 0,
+        "autodev diff-guard should pass for allowed file changes");
+    Expect(diff_guard_pass.output.find("AutoDev diff guard checked") != std::string::npos,
+        "autodev diff-guard should print heading");
+    Expect(diff_guard_pass.output.find("diff_id: diff-001") != std::string::npos,
+        "autodev diff-guard should print diff id");
+    Expect(diff_guard_pass.output.find("passed:  true") != std::string::npos,
+        "autodev diff-guard should report passed=true for allowed file");
+    Expect(std::filesystem::exists(executable_job_dir / "diffs.json"),
+        "autodev diff-guard should write diffs.json under runtime store");
+    const auto acceptance_gate = RunAgentos(workspace, {
+        "autodev",
+        "acceptance-gate",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(acceptance_gate.exit_code == 0,
+        "autodev acceptance-gate should pass when latest verification and diff guard passed");
+    Expect(acceptance_gate.output.find("AutoDev acceptance gate checked") != std::string::npos,
+        "autodev acceptance-gate should print heading");
+    Expect(acceptance_gate.output.find("acceptance_id: acceptance-001") != std::string::npos,
+        "autodev acceptance-gate should print acceptance id");
+    Expect(acceptance_gate.output.find("passed:        true") != std::string::npos,
+        "autodev acceptance-gate should report passed=true");
+    Expect(acceptance_gate.output.find("task_status:   passed") != std::string::npos,
+        "autodev acceptance-gate should mark the task passed");
+    Expect(std::filesystem::exists(executable_job_dir / "acceptance.json"),
+        "autodev acceptance-gate should write acceptance.json under runtime store");
+    const auto acceptances = RunAgentos(workspace, {"autodev", "acceptances", "job_id=" + executable_job_id});
+    Expect(acceptances.exit_code == 0,
+        "autodev acceptances should list acceptance gate facts");
+    Expect(acceptances.output.find("AutoDev acceptances") != std::string::npos,
+        "autodev acceptances should print heading");
+    Expect(acceptances.output.find("acceptance_id: acceptance-001") != std::string::npos,
+        "autodev acceptances should include acceptance-001");
+    Expect(acceptances.output.find("verification:  verify-001") != std::string::npos,
+        "autodev acceptances should include linked verification id");
+    const auto accepted_tasks = ReadTextFile(executable_job_dir / "tasks.json");
+    Expect(accepted_tasks.find("\"status\": \"passed\"") != std::string::npos,
+        "autodev acceptance-gate should persist passed task status");
+    const auto accepted_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + executable_job_id});
+    Expect(accepted_status.exit_code == 0,
+        "autodev status should read job after acceptance gate");
+    Expect(accepted_status.output.find("Status: running") != std::string::npos,
+        "autodev acceptance-gate should not mark the job done");
+    Expect(accepted_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev acceptance-gate should advance all-passed jobs to final_review");
+    Expect(accepted_status.output.find("agentos autodev final-review job_id=" + executable_job_id) != std::string::npos,
+        "autodev status should show final_review as the next action");
+    Expect(accepted_status.output.find("passed: 1") != std::string::npos,
+        "autodev status should count accepted task as passed");
+    Expect(accepted_status.output.find("Progress:") != std::string::npos,
+        "autodev status should display progress");
+    Expect(accepted_status.output.find("overall:      90%") != std::string::npos,
+        "autodev status should compute final review phase progress");
+    Expect(accepted_status.output.find("acceptance:   1/1") != std::string::npos,
+        "autodev status should show acceptance progress");
+    const auto final_review = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + executable_job_id});
+    Expect(final_review.exit_code == 0,
+        "autodev final-review should pass when accepted task facts and current diff are in scope");
+    Expect(final_review.output.find("AutoDev final review checked") != std::string::npos,
+        "autodev final-review should print heading");
+    Expect(final_review.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-review should print final review id");
+    Expect(final_review.output.find("passed:          true") != std::string::npos,
+        "autodev final-review should report passed=true");
+    Expect(final_review.output.find("job_status:      pr_ready") != std::string::npos,
+        "autodev final-review should advance the job to pr_ready");
+    Expect(std::filesystem::exists(executable_job_dir / "final_review.json"),
+        "autodev final-review should write final_review.json under runtime store");
+    const auto final_review_report_path = std::filesystem::path(executable_planned_path) / "docs" / "goal" / "FINAL_REVIEW.md";
+    Expect(std::filesystem::exists(final_review_report_path),
+        "autodev final-review should write FINAL_REVIEW.md under job worktree");
+    const auto final_review_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + executable_job_id});
+    Expect(final_review_status.exit_code == 0,
+        "autodev status should read job after final review");
+    Expect(final_review_status.output.find("Status: pr_ready") != std::string::npos,
+        "autodev status should show pr_ready after final review");
+    Expect(final_review_status.output.find("Next action:\n  none") != std::string::npos,
+        "autodev status should show no next action after pr_ready");
+    const auto final_reviews = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + executable_job_id});
+    Expect(final_reviews.exit_code == 0,
+        "autodev final-reviews should list final review records");
+    Expect(final_reviews.output.find("AutoDev final reviews") != std::string::npos,
+        "autodev final-reviews should print heading");
+    Expect(final_reviews.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-reviews should include final-review-001");
+    Expect(final_reviews.output.find("passed:          true") != std::string::npos,
+        "autodev final-reviews should show passed final review");
+    const auto summary_result = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id});
+    Expect(summary_result.exit_code == 0,
+        "autodev summary should read job and runtime facts");
+    Expect(summary_result.output.find("AutoDev summary") != std::string::npos,
+        "autodev summary should print heading");
+    Expect(summary_result.output.find("status:        pr_ready") != std::string::npos,
+        "autodev summary should include current job status");
+    Expect(summary_result.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=0") != std::string::npos,
+        "autodev summary should include runtime fact counts");
+    Expect(summary_result.output.find("overall:      100%") != std::string::npos,
+        "autodev summary should show pr_ready progress as complete");
+    Expect(summary_result.output.find("tasks:        1/1") != std::string::npos,
+        "autodev summary should show task progress");
+    Expect(summary_result.output.find("acceptance:   1/1") != std::string::npos,
+        "autodev summary should show acceptance progress");
+    Expect(summary_result.output.find("verification: verify-001 passed=true") != std::string::npos,
+        "autodev summary should include latest verification fact per task");
+    Expect(summary_result.output.find("diff_guard:   diff-001 passed=true") != std::string::npos,
+        "autodev summary should include latest diff guard fact per task");
+    Expect(summary_result.output.find("acceptance:   acceptance-001 passed=true") != std::string::npos,
+        "autodev summary should include latest acceptance fact per task");
+    Expect(summary_result.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev summary should include latest final review fact");
+    const auto tasks_json_result = RunAgentos(workspace, {"autodev", "tasks", "job_id=" + executable_job_id, "format=json"});
+    Expect(tasks_json_result.exit_code == 0,
+        "autodev tasks format=json should succeed");
+    Expect(tasks_json_result.output.find("\"job_id\": \"" + executable_job_id + "\"") != std::string::npos,
+        "autodev tasks format=json should include job_id");
+    Expect(tasks_json_result.output.find("\"tasks\": [") != std::string::npos &&
+               tasks_json_result.output.find("\"task_id\": \"task-001\"") != std::string::npos,
+        "autodev tasks format=json should include task ids");
+    const auto verifications_json_result = RunAgentos(workspace, {"autodev", "verifications", "job_id=" + executable_job_id, "format=json"});
+    Expect(verifications_json_result.exit_code == 0,
+        "autodev verifications format=json should succeed");
+    Expect(verifications_json_result.output.find("\"verifications\": [") != std::string::npos &&
+               verifications_json_result.output.find("\"verification_id\": \"verify-001\"") != std::string::npos,
+        "autodev verifications format=json should include verification records");
+    const auto diffs_json_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id, "format=json"});
+    Expect(diffs_json_result.exit_code == 0,
+        "autodev diffs format=json should succeed");
+    Expect(diffs_json_result.output.find("\"diffs\": [") != std::string::npos &&
+               diffs_json_result.output.find("\"diff_id\": \"diff-001\"") != std::string::npos,
+        "autodev diffs format=json should include diff records");
+    const auto acceptances_json_result = RunAgentos(workspace, {"autodev", "acceptances", "job_id=" + executable_job_id, "format=json"});
+    Expect(acceptances_json_result.exit_code == 0,
+        "autodev acceptances format=json should succeed");
+    Expect(acceptances_json_result.output.find("\"acceptances\": [") != std::string::npos &&
+               acceptances_json_result.output.find("\"acceptance_id\": \"acceptance-001\"") != std::string::npos,
+        "autodev acceptances format=json should include acceptance records");
+    const auto final_reviews_json_result = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + executable_job_id, "format=json"});
+    Expect(final_reviews_json_result.exit_code == 0,
+        "autodev final-reviews format=json should succeed");
+    Expect(final_reviews_json_result.output.find("\"final_reviews\": [") != std::string::npos &&
+               final_reviews_json_result.output.find("\"final_review_id\": \"final-review-001\"") != std::string::npos,
+        "autodev final-reviews format=json should include final review records");
+    const auto summary_json_result = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id, "format=json"});
+    Expect(summary_json_result.exit_code == 0,
+        "autodev summary format=json should succeed");
+    Expect(summary_json_result.output.find("\"job\": {") != std::string::npos &&
+               summary_json_result.output.find("\"job_id\": \"" + executable_job_id + "\"") != std::string::npos,
+        "autodev summary format=json should include job object");
+    Expect(summary_json_result.output.find("\"progress\": {") != std::string::npos &&
+               summary_json_result.output.find("\"overall_percent\": 100") != std::string::npos,
+        "autodev summary format=json should include progress object");
+    Expect(summary_json_result.output.find("\"fact_counts\": {") != std::string::npos &&
+               summary_json_result.output.find("\"final_reviews\": 1") != std::string::npos,
+        "autodev summary format=json should include fact counts");
+    const auto pr_summary = RunAgentos(workspace, {"autodev", "pr-summary", "job_id=" + executable_job_id});
+    Expect(pr_summary.exit_code == 0,
+        "autodev pr-summary should succeed after final review makes the job pr_ready");
+    Expect(pr_summary.output.find("AutoDev PR summary") != std::string::npos,
+        "autodev pr-summary should print a handoff heading");
+    Expect(pr_summary.output.find("- changed_files: README.md") != std::string::npos,
+        "autodev pr-summary should include final review changed files");
+    Expect(pr_summary.output.find("verification: verify-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include verification facts");
+    Expect(pr_summary.output.find("diff_guard: diff-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include diff guard facts");
+    Expect(pr_summary.output.find("acceptance: acceptance-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include acceptance facts");
+    Expect(pr_summary.output.find("final_review: final-review-001 passed=true") != std::string::npos,
+        "autodev pr-summary should include final review facts");
+    Expect(pr_summary.output.find("command=true") != std::string::npos,
+        "autodev pr-summary should include verification commands run");
+    const auto pipeline_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Run one task through pipeline",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(pipeline_submit.exit_code == 0,
+        "autodev submit should support a pipeline fixture job");
+    const auto pipeline_job_id = ExtractLineValue(pipeline_submit.output, "job_id:");
+    const auto pipeline_worktree = ExtractLineValue(pipeline_submit.output, "job_worktree_path:");
+    const auto pipeline_path = pipeline_worktree.substr(0, pipeline_worktree.find(" "));
+    const auto pipeline_job_dir = workspace / "runtime" / "autodev" / "jobs" / pipeline_job_id;
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + pipeline_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare pipeline fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + pipeline_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load pipeline fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + pipeline_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate pipeline fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(pipeline_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Run one task through pipeline\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Pipeline update README\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"Pipeline can accept the task\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto pipeline_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + pipeline_job_id});
+    Expect(pipeline_validate.exit_code == 0,
+        "autodev validate-spec should validate pipeline fixture spec");
+    const auto pipeline_hash = ExtractLineValue(pipeline_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + pipeline_job_id,
+        "spec_hash=" + pipeline_hash}).exit_code == 0,
+        "autodev approve-spec should approve pipeline fixture spec");
+    const auto run_task = RunAgentos(workspace, {
+        "autodev",
+        "run-task",
+        "job_id=" + pipeline_job_id,
+        "codex_cli_command=" + codex_fixture.string()});
+    Expect(run_task.exit_code == 0,
+        "autodev run-task should execute and gate the next pending task");
+    Expect(run_task.output.find("AutoDev single-task pipeline") != std::string::npos,
+        "autodev run-task should print pipeline heading");
+    Expect(run_task.output.find("AutoDev execution completed") != std::string::npos,
+        "autodev run-task should include execution stage output");
+    Expect(run_task.output.find("verification_passed: true") != std::string::npos,
+        "autodev run-task should run verification");
+    Expect(run_task.output.find("diff_passed:   true") != std::string::npos,
+        "autodev run-task should run diff guard");
+    Expect(run_task.output.find("acceptance_passed: true") != std::string::npos,
+        "autodev run-task should run acceptance gate");
+    Expect(run_task.output.find("pipeline_status: passed") != std::string::npos,
+        "autodev run-task should report a passed pipeline");
+    Expect(std::filesystem::exists(pipeline_job_dir / "snapshots.json"),
+        "autodev run-task should record a snapshot");
+    Expect(std::filesystem::exists(pipeline_job_dir / "turns.json"),
+        "autodev run-task should record a turn");
+    Expect(std::filesystem::exists(pipeline_job_dir / "verification.json"),
+        "autodev run-task should record verification facts");
+    Expect(std::filesystem::exists(pipeline_job_dir / "diffs.json"),
+        "autodev run-task should record diff guard facts");
+    Expect(std::filesystem::exists(pipeline_job_dir / "acceptance.json"),
+        "autodev run-task should record acceptance facts");
+    const auto pipeline_tasks = ReadTextFile(pipeline_job_dir / "tasks.json");
+    Expect(pipeline_tasks.find("\"status\": \"passed\"") != std::string::npos,
+        "autodev run-task should mark accepted task passed");
+    const auto pipeline_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + pipeline_job_id});
+    Expect(pipeline_status.exit_code == 0,
+        "autodev status should read pipeline fixture job");
+    Expect(pipeline_status.output.find("Status: running") != std::string::npos,
+        "autodev run-task should not mark the job done");
+    Expect(pipeline_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev run-task should advance all-passed jobs to final_review");
+    {
+        std::ofstream stale_lock(pipeline_job_dir / "job.lock", std::ios::binary | std::ios::trunc);
+        stale_lock << "stale lock from crashed process\n";
+    }
+    std::filesystem::remove(pipeline_job_dir / "responses" / "turn-001.md");
+    {
+        auto turns_json = ReadTextFile(pipeline_job_dir / "turns.json");
+        const auto status_pos = turns_json.find("\"status\": \"completed\"");
+        Expect(status_pos != std::string::npos,
+            "pipeline fixture should have a completed turn before crash recovery test mutation");
+        if (status_pos != std::string::npos) {
+            turns_json.replace(status_pos, std::string("\"status\": \"completed\"").size(), "\"status\": \"running\"");
+            std::ofstream turns_out(pipeline_job_dir / "turns.json", std::ios::binary | std::ios::trunc);
+            turns_out << turns_json;
+        }
+    }
+    const auto crash_recovery = RunAgentos(workspace, {"autodev", "recover-crash", "job_id=" + pipeline_job_id});
+    Expect(crash_recovery.exit_code != 0,
+        "autodev recover-crash should return nonzero when recovery blocks the job");
+    Expect(crash_recovery.output.find("AutoDev crash recovery checked") != std::string::npos,
+        "autodev recover-crash should print a recovery heading");
+    Expect(crash_recovery.output.find("blocked:             true") != std::string::npos,
+        "autodev recover-crash should report blocked recovery for incomplete runtime facts");
+    Expect(crash_recovery.output.find("stale_lock_removed:  true") != std::string::npos,
+        "autodev recover-crash should remove stale job runtime locks");
+    Expect(crash_recovery.output.find("marked in-flight turn failed") != std::string::npos,
+        "autodev recover-crash should identify in-flight turns");
+    Expect(crash_recovery.output.find("recreated missing response_artifact") != std::string::npos,
+        "autodev recover-crash should identify missing response artifacts");
+    Expect(!std::filesystem::exists(pipeline_job_dir / "job.lock"),
+        "autodev recover-crash should remove stale job.lock");
+    Expect(std::filesystem::exists(pipeline_job_dir / "responses" / "turn-001.md"),
+        "autodev recover-crash should recreate missing response artifact placeholders");
+    const auto recovered_turns = ReadTextFile(pipeline_job_dir / "turns.json");
+    Expect(recovered_turns.find("\"status\": \"failed\"") != std::string::npos,
+        "autodev recover-crash should mark in-flight turns failed");
+    Expect(recovered_turns.find("crash_recovered_missing_response_artifact") != std::string::npos,
+        "autodev recover-crash should annotate missing response artifact recovery");
+    const auto crash_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + pipeline_job_id});
+    Expect(crash_status.exit_code == 0,
+        "autodev status should read crash-recovered jobs");
+    Expect(crash_status.output.find("Status: blocked") != std::string::npos,
+        "autodev recover-crash should block jobs with incomplete runtime facts");
+    Expect(crash_status.output.find("AutoDev crash recovery found incomplete runtime facts") != std::string::npos,
+        "autodev recover-crash should persist a blocker");
+    const auto crash_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + pipeline_job_id});
+    Expect(crash_events.exit_code == 0,
+        "autodev events should list crash recovery events");
+    Expect(crash_events.output.find("autodev.crash_recovery.completed") != std::string::npos,
+        "autodev recover-crash should append a crash recovery event");
+    const auto run_job_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Run all tasks through job loop",
+        "skill_pack_path=" + skill_pack.string(),
+        "worktree_cleanup_policy=delete_on_done"});
+    Expect(run_job_submit.exit_code == 0,
+        "autodev submit should support a run-job fixture");
+    const auto run_job_id = ExtractLineValue(run_job_submit.output, "job_id:");
+    const auto run_job_worktree = ExtractLineValue(run_job_submit.output, "job_worktree_path:");
+    const auto run_job_path = run_job_worktree.substr(0, run_job_worktree.find(" "));
+    const auto run_job_dir = workspace / "runtime" / "autodev" / "jobs" / run_job_id;
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + run_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare run-job fixture");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + run_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load run-job fixture");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + run_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate run-job fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(run_job_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Run all tasks through job loop\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"First loop task\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"First loop task passes\"]\n"
+            << "    },\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-002\",\n"
+            << "      \"title\": \"Second loop task\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"Second loop task passes\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto run_job_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + run_job_id});
+    Expect(run_job_validate.exit_code == 0,
+        "autodev validate-spec should validate run-job fixture spec");
+    const auto run_job_hash = ExtractLineValue(run_job_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + run_job_id,
+        "spec_hash=" + run_job_hash}).exit_code == 0,
+        "autodev approve-spec should approve run-job fixture spec");
+    const auto run_job = RunAgentos(workspace, {
+        "autodev",
+        "run-job",
+        "job_id=" + run_job_id,
+        "codex_cli_command=" + codex_fixture.string()});
+    Expect(run_job.exit_code == 0,
+        "autodev run-job should loop pending tasks to final_review");
+    Expect(run_job.output.find("AutoDev job run loop") != std::string::npos,
+        "autodev run-job should print run loop heading");
+    Expect(run_job.output.find("iteration:     1") != std::string::npos,
+        "autodev run-job should run the first task iteration");
+    Expect(run_job.output.find("iteration:     2") != std::string::npos,
+        "autodev run-job should run the second task iteration");
+    Expect(run_job.output.find("run_job_status: ready_for_final_review") != std::string::npos,
+        "autodev run-job should stop at final_review");
+    Expect(run_job.output.find("Job was not marked done") != std::string::npos,
+        "autodev run-job should state that it does not complete the job");
+    const auto run_job_tasks = ReadTextFile(run_job_dir / "tasks.json");
+    Expect(run_job_tasks.find("\"task_id\": \"task-001\"") != std::string::npos &&
+               run_job_tasks.find("\"task_id\": \"task-002\"") != std::string::npos,
+        "autodev run-job should keep both runtime tasks");
+    Expect(run_job_tasks.find("\"status\": \"pending\"") == std::string::npos,
+        "autodev run-job should accept all pending tasks");
+    const auto run_job_turns = RunAgentos(workspace, {"autodev", "turns", "job_id=" + run_job_id});
+    Expect(run_job_turns.exit_code == 0,
+        "autodev turns should list run-job turns");
+    Expect(run_job_turns.output.find("turn_id:           turn-001") != std::string::npos &&
+               run_job_turns.output.find("turn_id:           turn-002") != std::string::npos,
+        "autodev run-job should record one turn per task");
+    const auto run_job_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + run_job_id});
+    Expect(run_job_status.exit_code == 0,
+        "autodev status should read run-job fixture");
+    Expect(run_job_status.output.find("Status: running") != std::string::npos,
+        "autodev run-job should leave the job running");
+    Expect(run_job_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev run-job should leave the job at final_review");
+    const auto run_job_final_review = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + run_job_id});
+    Expect(run_job_final_review.exit_code == 0,
+        "autodev final-review should pass for the run-job fixture");
+    const auto run_job_complete = RunAgentos(workspace, {"autodev", "mark-done", "job_id=" + run_job_id});
+    Expect(run_job_complete.exit_code == 0,
+        "autodev mark-done should complete the delete_on_done fixture");
+    Expect(run_job_complete.output.find("cleanup_policy:  delete_on_done") != std::string::npos,
+        "autodev mark-done should report delete_on_done cleanup policy");
+    Expect(run_job_complete.output.find("isolation_status: cleaned") != std::string::npos,
+        "delete_on_done should clean the worktree during completion");
+    Expect(!std::filesystem::exists(run_job_path),
+        "delete_on_done should remove the job worktree after mark-done");
+    Expect(std::filesystem::exists(run_job_dir / "job.json"),
+        "delete_on_done should preserve runtime facts");
+    const auto run_job_cleanup_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + run_job_id});
+    Expect(run_job_cleanup_events.exit_code == 0,
+        "autodev events should read delete_on_done fixture events");
+    Expect(run_job_cleanup_events.output.find("autodev.worktree.cleaned") != std::string::npos,
+        "delete_on_done should append a worktree cleanup event");
+#ifndef _WIN32
+    const auto interrupt_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Cancel running Codex CLI execution",
+        "skill_pack_path=" + skill_pack.string(),
+        "worktree_cleanup_policy=keep_always"});
+    Expect(interrupt_submit.exit_code == 0,
+        "autodev submit should support an interrupt fixture job");
+    const auto interrupt_job_id = ExtractLineValue(interrupt_submit.output, "job_id:");
+    const auto interrupt_worktree = ExtractLineValue(interrupt_submit.output, "job_worktree_path:");
+    const auto interrupt_path = interrupt_worktree.substr(0, interrupt_worktree.find(" "));
+    const auto interrupt_job_dir = workspace / "runtime" / "autodev" / "jobs" / interrupt_job_id;
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + interrupt_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare interrupt fixture");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + interrupt_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load interrupt fixture");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + interrupt_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate interrupt fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(interrupt_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Cancel running Codex CLI execution\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Long running execution\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"true\",\n"
+            << "      \"acceptance\": [\"Long execution can be cancelled\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto interrupt_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + interrupt_job_id});
+    Expect(interrupt_validate.exit_code == 0,
+        "autodev validate-spec should validate interrupt fixture spec");
+    const auto interrupt_hash = ExtractLineValue(interrupt_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + interrupt_job_id,
+        "spec_hash=" + interrupt_hash}).exit_code == 0,
+        "autodev approve-spec should approve interrupt fixture spec");
+    const auto interrupt_marker = workspace / "autodev-interrupt-started.txt";
+    const auto long_codex_fixture = WriteLongAutoDevCodexCliFixture(workspace / "bin", interrupt_marker);
+    auto running_task = std::async(std::launch::async, [&]() {
+        return RunAgentos(workspace, {
+            "autodev",
+            "run-task",
+            "job_id=" + interrupt_job_id,
+            "codex_cli_command=" + long_codex_fixture.string()});
+    });
+    for (int i = 0; i < 80 && !std::filesystem::exists(interrupt_marker); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    Expect(std::filesystem::exists(interrupt_marker),
+        "long Codex fixture should start before cancellation is requested");
+    const auto cancel_interrupt = RunAgentos(workspace, {"autodev", "cancel", "job_id=" + interrupt_job_id});
+    Expect(cancel_interrupt.exit_code == 0,
+        "autodev cancel should update runtime while Codex CLI execution is running");
+    const auto interrupted_task = running_task.get();
+    Expect(interrupted_task.exit_code != 0,
+        "running autodev run-task should stop after job cancellation");
+    Expect(interrupted_task.output.find("stopped_stage: execute") != std::string::npos,
+        "running autodev run-task should stop at the execute stage after cancellation");
+    const auto interrupt_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + interrupt_job_id});
+    Expect(interrupt_status.exit_code == 0,
+        "autodev status should read cancelled interrupt fixture");
+    Expect(interrupt_status.output.find("Status: cancelled") != std::string::npos,
+        "autodev cancel should leave interrupted job cancelled");
+    const auto keep_always_cleanup = RunAgentos(workspace, {"autodev", "cleanup-worktree", "job_id=" + interrupt_job_id});
+    Expect(keep_always_cleanup.exit_code != 0,
+        "autodev cleanup-worktree should reject keep_always jobs");
+    Expect(keep_always_cleanup.output.find("keep_always prevents cleanup") != std::string::npos,
+        "autodev cleanup-worktree should explain keep_always policy");
+    const auto interrupted_response = ReadTextFile(interrupt_job_dir / "responses" / "turn-001.md");
+    Expect(interrupted_response.find("interrupted by autodev job status: cancelled") != std::string::npos,
+        "interrupted execution should persist interruption reason in response artifact");
+    Expect(ReadTextFile(std::filesystem::path(interrupt_path) / "README.md").find("long fixture completed") == std::string::npos,
+        "cancelled Codex CLI process should not finish its worktree write");
+#endif
+    {
+        std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
+            std::ios::binary | std::ios::trunc);
+        blocked << "{}\n";
+    }
+    const auto diff_guard_fail = RunAgentos(workspace, {
+        "autodev",
+        "diff-guard",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(diff_guard_fail.exit_code != 0,
+        "autodev diff-guard should return nonzero when blocked file changes exist");
+    Expect(diff_guard_fail.output.find("passed:  false") != std::string::npos,
+        "autodev diff-guard should report failed diff guard");
+    Expect(diff_guard_fail.output.find("package.json") != std::string::npos,
+        "autodev diff-guard should print violating file");
+    const auto acceptance_gate_fail = RunAgentos(workspace, {
+        "autodev",
+        "acceptance-gate",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(acceptance_gate_fail.exit_code != 0,
+        "autodev acceptance-gate should fail when latest diff guard failed");
+    Expect(acceptance_gate_fail.output.find("passed:        false") != std::string::npos,
+        "autodev acceptance-gate should report failed acceptance");
+    Expect(acceptance_gate_fail.output.find("latest diff guard did not pass") != std::string::npos,
+        "autodev acceptance-gate should explain failed diff guard dependency");
+    const auto final_review_fail = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + executable_job_id});
+    Expect(final_review_fail.exit_code != 0,
+        "autodev final-review should fail when current worktree diff violates task policy");
+    Expect(final_review_fail.output.find("final_review_id: final-review-002") != std::string::npos,
+        "autodev final-review should append a failed final review record after blocked diff");
+    Expect(final_review_fail.output.find("passed:          false") != std::string::npos,
+        "autodev final-review should report failed final review after blocked diff");
+    Expect(final_review_fail.output.find("job_status:      running") != std::string::npos,
+        "failed final review after stale pr_ready should move the job back to running");
+    Expect(final_review_fail.output.find("job_phase:       final_review") != std::string::npos,
+        "failed final review after stale pr_ready should move the job back to final_review");
+    Expect(final_review_fail.output.find("package.json") != std::string::npos,
+        "autodev final-review should print the blocked file violation");
+    Expect(final_review_fail.output.find("current diff includes blocked files") != std::string::npos,
+        "autodev final-review should explain blocked file violations");
+    Expect(final_review_fail.output.find("current diff includes files outside allowed scope") != std::string::npos,
+        "autodev final-review should explain outside allowed file violations");
+    const auto final_reviews_after_fail = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + executable_job_id});
+    Expect(final_reviews_after_fail.exit_code == 0,
+        "autodev final-reviews should list failed final review facts");
+    Expect(final_reviews_after_fail.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-reviews should retain the earlier passed final review");
+    Expect(final_reviews_after_fail.output.find("final_review_id: final-review-002") != std::string::npos,
+        "autodev final-reviews should include failed final-review-002");
+    Expect(final_reviews_after_fail.output.find("current diff includes blocked files") != std::string::npos,
+        "autodev final-reviews should show failed final review reasons");
+    const auto stale_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + executable_job_id});
+    Expect(stale_status.exit_code == 0,
+        "autodev status should read job after failed stale final review");
+    Expect(stale_status.output.find("Status: running") != std::string::npos,
+        "autodev status should not leave stale failed final review jobs at pr_ready");
+    Expect(stale_status.output.find("Phase: final_review") != std::string::npos,
+        "autodev status should show final_review after stale pr_ready is invalidated");
+    Expect(stale_status.output.find("agentos autodev final-review job_id=" + executable_job_id) != std::string::npos,
+        "autodev status should point stale failed final review jobs back to final_review");
+    const auto failed_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + executable_job_id});
+    Expect(failed_summary.exit_code == 0,
+        "autodev summary should still read facts after failed gates");
+    Expect(failed_summary.output.find("status:        running") != std::string::npos,
+        "autodev summary should show stale failed final review jobs as running");
+    Expect(failed_summary.output.find("phase:         final_review") != std::string::npos,
+        "autodev summary should show stale failed final review jobs in final_review phase");
+    Expect(failed_summary.output.find("facts:         snapshots=1 verifications=1 diffs=2 acceptances=2 final_reviews=2 repairs=2") != std::string::npos,
+        "autodev summary should count failed gate facts");
+    Expect(failed_summary.output.find("diff_guard:   diff-002 passed=false") != std::string::npos,
+        "autodev summary should show latest failed diff guard");
+    Expect(failed_summary.output.find("acceptance:   acceptance-002 passed=false") != std::string::npos,
+        "autodev summary should show latest failed acceptance");
+    Expect(failed_summary.output.find("diff_blocked_file_violations: package.json") != std::string::npos,
+        "autodev summary should show blocked file violations from latest diff");
+    Expect(failed_summary.output.find("acceptance_reasons: latest diff guard did not pass") != std::string::npos,
+        "autodev summary should show latest acceptance failure reasons");
+    Expect(failed_summary.output.find("final_review_id: final-review-002") != std::string::npos,
+        "autodev summary should show latest failed final review");
+    Expect(failed_summary.output.find("  passed:          false") != std::string::npos,
+        "autodev summary should show latest final review failure state");
+    Expect(failed_summary.output.find("current diff includes blocked files") != std::string::npos,
+        "autodev summary should show latest final review reasons");
+    Expect(failed_summary.output.find("repair_id:   repair-002") != std::string::npos,
+        "autodev summary should show latest repair-needed fact");
+    Expect(failed_summary.output.find("next_action: repair_task") != std::string::npos,
+        "autodev summary should show next repair action");
+    Expect(failed_summary.output.find("retry:       2/3") != std::string::npos,
+        "autodev summary should show latest repair retry counters");
+    const auto repairs_after_failed_gates = RunAgentos(workspace, {"autodev", "repairs", "job_id=" + executable_job_id});
+    Expect(repairs_after_failed_gates.exit_code == 0,
+        "autodev repairs should list repair-needed facts");
+    Expect(repairs_after_failed_gates.output.find("AutoDev repairs") != std::string::npos,
+        "autodev repairs should print heading");
+    Expect(repairs_after_failed_gates.output.find("repair_id:   repair-001") != std::string::npos,
+        "autodev repairs should include diff guard repair fact");
+    Expect(repairs_after_failed_gates.output.find("source:      diff_guard diff-002") != std::string::npos,
+        "autodev repairs should link diff guard repair source");
+    Expect(repairs_after_failed_gates.output.find("source:      acceptance_gate acceptance-002") != std::string::npos,
+        "autodev repairs should link acceptance repair source");
+    Expect(repairs_after_failed_gates.output.find("retry:       1/3") != std::string::npos,
+        "autodev repairs should show first repair retry counter");
+    Expect(repairs_after_failed_gates.output.find("retry:       2/3") != std::string::npos,
+        "autodev repairs should show second repair retry counter");
+    Expect(repairs_after_failed_gates.output.find("retry_limit_exceeded: false") != std::string::npos,
+        "autodev repairs should show retry limit status");
+    Expect(repairs_after_failed_gates.output.find("prompt_artifact:") != std::string::npos,
+        "autodev repairs should show repair prompt artifact path");
+    Expect(std::filesystem::exists(executable_job_dir / "repairs" / "repair-001.prompt.md"),
+        "failed diff guard should write repair prompt artifact");
+    const auto repair_prompt = ReadTextFile(executable_job_dir / "repairs" / "repair-001.prompt.md");
+    Expect(repair_prompt.find("same thread/session") != std::string::npos,
+        "repair prompt artifact should require same thread/session repair");
+    Expect(repair_prompt.find("diff_guard") != std::string::npos,
+        "repair prompt artifact should include failed runtime fact source");
+    const auto repair_next = RunAgentos(workspace, {"autodev", "repair-next", "job_id=" + executable_job_id});
+    Expect(repair_next.exit_code == 0,
+        "autodev repair-next should select the latest actionable repair");
+    Expect(repair_next.output.find("AutoDev repair task") != std::string::npos,
+        "autodev repair-next should print repair task heading");
+    Expect(repair_next.output.find("task_id:      task-001") != std::string::npos,
+        "autodev repair-next should show the selected task");
+    Expect(repair_next.output.find("repair_id:    repair-002") != std::string::npos,
+        "autodev repair-next should select the latest repair-needed fact");
+    Expect(repair_next.output.find("same thread/session") != std::string::npos,
+        "autodev repair-next should include the same-thread repair prompt preview");
+    Expect(repair_next.output.find("prompt_artifact:") != std::string::npos,
+        "autodev repair-next should show the repair prompt artifact path");
+    Expect(repair_next.output.find("execute-next-task job_id=" + executable_job_id) != std::string::npos,
+        "autodev repair-next should show the execution entrypoint");
+    Expect(repair_next.output.find("verify-task job_id=" + executable_job_id + " task_id=task-001") != std::string::npos,
+        "autodev repair-next should show the same-task verification command");
+    Expect(repair_next.output.find("diff-guard job_id=" + executable_job_id + " task_id=task-001") != std::string::npos,
+        "autodev repair-next should show the same-task diff guard command");
+    Expect(repair_next.output.find("acceptance-gate job_id=" + executable_job_id + " task_id=task-001") != std::string::npos,
+        "autodev repair-next should show the same-task acceptance command");
+    const auto repair_task = RunAgentos(workspace, {
+        "autodev",
+        "repair-task",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(repair_task.exit_code == 0,
+        "autodev repair-task should select a repair for the requested task");
+    Expect(repair_task.output.find("repair_id:    repair-002") != std::string::npos,
+        "autodev repair-task should use the latest repair for the requested task");
+    const auto diffs_result = RunAgentos(workspace, {"autodev", "diffs", "job_id=" + executable_job_id});
+    Expect(diffs_result.exit_code == 0,
+        "autodev diffs should list diff guard facts");
+    Expect(diffs_result.output.find("AutoDev diffs") != std::string::npos,
+        "autodev diffs should print heading");
+    Expect(diffs_result.output.find("diff_id: diff-001") != std::string::npos,
+        "autodev diffs should include first diff record");
+    Expect(diffs_result.output.find("diff_id: diff-002") != std::string::npos,
+        "autodev diffs should include second diff record");
+    const auto rollback_soft = RunAgentos(workspace, {
+        "autodev",
+        "rollback-soft",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(rollback_soft.exit_code == 0,
+        "autodev rollback-soft should safely restore tracked task files in the job worktree");
+    Expect(rollback_soft.output.find("AutoDev soft rollback recorded") != std::string::npos,
+        "autodev rollback-soft should print success heading");
+    Expect(rollback_soft.output.find("rollback_id: rollback-001") != std::string::npos,
+        "autodev rollback-soft should print rollback id");
+    Expect(rollback_soft.output.find("status:      completed") != std::string::npos,
+        "autodev rollback-soft should report completed status");
+    Expect(rollback_soft.output.find("destructive: false") != std::string::npos,
+        "autodev rollback-soft should report non-destructive rollback");
+    Expect(rollback_soft.output.find("target_files: README.md") != std::string::npos,
+        "autodev rollback-soft should target the tracked allowed file");
+    Expect(ReadTextFile(std::filesystem::path(executable_planned_path) / "README.md").find("allowed cli change") == std::string::npos,
+        "autodev rollback-soft should restore tracked allowed file content");
+    Expect(std::filesystem::exists(std::filesystem::path(executable_planned_path) / "package.json"),
+        "autodev rollback-soft should not clean untracked blocked files");
+    const auto rollbacks_after_soft = RunAgentos(workspace, {"autodev", "rollbacks", "job_id=" + executable_job_id});
+    Expect(rollbacks_after_soft.exit_code == 0,
+        "autodev rollbacks should list soft rollback facts");
+    Expect(rollbacks_after_soft.output.find("rollback_id: rollback-001") != std::string::npos,
+        "autodev rollbacks should include rollback-001");
+    Expect(rollbacks_after_soft.output.find("mode:        soft") != std::string::npos,
+        "autodev rollbacks should include rollback mode");
+    Expect(rollbacks_after_soft.output.find("target_files: README.md") != std::string::npos,
+        "autodev rollbacks should include rollback target files");
+    const auto rollback_hard_denied = RunAgentos(workspace, {
+        "autodev",
+        "rollback-hard",
+        "job_id=" + executable_job_id,
+        "task_id=task-001"});
+    Expect(rollback_hard_denied.exit_code != 0,
+        "autodev rollback-hard should fail without explicit approval");
+    Expect(rollback_hard_denied.output.find("hard rollback requires approval=hard_rollback_approved") != std::string::npos,
+        "autodev rollback-hard should explain the approval gate");
+    Expect(rollback_hard_denied.output.find("destructive: true") != std::string::npos,
+        "autodev rollback-hard denial should disclose destructive intent");
+    Expect(rollback_hard_denied.output.find("executed:    false") != std::string::npos,
+        "autodev rollback-hard denial should not execute rollback");
+    const auto rollbacks_after_hard = RunAgentos(workspace, {"autodev", "rollbacks", "job_id=" + executable_job_id});
+    Expect(rollbacks_after_hard.exit_code == 0,
+        "autodev rollbacks should list denied hard rollback facts");
+    Expect(rollbacks_after_hard.output.find("rollback_id: rollback-002") != std::string::npos,
+        "autodev rollbacks should include denied hard rollback fact");
+    Expect(rollbacks_after_hard.output.find("mode:        hard") != std::string::npos,
+        "autodev rollbacks should show hard rollback mode");
+    Expect(rollbacks_after_hard.output.find("status:      approval_required") != std::string::npos,
+        "autodev rollbacks should show hard rollback approval gate status");
+
+    const auto failing_verify_submit = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + target.string(),
+        "objective=Expose failed verification in summary",
+        "skill_pack_path=" + skill_pack.string()});
+    Expect(failing_verify_submit.exit_code == 0,
+        "autodev submit should support a failing verification fixture job");
+    const auto failing_verify_job_id = ExtractLineValue(failing_verify_submit.output, "job_id:");
+    const auto failing_verify_worktree = ExtractLineValue(failing_verify_submit.output, "job_worktree_path:");
+    const auto failing_verify_path = failing_verify_worktree.substr(0, failing_verify_worktree.find(" "));
+    const auto failing_verify_job_dir = workspace / "runtime" / "autodev" / "jobs" / failing_verify_job_id;
+
+    Expect(RunAgentos(workspace, {"autodev", "prepare-workspace", "job_id=" + failing_verify_job_id}).exit_code == 0,
+        "autodev prepare-workspace should prepare failing verification fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "load-skill-pack", "job_id=" + failing_verify_job_id}).exit_code == 0,
+        "autodev load-skill-pack should load failing verification fixture job");
+    Expect(RunAgentos(workspace, {"autodev", "generate-goal-docs", "job_id=" + failing_verify_job_id}).exit_code == 0,
+        "autodev generate-goal-docs should generate failing verification fixture docs");
+    {
+        std::ofstream spec(std::filesystem::path(failing_verify_path) / "docs" / "goal" / "AUTODEV_SPEC.json",
+            std::ios::binary | std::ios::trunc);
+        spec
+            << "{\n"
+            << "  \"schema_version\": \"1.0.0\",\n"
+            << "  \"generated_by\": \"agentos-cli-test\",\n"
+            << "  \"generated_by_skill_pack\": \"maxenergy/skills\",\n"
+            << "  \"agentos_min_version\": \"0.1.0\",\n"
+            << "  \"created_at\": \"2026-05-06T00:00:00Z\",\n"
+            << "  \"objective\": \"Expose failed verification in summary\",\n"
+            << "  \"mode\": \"feature\",\n"
+            << "  \"source_of_truth\": [\"docs/goal/REQUIREMENTS.md\"],\n"
+            << "  \"tasks\": [\n"
+            << "    {\n"
+            << "      \"task_id\": \"task-001\",\n"
+            << "      \"title\": \"Fail verification deliberately\",\n"
+            << "      \"allowed_files\": [\"README.md\"],\n"
+            << "      \"blocked_files\": [\"package.json\"],\n"
+            << "      \"verify_command\": \"cmake -E false\",\n"
+            << "      \"acceptance\": [\"Verification failure is visible\"]\n"
+            << "    }\n"
+            << "  ]\n"
+            << "}\n";
+    }
+    const auto failing_verify_validate = RunAgentos(workspace, {"autodev", "validate-spec", "job_id=" + failing_verify_job_id});
+    Expect(failing_verify_validate.exit_code == 0,
+        "autodev validate-spec should validate failing verification fixture spec");
+    const auto failing_verify_hash = ExtractLineValue(failing_verify_validate.output, "spec_hash:");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "approve-spec",
+        "job_id=" + failing_verify_job_id,
+        "spec_hash=" + failing_verify_hash}).exit_code == 0,
+        "autodev approve-spec should approve failing verification fixture spec");
+    const auto app_server_execute_next = RunAgentos(workspace, {
+        "autodev",
+        "execute-next-task",
+        "job_id=" + failing_verify_job_id,
+        "execution_adapter=codex_app_server"});
+    Expect(app_server_execute_next.exit_code != 0,
+        "autodev execute-next-task should fail closed for the Codex app-server skeleton");
+    Expect(app_server_execute_next.output.find("adapter_kind:                codex_app_server") != std::string::npos,
+        "autodev execute-next-task should expose the Codex app-server adapter kind");
+    Expect(app_server_execute_next.output.find("continuity_mode:             persistent_thread") != std::string::npos,
+        "autodev execute-next-task should expose persistent thread continuity");
+    Expect(app_server_execute_next.output.find("event_stream_mode:           native_app_server") != std::string::npos,
+        "autodev execute-next-task should expose native app-server event mode");
+    Expect(app_server_execute_next.output.find("supports_persistent_session: true") != std::string::npos,
+        "autodev execute-next-task should expose app-server persistent session support");
+    Expect(app_server_execute_next.output.find("supports_same_thread_repair: true") != std::string::npos,
+        "autodev execute-next-task should expose app-server same-thread repair support");
+    Expect(app_server_execute_next.output.find("healthy:                     false") != std::string::npos,
+        "autodev execute-next-task should keep the app-server skeleton fail-closed");
+    Expect(app_server_execute_next.output.find("Codex app-server AutoDev execution is not implemented") != std::string::npos,
+        "autodev execute-next-task should explain the app-server skeleton blocker");
+    const auto failing_verify = RunAgentos(workspace, {
+        "autodev",
+        "verify-task",
+        "job_id=" + failing_verify_job_id,
+        "task_id=task-001"});
+    Expect(failing_verify.exit_code != 0,
+        "autodev verify-task should return nonzero when verify_command fails");
+    Expect(failing_verify.output.find("passed:          false") != std::string::npos,
+        "autodev verify-task should report failed verification");
+    Expect(RunAgentos(workspace, {
+        "autodev",
+        "diff-guard",
+        "job_id=" + failing_verify_job_id,
+        "task_id=task-001"}).exit_code == 0,
+        "autodev diff-guard should pass when failing verification fixture has no code diff violations");
+    const auto failing_acceptance = RunAgentos(workspace, {
+        "autodev",
+        "acceptance-gate",
+        "job_id=" + failing_verify_job_id,
+        "task_id=task-001"});
+    Expect(failing_acceptance.exit_code != 0,
+        "autodev acceptance-gate should fail when latest verification failed");
+    Expect(failing_acceptance.output.find("latest verification did not pass") != std::string::npos,
+        "autodev acceptance-gate should explain failed verification dependency");
+    const auto failing_final_review = RunAgentos(workspace, {"autodev", "final-review", "job_id=" + failing_verify_job_id});
+    Expect(failing_final_review.exit_code != 0,
+        "autodev final-review should fail when the task was not accepted");
+    Expect(failing_final_review.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-review should write a failed final review record for unaccepted task");
+    Expect(failing_final_review.output.find("passed:          false") != std::string::npos,
+        "autodev final-review should report failed final review for unaccepted task");
+    Expect(failing_final_review.output.find("job_status:      running") != std::string::npos,
+        "autodev final-review should not advance unaccepted jobs to pr_ready");
+    Expect(failing_final_review.output.find("job_phase:       codex_execution") != std::string::npos,
+        "autodev final-review should keep unaccepted jobs in codex_execution");
+    Expect(failing_final_review.output.find("task is not passed: task-001") != std::string::npos,
+        "autodev final-review should explain unpassed task status");
+    Expect(failing_final_review.output.find("task has no passed acceptance fact: task-001") != std::string::npos,
+        "autodev final-review should explain missing passed acceptance fact");
+    const auto failing_final_reviews = RunAgentos(workspace, {"autodev", "final-reviews", "job_id=" + failing_verify_job_id});
+    Expect(failing_final_reviews.exit_code == 0,
+        "autodev final-reviews should list failed unaccepted-task final review");
+    Expect(failing_final_reviews.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev final-reviews should include failed unaccepted-task final review");
+    Expect(failing_final_reviews.output.find("task is not passed: task-001") != std::string::npos,
+        "autodev final-reviews should show unaccepted-task final review reasons");
+    const auto failing_final_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + failing_verify_job_id});
+    Expect(failing_final_status.exit_code == 0,
+        "autodev status should read unaccepted job after failed final review");
+    Expect(failing_final_status.output.find("Status: running") != std::string::npos,
+        "failed final review for unaccepted task should leave job running");
+    Expect(failing_final_status.output.find("Phase: codex_execution") != std::string::npos,
+        "failed final review for unaccepted task should not advance phase to pr_ready");
+    const auto failing_complete = RunAgentos(workspace, {"autodev", "mark-done", "job_id=" + failing_verify_job_id});
+    Expect(failing_complete.exit_code != 0,
+        "autodev mark-done should fail when job is not pr_ready");
+    Expect(failing_complete.output.find("job is not pr_ready") != std::string::npos,
+        "autodev mark-done should explain the pr_ready completion gate");
+    const auto failing_verify_summary = RunAgentos(workspace, {"autodev", "summary", "job_id=" + failing_verify_job_id});
+    Expect(failing_verify_summary.exit_code == 0,
+        "autodev summary should read failed verification facts");
+    Expect(failing_verify_summary.output.find("facts:         snapshots=1 verifications=1 diffs=1 acceptances=1 final_reviews=1 repairs=2") != std::string::npos,
+        "autodev summary should count failed verification fixture facts");
+    Expect(failing_verify_summary.output.find("overall:      30%") != std::string::npos,
+        "autodev summary should show codex_execution phase-weight progress");
+    Expect(failing_verify_summary.output.find("acceptance:   0/1") != std::string::npos,
+        "autodev summary should show failed acceptance progress");
+    Expect(failing_verify_summary.output.find("verification: verify-001 passed=false") != std::string::npos,
+        "autodev summary should show latest failed verification");
+    Expect(failing_verify_summary.output.find("verification_exit_code: 1") != std::string::npos,
+        "autodev summary should show failed verification exit code");
+    Expect(failing_verify_summary.output.find("acceptance:   acceptance-001 passed=false") != std::string::npos,
+        "autodev summary should show acceptance failed after verification failure");
+    Expect(failing_verify_summary.output.find("acceptance_reasons: latest verification did not pass") != std::string::npos,
+        "autodev summary should show verification failure acceptance reason");
+    Expect(failing_verify_summary.output.find("final_review_id: final-review-001") != std::string::npos,
+        "autodev summary should show failed unaccepted-task final review");
+    Expect(failing_verify_summary.output.find("task is not passed: task-001") != std::string::npos,
+        "autodev summary should show failed final review task reason");
+    Expect(failing_verify_summary.output.find("repair_id:   repair-002") != std::string::npos,
+        "autodev summary should show latest repair fact for failed verification fixture");
+    Expect(failing_verify_summary.output.find("source:      acceptance_gate acceptance-001") != std::string::npos,
+        "autodev summary should show repair source for failed verification fixture");
+    const auto failing_repairs = RunAgentos(workspace, {"autodev", "repairs", "job_id=" + failing_verify_job_id});
+    Expect(failing_repairs.exit_code == 0,
+        "autodev repairs should list failed verification repair facts");
+    Expect(failing_repairs.output.find("source:      verification verify-001") != std::string::npos,
+        "autodev repairs should include verification repair source");
+    Expect(failing_repairs.output.find("source:      acceptance_gate acceptance-001") != std::string::npos,
+        "autodev repairs should include acceptance repair source");
+    Expect(failing_repairs.output.find("prompt_artifact:") != std::string::npos,
+        "autodev repairs should show failed verification repair prompt artifact");
+    const auto pause_failed_job = RunAgentos(workspace, {"autodev", "pause", "job_id=" + failing_verify_job_id});
+    Expect(pause_failed_job.exit_code == 0,
+        "autodev pause should update job status without stopping a process");
+    Expect(pause_failed_job.output.find("AutoDev job paused") != std::string::npos,
+        "autodev pause should print paused heading");
+    Expect(pause_failed_job.output.find("status:      paused") != std::string::npos,
+        "autodev pause should report paused status");
+    Expect(pause_failed_job.output.find("next_action: resume") != std::string::npos,
+        "autodev pause should make resume the next action");
+    Expect(pause_failed_job.output.find("No Codex process was interrupted") != std::string::npos,
+        "autodev pause should state that it does not interrupt Codex");
+    const auto resume_failed_job = RunAgentos(workspace, {"autodev", "resume", "job_id=" + failing_verify_job_id});
+    Expect(resume_failed_job.exit_code == 0,
+        "autodev resume should restore a paused job to running");
+    Expect(resume_failed_job.output.find("AutoDev job resumed") != std::string::npos,
+        "autodev resume should print resumed heading");
+    Expect(resume_failed_job.output.find("status:      running") != std::string::npos,
+        "autodev resume should report running status");
+    Expect(resume_failed_job.output.find("next_action: execute_next_task") != std::string::npos,
+        "autodev resume should restore codex_execution next action");
+    const auto cancel_failed_job = RunAgentos(workspace, {"autodev", "cancel", "job_id=" + failing_verify_job_id});
+    Expect(cancel_failed_job.exit_code == 0,
+        "autodev cancel should update job status without killing a process");
+    Expect(cancel_failed_job.output.find("AutoDev job cancelled") != std::string::npos,
+        "autodev cancel should print cancelled heading");
+    Expect(cancel_failed_job.output.find("status:      cancelled") != std::string::npos,
+        "autodev cancel should report cancelled status");
+    Expect(cancel_failed_job.output.find("phase:       cancelled") != std::string::npos,
+        "autodev cancel should report cancelled phase");
+    Expect(cancel_failed_job.output.find("next_action: none") != std::string::npos,
+        "autodev cancel should clear next action");
+    const auto cleanup_cancelled_job = RunAgentos(workspace, {"autodev", "cleanup-worktree", "job_id=" + failing_verify_job_id});
+    Expect(cleanup_cancelled_job.exit_code == 0,
+        "autodev cleanup-worktree should clean cancelled job worktree");
+    Expect(cleanup_cancelled_job.output.find("AutoDev worktree cleaned") != std::string::npos,
+        "autodev cleanup-worktree should print heading");
+    Expect(cleanup_cancelled_job.output.find("isolation_status:   cleaned") != std::string::npos,
+        "autodev cleanup-worktree should mark isolation cleaned");
+    Expect(cleanup_cancelled_job.output.find("removed:            true") != std::string::npos,
+        "autodev cleanup-worktree should remove existing worktree");
+    Expect(!std::filesystem::exists(failing_verify_path),
+        "autodev cleanup-worktree should remove the job worktree path");
+    Expect(std::filesystem::exists(failing_verify_job_dir / "job.json"),
+        "autodev cleanup-worktree should preserve runtime facts");
+    const auto cancelled_status = RunAgentos(workspace, {"autodev", "status", "job_id=" + failing_verify_job_id});
+    Expect(cancelled_status.exit_code == 0,
+        "autodev status should read cancelled job");
+    Expect(cancelled_status.output.find("Status: cancelled") != std::string::npos,
+        "autodev status should show cancelled status");
+    const auto watch_cancelled_status = RunAgentos(workspace, {
+        "autodev",
+        "status",
+        "job_id=" + failing_verify_job_id,
+        "--watch",
+        "iterations=1",
+        "interval_ms=0"});
+    Expect(watch_cancelled_status.exit_code == 0,
+        "autodev status --watch should poll job status once when iterations=1");
+    Expect(watch_cancelled_status.output.find("AutoDev watch") != std::string::npos,
+        "autodev status --watch should print watch heading");
+    Expect(watch_cancelled_status.output.find("status:      cancelled") != std::string::npos,
+        "autodev status --watch should show current status");
+    Expect(watch_cancelled_status.output.find("latest:      autodev.worktree.cleaned") != std::string::npos,
+        "autodev status --watch should show the latest event");
+    const auto watch_alias = RunAgentos(workspace, {
+        "autodev",
+        "watch",
+        "job_id=" + failing_verify_job_id,
+        "iterations=1",
+        "interval_ms=0"});
+    Expect(watch_alias.exit_code == 0,
+        "autodev watch should alias status --watch");
+    Expect(watch_alias.output.find("AutoDev watch") != std::string::npos,
+        "autodev watch should print watch heading");
+    const auto cancelled_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + failing_verify_job_id});
+    Expect(cancelled_events.exit_code == 0,
+        "autodev events should read pause/resume/cancel events");
+    Expect(cancelled_events.output.find("autodev.job.paused") != std::string::npos,
+        "autodev pause should append a paused event");
+    Expect(cancelled_events.output.find("autodev.job.resumed") != std::string::npos,
+        "autodev resume should append a resumed event");
+    Expect(cancelled_events.output.find("autodev.job.cancelled") != std::string::npos,
+        "autodev cancel should append a cancelled event");
+    Expect(cancelled_events.output.find("autodev.worktree.cleaned") != std::string::npos,
+        "autodev cleanup-worktree should append a cleanup event");
+
+    const auto executable_events = RunAgentos(workspace, {"autodev", "events", "job_id=" + executable_job_id});
+    Expect(executable_events.exit_code == 0,
+        "autodev events should read execution preflight audit event");
+    Expect(executable_events.output.find("autodev.execution.completed") != std::string::npos,
+        "autodev execute-next-task should append an execution completed audit event");
+    Expect(executable_events.output.find("autodev.snapshot.recorded") != std::string::npos,
+        "autodev execute-next-task should append a snapshot recorded event");
+    Expect(executable_events.output.find("autodev.rollback.recorded") != std::string::npos,
+        "autodev rollback-soft should append a rollback recorded event");
+    Expect(executable_events.output.find("autodev.rollback.denied") != std::string::npos,
+        "autodev rollback-hard should append a denied rollback event");
+    Expect(executable_events.output.find("autodev.repair.needed") != std::string::npos,
+        "failed gates should append repair needed events");
+    Expect(executable_events.output.find("prompt_artifact") != std::string::npos,
+        "repair needed event should link repair prompt artifact");
+    Expect(executable_events.output.find("autodev.verification.completed") != std::string::npos,
+        "autodev verify-task should append a verification completed event");
+    Expect(executable_events.output.find("autodev.diff_guard.completed") != std::string::npos,
+        "autodev diff-guard should append a diff guard completed event");
+    Expect(executable_events.output.find("autodev.acceptance_gate.completed") != std::string::npos,
+        "autodev acceptance-gate should append an acceptance completed event");
+    Expect(executable_events.output.find("autodev.final_review.completed") != std::string::npos,
+        "autodev final-review should append a final review completed event");
+    const auto diff_events_json = RunAgentos(workspace, {
+        "autodev",
+        "events",
+        "job_id=" + executable_job_id,
+        "format=json",
+        "type=autodev.diff_guard.completed"});
+    Expect(diff_events_json.exit_code == 0,
+        "autodev events format=json should support type filters");
+    Expect(diff_events_json.output.find("\"type\": \"autodev.diff_guard.completed\"") != std::string::npos,
+        "autodev events format=json should preserve event type");
+    Expect(diff_events_json.output.find("\"events\": [") != std::string::npos,
+        "autodev events format=json should include events array");
+    Expect(diff_events_json.output.find("\"type\": \"autodev.verification.completed\"") == std::string::npos,
+        "autodev events type filter should exclude other event types");
+    const auto future_events_json = RunAgentos(workspace, {
+        "autodev",
+        "events",
+        "job_id=" + executable_job_id,
+        "format=json",
+        "since=9999-01-01T00:00:00Z"});
+    Expect(future_events_json.exit_code == 0,
+        "autodev events format=json should support since filters");
+    Expect(future_events_json.output.find("\"total\": 0") != std::string::npos,
+        "autodev events since filter should return zero future events");
+    const auto jobs_dashboard = RunAgentos(workspace, {"autodev", "jobs"});
+    Expect(jobs_dashboard.exit_code == 0,
+        "autodev jobs should list all AutoDev jobs");
+    Expect(jobs_dashboard.output.find("AutoDev jobs") != std::string::npos,
+        "autodev jobs should print dashboard heading");
+    Expect(jobs_dashboard.output.find("job_id:       " + executable_job_id) != std::string::npos,
+        "autodev jobs should include executable fixture job");
+    Expect(jobs_dashboard.output.find("job_id:       " + failing_verify_job_id) != std::string::npos,
+        "autodev jobs should include failing fixture job");
+    Expect(jobs_dashboard.output.find("progress:") != std::string::npos,
+        "autodev jobs should show progress");
+    Expect(jobs_dashboard.output.find("next_action:") != std::string::npos,
+        "autodev jobs should show next actions");
+    Expect(jobs_dashboard.output.find("blocker:") != std::string::npos,
+        "autodev jobs should show blockers when present");
+    const auto jobs_json = RunAgentos(workspace, {"autodev", "list", "format=json"});
+    Expect(jobs_json.exit_code == 0,
+        "autodev list format=json should list all AutoDev jobs");
+    Expect(jobs_json.output.find("\"jobs\": [") != std::string::npos,
+        "autodev list format=json should include jobs array");
+    Expect(jobs_json.output.find("\"job_id\": \"" + executable_job_id + "\"") != std::string::npos,
+        "autodev list format=json should include job ids");
+    Expect(jobs_json.output.find("\"overall_percent\"") != std::string::npos,
+        "autodev list format=json should include progress");
+    Expect(jobs_json.output.find("\"next_action\"") != std::string::npos,
+        "autodev list format=json should include next actions");
+
+    const auto invalid_status = RunAgentos(workspace, {"autodev", "status", "job_id=../bad"});
+    Expect(invalid_status.exit_code != 0, "autodev status should reject invalid job id");
+    Expect(invalid_status.output.find("invalid job_id") != std::string::npos,
+        "autodev status should explain invalid job id");
+
+    const auto missing_target = RunAgentos(workspace, {
+        "autodev",
+        "submit",
+        "target_repo_path=" + (workspace / "missing").string(),
+        "objective=Fix bug"});
+    Expect(missing_target.exit_code != 0, "autodev submit should fail for missing target_repo_path");
+    Expect(missing_target.output.find("target_repo_path does not exist") != std::string::npos,
+        "autodev submit should explain missing target_repo_path");
 }
 
 void TestDiagnosticsCommand() {
@@ -2315,12 +4838,26 @@ int main() {
     TestPluginNameConflictsWithExternalCliSpec();
     TestPluginsCommand();
     TestMemoryAndStorageCommands();
+    TestAutoDevCommands();
     TestTrustCommands();
     TestScheduleCommands();
     TestSubagentsCommand();
     TestAuthCommands();
     TestRunAuthProfileOverride();
     TestInteractiveFreeFormDispatch();
+#ifndef _WIN32
+    TestInteractiveMainRouteActionLoop();
+    TestInteractiveMainRouteActionValidationLoop();
+    TestInteractiveMainRouteActionContextAfterClarification();
+    TestInteractiveMainReceivesContextForContinuationTurns();
+    TestInteractiveMainRestoresPersistedContextAcrossReplRestarts();
+    TestInteractiveMainContextShowAndClearCommands();
+    TestInteractiveMainNamedContextUseAndListCommands();
+    TestInteractiveMainContextPrivacyCommands();
+    TestInteractiveMainContextTraceCommands();
+    TestInteractiveMainContextLifecycleCommands();
+    TestInteractiveMainRouteActionHighRiskApprovalLoop();
+#endif
     TestDiagnosticsCommand();
 
     if (failures != 0) {

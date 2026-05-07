@@ -25,13 +25,25 @@ FetchContent_Declare(
 FetchContent_Populate(httplib)
 
 add_library(agentos_core
+    src/autodev/autodev_execution_adapter.cpp
+    src/autodev/autodev_job_id.cpp
+    src/autodev/autodev_models.cpp
+    src/autodev/autodev_skill_pack_loader.cpp
+    src/autodev/autodev_state_store.cpp
     src/cli/agents_commands.cpp
+    src/cli/autodev_commands.cpp
     src/cli/auth_commands.cpp
     src/cli/auth_interactive.cpp
     src/cli/cli_specs_commands.cpp
     src/cli/diagnostics_commands.cpp
     src/cli/intent_classifier.cpp
+    src/cli/interactive_chat_state.cpp
+    src/cli/interactive_intent_registry.cpp
+    src/cli/interactive_main_context.cpp
+    src/cli/interactive_route_action_executor.cpp
+    src/cli/interactive_route_policy.cpp
     src/cli/interactive_commands.cpp
+    src/cli/main_route_action.cpp
     src/cli/main_agent_commands.cpp
     src/cli/serve_commands.cpp
     src/cli/memory_commands.cpp
@@ -63,6 +75,7 @@ add_library(agentos_core
     src/utils/path_utils.cpp
     src/utils/secret_redaction.cpp
     src/utils/secure_random.cpp
+    src/utils/sha256.cpp
     src/utils/signal_cancellation.cpp
     src/utils/spec_parsing.cpp
     src/core/registry/skill_registry.cpp
@@ -125,6 +138,7 @@ add_library(agentos_core
     src/skills/builtin/host_info_skill.cpp
     src/skills/builtin/http_fetch_skill.cpp
     src/skills/builtin/learn_skill.cpp
+    src/skills/builtin/news_search_skill.cpp
     src/skills/builtin/research_skill.cpp
     src/skills/builtin/workflow_run_skill.cpp
     src/hosts/agents/local_planning_agent.cpp
@@ -195,6 +209,27 @@ add_executable(agentos_task_wait_policy_tests tests/task_wait_policy_tests.cpp)
 target_link_libraries(agentos_task_wait_policy_tests PRIVATE agentos_core)
 add_test(NAME agentos_task_wait_policy_tests COMMAND agentos_task_wait_policy_tests)
 
+add_executable(agentos_intent_classifier_tests tests/intent_classifier_tests.cpp)
+target_link_libraries(agentos_intent_classifier_tests PRIVATE agentos_core)
+add_test(NAME agentos_intent_classifier_tests COMMAND agentos_intent_classifier_tests)
+
+add_executable(agentos_routing_eval_tests tests/routing_eval_tests.cpp)
+target_compile_definitions(agentos_routing_eval_tests PRIVATE AGENTOS_ROUTING_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures")
+target_link_libraries(agentos_routing_eval_tests PRIVATE agentos_core)
+add_test(NAME agentos_routing_eval_tests COMMAND agentos_routing_eval_tests)
+
+add_executable(agentos_news_search_skill_tests tests/news_search_skill_tests.cpp)
+target_link_libraries(agentos_news_search_skill_tests PRIVATE agentos_core)
+add_test(NAME agentos_news_search_skill_tests COMMAND agentos_news_search_skill_tests)
+
+add_executable(agentos_autodev_tests tests/autodev_tests.cpp)
+target_link_libraries(agentos_autodev_tests PRIVATE agentos_core)
+add_test(NAME agentos_autodev_tests COMMAND agentos_autodev_tests)
+
+add_executable(agentos_research_development_skill_tests tests/research_development_skill_tests.cpp)
+target_link_libraries(agentos_research_development_skill_tests PRIVATE agentos_core)
+add_test(NAME agentos_research_development_skill_tests COMMAND agentos_research_development_skill_tests)
+
 add_executable(agentos_policy_trust_tests tests/policy_trust_tests.cpp)
 target_link_libraries(agentos_policy_trust_tests PRIVATE agentos_core)
 add_test(NAME agentos_policy_trust_tests COMMAND agentos_policy_trust_tests)
@@ -243,6 +278,14 @@ add_executable(agentos_main_agent_prompt_tests tests/main_agent_prompt_tests.cpp
 target_link_libraries(agentos_main_agent_prompt_tests PRIVATE agentos_core)
 add_test(NAME agentos_main_agent_prompt_tests COMMAND agentos_main_agent_prompt_tests)
 
+add_executable(agentos_main_route_action_tests tests/main_route_action_tests.cpp)
+target_link_libraries(agentos_main_route_action_tests PRIVATE agentos_core)
+add_test(NAME agentos_main_route_action_tests COMMAND agentos_main_route_action_tests)
+
+add_executable(agentos_interactive_chat_state_tests tests/interactive_chat_state_tests.cpp)
+target_link_libraries(agentos_interactive_chat_state_tests PRIVATE agentos_core)
+add_test(NAME agentos_interactive_chat_state_tests COMMAND agentos_interactive_chat_state_tests)
+
 if(MSVC)
     target_compile_options(agentos_core PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos PRIVATE /W4 /permissive- /EHsc)
@@ -252,6 +295,11 @@ if(MSVC)
     target_compile_options(agentos_agent_provider_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_agent_dispatch_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_task_wait_policy_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_intent_classifier_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_routing_eval_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_news_search_skill_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_autodev_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_research_development_skill_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_policy_trust_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_scheduler_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_workflow_router_tests PRIVATE /W4 /permissive- /EHsc)
@@ -264,6 +312,8 @@ if(MSVC)
     target_compile_options(agentos_learn_skill_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_chat_fallback_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_main_agent_prompt_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_main_route_action_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_interactive_chat_state_tests PRIVATE /W4 /permissive- /EHsc)
 else()
     target_compile_options(agentos_core PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos PRIVATE -Wall -Wextra -Wpedantic)
@@ -273,6 +323,11 @@ else()
     target_compile_options(agentos_agent_provider_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_agent_dispatch_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_task_wait_policy_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_intent_classifier_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_routing_eval_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_news_search_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_autodev_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_research_development_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_policy_trust_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_scheduler_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_workflow_router_tests PRIVATE -Wall -Wextra -Wpedantic)
@@ -285,4 +340,6 @@ else()
     target_compile_options(agentos_learn_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_chat_fallback_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_main_agent_prompt_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_main_route_action_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_interactive_chat_state_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
