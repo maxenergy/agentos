@@ -206,6 +206,11 @@ natural language goes to the configured `main` agent with recent context, and
    - Keep REPL-specific failure rendering as an injected callback so the
      executor module does not depend on REPL output helpers.
 
+21. Context command handler extraction: done
+   - Move `context show/list/use/privacy/trace/clear` branching into a
+     dedicated `HandleContextCommand(...)` helper.
+   - Keep the main REPL loop focused on top-level command dispatch.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -242,3 +247,5 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
 - Move route-action execution and synthesis helpers out of
   `interactive_commands.cpp` if that file needs another maintenance pass.
   (done)
+- Move more top-level command families (`memory`, `schedule`) into handlers if
+  interactive command maintenance continues.

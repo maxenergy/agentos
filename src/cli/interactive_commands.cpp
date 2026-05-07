@@ -1249,6 +1249,135 @@ void ListBackgroundJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
     std::cout << '\n';
 }
 
+void HandleContextCommand(const std::vector<std::string>& tokens,
+                          const std::filesystem::path& workspace,
+                          std::string& chat_session_name,
+                          std::filesystem::path& chat_session_path,
+                          std::vector<ChatTranscriptTurn>& chat_history,
+                          ContextPrivacyLevel& context_privacy,
+                          PendingRouteAction& pending_route_action) {
+    if (tokens.size() < 2) {
+        std::cerr << "Usage: context show|clear|list|privacy [digest|none|verbatim]|use <name>\n";
+        return;
+    }
+
+    const auto sub = tokens[1];
+    if (sub == "show") {
+        PrintMainContextSummary(chat_session_path, chat_session_name, chat_history);
+        return;
+    }
+    if (sub == "list") {
+        PrintMainContextList(workspace, chat_session_name);
+        return;
+    }
+    if (sub == "trace") {
+        if (tokens.size() < 3) {
+            std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
+            return;
+        }
+        const auto trace_path = MainRoutingTracePath(workspace);
+        if (tokens[2] == "tail") {
+            std::size_t count = 10;
+            bool pretty = false;
+            bool saw_count = false;
+            bool valid_tail_args = true;
+            for (std::size_t i = 3; i < tokens.size(); ++i) {
+                if (tokens[i] == "--pretty") {
+                    pretty = true;
+                    continue;
+                }
+                const auto parsed = ParsePositiveSize(tokens[i]);
+                if (!parsed.has_value() || saw_count) {
+                    valid_tail_args = false;
+                    break;
+                }
+                count = std::min<std::size_t>(*parsed, 100);
+                saw_count = true;
+            }
+            if (!valid_tail_args) {
+                std::cerr << "Usage: context trace tail [n] [--pretty]\n";
+                return;
+            }
+            const auto lines = TailTextFile(trace_path, count);
+            std::cout << "AgentOS main routing trace\n"
+                      << "  path:  " << trace_path.string() << '\n'
+                      << "  lines: " << lines.size() << '\n'
+                      << "  format: " << (pretty ? "pretty" : "jsonl") << "\n";
+            if (lines.empty()) {
+                std::cout << "  (empty)\n\n";
+                return;
+            }
+            for (const auto& trace_line : lines) {
+                std::cout << (pretty ? FormatRoutingTraceLine(trace_line) : trace_line) << '\n';
+            }
+            std::cout << '\n';
+            return;
+        }
+        if (tokens[2] == "clear") {
+            ClearMainRoutingTrace(workspace);
+            std::cout << "AgentOS main routing trace cleared\n"
+                      << "  path: " << trace_path.string() << "\n\n";
+            return;
+        }
+        std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
+        return;
+    }
+    if (sub == "use") {
+        if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
+            std::cerr << "Usage: context use <name>\n"
+                      << "Context names may contain letters, numbers, '.', '_' and '-'.\n";
+            return;
+        }
+        chat_session_name = tokens[2];
+        chat_session_path = MainContextSessionPath(workspace, chat_session_name);
+        chat_history = LoadChatTranscript(chat_session_path);
+        context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
+        pending_route_action = {};
+        SaveCurrentMainContextName(workspace, chat_session_name);
+        std::cout << "AgentOS main context selected\n"
+                  << "  session: " << chat_session_name << '\n'
+                  << "  privacy: " << ContextPrivacyLevelName(context_privacy) << '\n'
+                  << "  path:    " << chat_session_path.string() << '\n'
+                  << "  turns:   " << chat_history.size() << "\n\n";
+        return;
+    }
+    if (sub == "privacy") {
+        if (tokens.size() == 2) {
+            std::cout << "AgentOS main context privacy\n"
+                      << "  session: " << chat_session_name << '\n'
+                      << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
+            return;
+        }
+        if (tokens[2] != "digest" && tokens[2] != "none" && tokens[2] != "verbatim") {
+            std::cerr << "Usage: context privacy [digest|none|verbatim]\n";
+            return;
+        }
+        context_privacy = ParseContextPrivacyLevel(tokens[2]);
+        SaveMainContextPrivacy(workspace, chat_session_name, context_privacy);
+        pending_route_action = {};
+        std::cout << "AgentOS main context privacy updated\n"
+                  << "  session: " << chat_session_name << '\n'
+                  << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
+        return;
+    }
+    if (sub == "clear") {
+        chat_history.clear();
+        pending_route_action = {};
+        std::error_code ec;
+        const bool removed = std::filesystem::remove(chat_session_path, ec);
+        if (ec) {
+            std::cerr << "context clear failed: " << ec.message() << '\n';
+            return;
+        }
+        std::cout << "AgentOS main context cleared\n"
+                  << "  session: " << chat_session_name << '\n'
+                  << "  path:    " << chat_session_path.string() << '\n'
+                  << "  removed: " << (removed ? "true" : "false") << "\n\n";
+        return;
+    }
+    std::cerr << "Unknown context subcommand: " << sub << '\n';
+}
+
 UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
                                             const AgentRegistry& agent_registry,
                                             const MemoryManager& memory_manager,
@@ -1859,125 +1988,13 @@ int RunInteractiveCommand(
 
         // ── context subcommands ────────────────────────────────────────
         if (command == "context") {
-            if (tokens.size() < 2) {
-                std::cerr << "Usage: context show|clear|list|privacy [digest|none|verbatim]|use <name>\n";
-                continue;
-            }
-            const auto sub = tokens[1];
-            if (sub == "show") {
-                PrintMainContextSummary(chat_session_path, chat_session_name, chat_history);
-                continue;
-            }
-            if (sub == "list") {
-                PrintMainContextList(workspace, chat_session_name);
-                continue;
-            }
-            if (sub == "trace") {
-                if (tokens.size() < 3) {
-                    std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
-                    continue;
-                }
-                const auto trace_path = MainRoutingTracePath(workspace);
-                if (tokens[2] == "tail") {
-                    std::size_t count = 10;
-                    bool pretty = false;
-                    bool saw_count = false;
-                    bool valid_tail_args = true;
-                    for (std::size_t i = 3; i < tokens.size(); ++i) {
-                        if (tokens[i] == "--pretty") {
-                            pretty = true;
-                            continue;
-                        }
-                        const auto parsed = ParsePositiveSize(tokens[i]);
-                        if (!parsed.has_value() || saw_count) {
-                            valid_tail_args = false;
-                            break;
-                        }
-                        count = std::min<std::size_t>(*parsed, 100);
-                        saw_count = true;
-                    }
-                    if (!valid_tail_args) {
-                        std::cerr << "Usage: context trace tail [n] [--pretty]\n";
-                        continue;
-                    }
-                    const auto lines = TailTextFile(trace_path, count);
-                    std::cout << "AgentOS main routing trace\n"
-                              << "  path:  " << trace_path.string() << '\n'
-                              << "  lines: " << lines.size() << '\n'
-                              << "  format: " << (pretty ? "pretty" : "jsonl") << "\n";
-                    if (lines.empty()) {
-                        std::cout << "  (empty)\n\n";
-                        continue;
-                    }
-                    for (const auto& trace_line : lines) {
-                        std::cout << (pretty ? FormatRoutingTraceLine(trace_line) : trace_line) << '\n';
-                    }
-                    std::cout << '\n';
-                    continue;
-                }
-                if (tokens[2] == "clear") {
-                    ClearMainRoutingTrace(workspace);
-                    std::cout << "AgentOS main routing trace cleared\n"
-                              << "  path: " << trace_path.string() << "\n\n";
-                    continue;
-                }
-                std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
-                continue;
-            }
-            if (sub == "use") {
-                if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
-                    std::cerr << "Usage: context use <name>\n"
-                              << "Context names may contain letters, numbers, '.', '_' and '-'.\n";
-                    continue;
-                }
-                chat_session_name = tokens[2];
-                chat_session_path = MainContextSessionPath(workspace, chat_session_name);
-                chat_history = LoadChatTranscript(chat_session_path);
-                context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
-                pending_route_action = {};
-                SaveCurrentMainContextName(workspace, chat_session_name);
-                std::cout << "AgentOS main context selected\n"
-                          << "  session: " << chat_session_name << '\n'
-                          << "  privacy: " << ContextPrivacyLevelName(context_privacy) << '\n'
-                          << "  path:    " << chat_session_path.string() << '\n'
-                          << "  turns:   " << chat_history.size() << "\n\n";
-                continue;
-            }
-            if (sub == "privacy") {
-                if (tokens.size() == 2) {
-                    std::cout << "AgentOS main context privacy\n"
-                              << "  session: " << chat_session_name << '\n'
-                              << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
-                    continue;
-                }
-                if (tokens[2] != "digest" && tokens[2] != "none" && tokens[2] != "verbatim") {
-                    std::cerr << "Usage: context privacy [digest|none|verbatim]\n";
-                    continue;
-                }
-                context_privacy = ParseContextPrivacyLevel(tokens[2]);
-                SaveMainContextPrivacy(workspace, chat_session_name, context_privacy);
-                pending_route_action = {};
-                std::cout << "AgentOS main context privacy updated\n"
-                          << "  session: " << chat_session_name << '\n'
-                          << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
-                continue;
-            }
-            if (sub == "clear") {
-                chat_history.clear();
-                pending_route_action = {};
-                std::error_code ec;
-                const bool removed = std::filesystem::remove(chat_session_path, ec);
-                if (ec) {
-                    std::cerr << "context clear failed: " << ec.message() << '\n';
-                    continue;
-                }
-                std::cout << "AgentOS main context cleared\n"
-                          << "  session: " << chat_session_name << '\n'
-                          << "  path:    " << chat_session_path.string() << '\n'
-                          << "  removed: " << (removed ? "true" : "false") << "\n\n";
-                continue;
-            }
-            std::cerr << "Unknown context subcommand: " << sub << '\n';
+            HandleContextCommand(tokens,
+                                 workspace,
+                                 chat_session_name,
+                                 chat_session_path,
+                                 chat_history,
+                                 context_privacy,
+                                 pending_route_action);
             continue;
         }
 
