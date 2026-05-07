@@ -341,6 +341,17 @@ std::string ExtractLineValue(const std::string& text, const std::string& key) {
     return TrimAscii(text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start));
 }
 
+std::string ExtractApprovalId(const std::string& text) {
+    const std::string prefix = "approval ";
+    const auto start = text.find(prefix);
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto value_start = start + prefix.size();
+    const auto value_end = text.find_first_of(" \r\n", value_start);
+    return text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start);
+}
+
 std::optional<std::string> ReadEnvForTest(const std::string& name) {
 #ifdef _WIN32
     char* raw_value = nullptr;
@@ -566,6 +577,71 @@ void WriteMainRouteActionContextCurlFixture(const std::filesystem::path& bin_dir
         << R"({"choices":[{"message":{"content":"context ok"}}]})"
         << "\nJSON\n"
         << "  fi\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
+void WriteMainRouteActionHighRiskCurlFixture(const std::filesystem::path& bin_dir,
+                                             const std::filesystem::path& counter_path,
+                                             const std::string& approval_id = {}) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n";
+    if (approval_id.empty()) {
+        output
+            << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"high_risk_smoke\\\",\\\"brief\\\":\\\"GOAL: run high-risk smoke skill. SUCCESS: approval gate is exercised.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"message\\\":\\\"first-pass\\\"}}}\"}}]}\n";
+    } else {
+        output
+            << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"high_risk_smoke\\\",\\\"brief\\\":\\\"GOAL: run approved high-risk smoke skill. SUCCESS: skill executes after approval.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"message\\\":\\\"approved-pass\\\",\\\"allow_high_risk\\\":\\\"true\\\",\\\"approval_id\\\":\\\"" << approval_id << "\\\"}}}\"}}]}\n";
+    }
+    output
+        << ") else (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << (approval_id.empty()
+            ? "  echo {\"choices\":[{\"message\":{\"content\":\"approval required synthesis\"}}]}\n"
+            : "  echo {\"choices\":[{\"message\":{\"content\":\"approved route synthesis\"}}]}\n")
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n";
+    if (approval_id.empty()) {
+        output
+            << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"high_risk_smoke\",\"brief\":\"GOAL: run high-risk smoke skill. SUCCESS: approval gate is exercised.\",\"mode\":\"sync\",\"arguments\":{\"message\":\"first-pass\"}}}"}}]})";
+    } else {
+        output
+            << "{\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"high_risk_smoke\\\",\\\"brief\\\":\\\"GOAL: run approved high-risk smoke skill. SUCCESS: skill executes after approval.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"message\\\":\\\"approved-pass\\\",\\\"allow_high_risk\\\":\\\"true\\\",\\\"approval_id\\\":\\\"" << approval_id << "\\\"}}}\"}}]}";
+    }
+    output
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << (approval_id.empty()
+            ? R"({"choices":[{"message":{"content":"approval required synthesis"}}]})"
+            : R"({"choices":[{"message":{"content":"approved route synthesis"}}]})")
+        << "\nJSON\n"
         << "fi\n";
     output.close();
     std::filesystem::permissions(
@@ -1836,14 +1912,7 @@ void TestTrustCommands() {
     Expect(approval_request.exit_code == 0, "trust approval-request should succeed");
     Expect(approval_request.output.find("status=pending") != std::string::npos,
         "trust approval-request should create pending approvals");
-    const auto approval_prefix = std::string("approval ");
-    const auto approval_start = approval_request.output.find(approval_prefix);
-    std::string approval_id;
-    if (approval_start != std::string::npos) {
-        const auto value_start = approval_start + approval_prefix.size();
-        const auto value_end = approval_request.output.find(' ', value_start);
-        approval_id = approval_request.output.substr(value_start, value_end - value_start);
-    }
+    const auto approval_id = ExtractApprovalId(approval_request.output);
     Expect(!approval_id.empty(), "trust approval-request id should be parseable");
 
     const auto approval_approve = RunAgentos(workspace, {
@@ -2637,6 +2706,99 @@ void TestInteractiveMainRouteActionContextAfterClarification() {
                audit.find("\"query\": \"AI browser\"") != std::string::npos ||
                audit.find("AI browser") != std::string::npos,
         "successful retry should invoke news_search with the supplied query");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_high_risk_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto spec_dir = workspace / "runtime" / "cli_specs" / "learned";
+    std::filesystem::create_directories(spec_dir);
+    {
+        std::ofstream spec(spec_dir / "high_risk_smoke.tsv", std::ios::binary);
+        spec
+            << "high_risk_smoke\t"
+            << "High-risk smoke skill for REPL route action approval.\t"
+#ifdef _WIN32
+            << "cmd\t/c,echo,approved:{{message}}\t"
+#else
+            << "/bin/echo\tapproved:{{message}}\t"
+#endif
+            << "message\t"
+            << "text\t"
+            << "high\t"
+            << "process.spawn\t"
+            << "3000\t"
+            << R"({"type":"object","properties":{"message":{"type":"string"}},"required":["message"]})" << '\t'
+            << R"({"type":"object","required":["stdout","stderr","exit_code"]})" << '\t'
+            << "131072\n";
+    }
+
+    const auto first_counter = workspace / "main_route_high_risk_first_counter.txt";
+    WriteMainRouteActionHighRiskCurlFixture(bin_dir, first_counter);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent high-risk fixture config should save");
+
+    const auto blocked = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "please perform the approval smoke action\nexit\n");
+    Expect(blocked.exit_code == 0, "high-risk route action blocked run should exit cleanly");
+    Expect(blocked.output.find("(main requested call_capability target=skill:high_risk_smoke)") != std::string::npos,
+        "REPL should announce high-risk route action request");
+    Expect(blocked.output.find("approval required synthesis") != std::string::npos,
+        "REPL should feed high-risk approval requirement back to main");
+    Expect(ReadTextFile(first_counter).find("2") != std::string::npos,
+        "high-risk blocked fixture should call main twice");
+
+    auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("approved:first-pass") == std::string::npos,
+        "high-risk route action should not execute before approval");
+
+    const auto approval_request = RunAgentos(workspace, {
+        "trust", "approval-request",
+        "subject=main-route-skill:high_risk_smoke",
+        "reason=smoke",
+        "requested_by=local-user"});
+    Expect(approval_request.exit_code == 0, "high-risk smoke approval request should succeed");
+    const auto approval_id = ExtractApprovalId(approval_request.output);
+    Expect(!approval_id.empty(), "high-risk smoke approval id should parse");
+    const auto approval_approve = RunAgentos(workspace, {
+        "trust", "approval-approve",
+        "approval=" + approval_id,
+        "approved_by=smoke-admin"});
+    Expect(approval_approve.exit_code == 0, "high-risk smoke approval approve should succeed");
+
+    const auto approved_counter = workspace / "main_route_high_risk_approved_counter.txt";
+    WriteMainRouteActionHighRiskCurlFixture(bin_dir, approved_counter, approval_id);
+    const auto approved = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "please perform the approved approval smoke action\nexit\n");
+    Expect(approved.exit_code == 0, "approved high-risk route action run should exit cleanly");
+    Expect(approved.output.find("approved route synthesis") != std::string::npos,
+        "REPL should synthesize approved high-risk route result");
+    Expect(ReadTextFile(approved_counter).find("2") != std::string::npos,
+        "approved high-risk fixture should call main twice");
+
+    audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("approved:approved-pass") != std::string::npos,
+        "approved high-risk route action should execute after approval");
+    Expect(audit.find("\"target_name\":\"high_risk_smoke\"") != std::string::npos ||
+               audit.find("\"target_name\": \"high_risk_smoke\"") != std::string::npos,
+        "audit should include high-risk smoke target execution");
 
     SetEnvForTest("PATH", old_path);
     SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
@@ -4241,6 +4403,7 @@ int main() {
     TestInteractiveMainRouteActionLoop();
     TestInteractiveMainRouteActionValidationLoop();
     TestInteractiveMainRouteActionContextAfterClarification();
+    TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();
 
     if (failures != 0) {
