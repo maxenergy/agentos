@@ -172,6 +172,12 @@ natural language goes to the configured `main` agent with recent context, and
    - Show the trace path in `status` so misrouting can be debugged without
      guessing which prompt shape was used.
 
+16. REPL trace inspection commands: done
+   - Add `context trace tail [n]` to print recent routing trace JSONL records
+     from inside the REPL.
+   - Cap tail output at 100 records to avoid dumping large trace files.
+   - Add `context trace clear` to truncate the routing trace file.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -201,4 +207,6 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
 - Add configurable context privacy levels if users need to choose between
   `digest`, `verbatim`, and `none` per REPL context. (done)
 - Add a `context trace [tail|clear]` command for inspecting or resetting
-  `routing_trace.jsonl` from inside the REPL.
+  `routing_trace.jsonl` from inside the REPL. (done)
+- Add a compact human-readable trace formatter if raw JSONL is too noisy for
+  day-to-day debugging.

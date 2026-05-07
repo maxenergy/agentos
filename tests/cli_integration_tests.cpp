@@ -3026,6 +3026,42 @@ void TestInteractiveMainContextPrivacyCommands() {
     Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "privacy" / "alpha.txt").find("verbatim") != std::string::npos,
         "context privacy should persist named context privacy");
 }
+
+void TestInteractiveMainContextTraceCommands() {
+    const auto workspace = FreshWorkspace("interactive_main_context_trace_commands");
+    const auto trace_path = workspace / "runtime" / "main_agent" / "routing_trace.jsonl";
+    std::filesystem::create_directories(trace_path.parent_path());
+    {
+        std::ofstream output(trace_path, std::ios::binary);
+        output
+            << R"({"event":"main_request","task_id":"one","context_privacy":"digest"})" << '\n'
+            << R"({"event":"main_response","task_id":"two","route_action_requested":false})" << '\n'
+            << R"({"event":"route_action_result","task_id":"three","target":"host_info"})" << '\n';
+    }
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "context trace tail 2\n"
+        "context trace clear\n"
+        "context trace tail\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context trace command session should exit cleanly");
+    Expect(result.output.find("AgentOS main routing trace") != std::string::npos,
+        "context trace tail should print trace heading");
+    Expect(result.output.find("\"task_id\":\"one\"") == std::string::npos,
+        "context trace tail 2 should omit older trace records");
+    Expect(result.output.find("\"task_id\":\"two\"") != std::string::npos,
+        "context trace tail 2 should print second trace record");
+    Expect(result.output.find("\"task_id\":\"three\"") != std::string::npos,
+        "context trace tail 2 should print newest trace record");
+    Expect(result.output.find("AgentOS main routing trace cleared") != std::string::npos,
+        "context trace clear should print confirmation");
+    Expect(result.output.find("(empty)") != std::string::npos,
+        "context trace tail after clear should report empty trace");
+    Expect(ReadTextFile(trace_path).empty(),
+        "context trace clear should truncate routing trace file");
+}
 #endif
 
 void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
@@ -4726,6 +4762,7 @@ int main() {
     TestInteractiveMainContextShowAndClearCommands();
     TestInteractiveMainNamedContextUseAndListCommands();
     TestInteractiveMainContextPrivacyCommands();
+    TestInteractiveMainContextTraceCommands();
 #endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();

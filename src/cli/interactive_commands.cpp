@@ -86,6 +86,36 @@ void AppendMainRoutingTrace(const std::filesystem::path& workspace,
     output << event.dump() << '\n';
 }
 
+std::vector<std::string> TailTextFile(const std::filesystem::path& path,
+                                      const std::size_t max_lines) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input || max_lines == 0) {
+        return {};
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(input, line)) {
+        lines.push_back(std::move(line));
+        if (lines.size() > max_lines) {
+            lines.erase(lines.begin());
+        }
+    }
+    return lines;
+}
+
+std::optional<std::size_t> ParsePositiveSize(const std::string& value) {
+    try {
+        std::size_t consumed = 0;
+        const auto parsed = std::stoul(value, &consumed);
+        if (consumed != value.size() || parsed == 0) {
+            return std::nullopt;
+        }
+        return parsed;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 std::vector<std::string> SplitCommaList(const std::string& value) {
     std::vector<std::string> items;
     std::stringstream input(value);
@@ -922,6 +952,8 @@ void PrintHelp() {
         << "  context list                      List named main-agent REPL contexts\n"
         << "  context privacy [digest|none|verbatim]\n"
         << "                                    Show or set context sent to main-agent\n"
+        << "  context trace tail [n]            Show recent main-agent routing trace records\n"
+        << "  context trace clear               Clear main-agent routing trace records\n"
         << "  context use <name>                Switch to a named main-agent REPL context\n"
         << "  memory summary                    Show memory summary\n"
         << "  memory stats                      Show skill/agent stats\n"
@@ -2072,6 +2104,45 @@ int RunInteractiveCommand(
             }
             if (sub == "list") {
                 PrintMainContextList(workspace, chat_session_name);
+                continue;
+            }
+            if (sub == "trace") {
+                if (tokens.size() < 3) {
+                    std::cerr << "Usage: context trace tail [n]|clear\n";
+                    continue;
+                }
+                const auto trace_path = MainRoutingTracePath(workspace);
+                if (tokens[2] == "tail") {
+                    std::size_t count = 10;
+                    if (tokens.size() >= 4) {
+                        const auto parsed = ParsePositiveSize(tokens[3]);
+                        if (!parsed.has_value()) {
+                            std::cerr << "Usage: context trace tail [n]\n";
+                            continue;
+                        }
+                        count = std::min<std::size_t>(*parsed, 100);
+                    }
+                    const auto lines = TailTextFile(trace_path, count);
+                    std::cout << "AgentOS main routing trace\n"
+                              << "  path:  " << trace_path.string() << '\n'
+                              << "  lines: " << lines.size() << "\n";
+                    if (lines.empty()) {
+                        std::cout << "  (empty)\n\n";
+                        continue;
+                    }
+                    for (const auto& trace_line : lines) {
+                        std::cout << trace_line << '\n';
+                    }
+                    std::cout << '\n';
+                    continue;
+                }
+                if (tokens[2] == "clear") {
+                    WriteFileAtomically(trace_path, "");
+                    std::cout << "AgentOS main routing trace cleared\n"
+                              << "  path: " << trace_path.string() << "\n\n";
+                    continue;
+                }
+                std::cerr << "Usage: context trace tail [n]|clear\n";
                 continue;
             }
             if (sub == "use") {
