@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <string>
 
@@ -21,6 +22,38 @@ std::string ShortenCopy(const std::string& text, const std::size_t max_chars) {
     return text.substr(0, max_chars) + "...";
 }
 
+std::string SanitizeContextText(std::string text) {
+    text = std::regex_replace(text, std::regex(R"((https?://|www\.)\S+)"), "[url]");
+    text = std::regex_replace(
+        text,
+        std::regex(R"([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})"),
+        "[email]");
+    text = std::regex_replace(text, std::regex(R"([A-Za-z0-9_\-]{32,})"), "[opaque-id]");
+    text = std::regex_replace(text, std::regex(R"(\b\d{8,}\b)"), "[number]");
+
+    const std::vector<std::pair<std::string, std::string>> sensitive_terms{
+        {"反爬虫", "[automation-risk-detail]"},
+        {"反爬", "[automation-risk-detail]"},
+        {"爬虫", "[automation-risk-detail]"},
+        {"抓取", "[data-collection]"},
+        {"验证码", "[verification-challenge]"},
+        {"风控", "[risk-control]"},
+        {"绕过", "[bypass-detail]"},
+        {"cookie", "[browser-state]"},
+        {"Cookie", "[browser-state]"},
+        {"token", "[credential-ref]"},
+        {"Token", "[credential-ref]"},
+    };
+    for (const auto& [from, to] : sensitive_terms) {
+        std::size_t pos = 0;
+        while ((pos = text.find(from, pos)) != std::string::npos) {
+            text.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+    }
+    return text;
+}
+
 }  // namespace
 
 std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& history) {
@@ -31,14 +64,19 @@ std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& histo
         ? history.size() - kMaxChatContextTurns
         : 0;
     std::ostringstream out;
-    out << "[RECENT REPL CHAT CONTEXT]\n";
+    out << "[REPL CONTEXT DIGEST]\n"
+        << "turn_count: " << history.size() << "\n"
+        << "note: This is a sanitized continuity digest, not the full local transcript.\n";
     for (std::size_t i = start; i < history.size(); ++i) {
-        out << "User: " << history[i].user << "\n";
+        out << "- user_summary: " << ShortenCopy(SanitizeContextText(history[i].user), 360) << "\n";
         if (!history[i].assistant.empty()) {
-            out << "Assistant: " << ShortenCopy(history[i].assistant, 1200) << "\n";
+            out << "  assistant_summary: "
+                << ShortenCopy(SanitizeContextText(history[i].assistant), 480) << "\n";
         }
     }
-    out << "[END RECENT REPL CHAT CONTEXT]";
+    out << "routing_guidance: Treat the live turn as a possible continuation of this digest; "
+           "if the digest is insufficient, ask a clarifying question before delegating.\n"
+        << "[END REPL CONTEXT DIGEST]";
     return out.str();
 }
 

@@ -35,14 +35,36 @@ void TestRenderRecentChatContext() {
     agentos::AppendChatTranscript(history, "second", "");
 
     const auto rendered = agentos::RenderRecentChatContext(history);
-    Expect(rendered.find("[RECENT REPL CHAT CONTEXT]") != std::string::npos,
-           "recent chat context should include start marker");
-    Expect(rendered.find("User: first") != std::string::npos,
-           "recent chat context should include user text");
-    Expect(rendered.find("Assistant: reply") != std::string::npos,
-           "recent chat context should include assistant text");
-    Expect(rendered.find("Assistant: \n") == std::string::npos,
+    Expect(rendered.find("[REPL CONTEXT DIGEST]") != std::string::npos,
+           "recent chat context should include digest start marker");
+    Expect(rendered.find("turn_count: 2") != std::string::npos,
+           "recent chat context should include turn count");
+    Expect(rendered.find("user_summary: first") != std::string::npos,
+           "recent chat context should include sanitized user summary");
+    Expect(rendered.find("assistant_summary: reply") != std::string::npos,
+           "recent chat context should include sanitized assistant summary");
+    Expect(rendered.find("assistant_summary: \n") == std::string::npos,
            "recent chat context should skip empty assistant text");
+}
+
+void TestRenderRecentChatContextSanitizesSensitiveDetails() {
+    std::vector<agentos::ChatTranscriptTurn> history;
+    agentos::AppendChatTranscript(
+        history,
+        "访问 https://example.test/path?secret=abcdef1234567890abcdef1234567890 并讨论反爬虫细节",
+        "token abcdef1234567890abcdef1234567890abcdef1234567890");
+
+    const auto rendered = agentos::RenderRecentChatContext(history);
+    Expect(rendered.find("https://example.test") == std::string::npos,
+           "recent chat context digest should redact URLs");
+    Expect(rendered.find("abcdef1234567890abcdef1234567890") == std::string::npos,
+           "recent chat context digest should redact opaque IDs");
+    Expect(rendered.find("反爬虫") == std::string::npos,
+           "recent chat context digest should redact automation risk phrasing");
+    Expect(rendered.find("[url]") != std::string::npos,
+           "recent chat context digest should leave a URL placeholder");
+    Expect(rendered.find("[automation-risk-detail]") != std::string::npos,
+           "recent chat context digest should leave a risk-detail placeholder");
 }
 
 void TestRenderPendingRouteActionContext() {
@@ -110,6 +132,7 @@ void TestMalformedChatTranscriptLoadsEmpty() {
 int main() {
     TestAppendChatTranscriptKeepsRecentTurns();
     TestRenderRecentChatContext();
+    TestRenderRecentChatContextSanitizesSensitiveDetails();
     TestRenderPendingRouteActionContext();
     TestChatTranscriptPersistsRecentTurns();
     TestMalformedChatTranscriptLoadsEmpty();

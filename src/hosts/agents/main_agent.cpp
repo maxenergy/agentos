@@ -412,15 +412,25 @@ MainAgentConversation BuildMainAgentConversation(const AgentTask& task,
 
     MainAgentConversation conversation;
     conversation.system_prompt = BuildChatSystemPrompt(skill_registry, agent_registry);
+    std::string context_digest;
     if (const auto context = ContextStringValue(task, "conversation_context"); context.has_value()) {
         auto prior_messages = ParseRecentReplMessages(*context);
-        conversation.messages.insert(
-            conversation.messages.end(),
-            std::make_move_iterator(prior_messages.begin()),
-            std::make_move_iterator(prior_messages.end()));
+        if (!prior_messages.empty()) {
+            conversation.messages.insert(
+                conversation.messages.end(),
+                std::make_move_iterator(prior_messages.begin()),
+                std::make_move_iterator(prior_messages.end()));
+        } else if (!TrimAscii(*context).empty()) {
+            context_digest = TrimAscii(*context);
+        }
     }
 
     std::ostringstream live_user;
+    if (!context_digest.empty()) {
+        live_user << "[AGENTOS REPL CONTEXT DIGEST]\n"
+                  << context_digest << "\n"
+                  << "[END AGENTOS REPL CONTEXT DIGEST]\n\n";
+    }
     if (const auto runtime_context = RuntimeContextWithoutConversation(task); !runtime_context.empty()) {
         live_user << "[AGENTOS RUNTIME CONTEXT]\n"
                   << runtime_context << "\n"

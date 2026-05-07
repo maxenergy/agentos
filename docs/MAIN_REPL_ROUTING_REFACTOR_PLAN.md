@@ -142,6 +142,17 @@ natural language goes to the configured `main` agent with recent context, and
      topic.
    - Show the active `main_context` name in `status`.
 
+13. Sanitized REPL context digest: done
+   - Keep the full transcript local for `context show` and persisted context
+     files.
+   - Send `main` a compact `[REPL CONTEXT DIGEST]` instead of replaying the
+     full recent transcript as provider-native prior messages.
+   - Redact URLs, email-like values, opaque IDs, long numbers, and common
+     automation-risk phrases from the digest before the external model sees
+     the context.
+   - Preserve context-first routing guidance so follow-up turns still stay in
+     the main conversational path unless a live tool/action is needed.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -168,3 +179,5 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
   hard rejecting them. (done)
 - Add context rename/delete/export commands if named contexts need lifecycle
   management beyond `use`, `list`, `show`, and `clear`.
+- Add configurable context privacy levels if users need to choose between
+  `digest`, `verbatim`, and `none` per REPL context.
