@@ -199,6 +199,13 @@ natural language goes to the configured `main` agent with recent context, and
    - Add direct unit coverage for context helper persistence, trace append/tail,
      and pretty trace formatting.
 
+20. Main route-action executor module: done
+   - Move `agentos_route_action` execution out of `interactive_commands.cpp`
+     into `src/cli/interactive_route_action_executor.*`.
+   - Keep validation and result-prompt construction in `main_route_action.*`.
+   - Keep REPL-specific failure rendering as an injected callback so the
+     executor module does not depend on REPL output helpers.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -234,3 +241,4 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
 - Add command examples or screenshots after the REPL UX stabilizes further.
 - Move route-action execution and synthesis helpers out of
   `interactive_commands.cpp` if that file needs another maintenance pass.
+  (done)

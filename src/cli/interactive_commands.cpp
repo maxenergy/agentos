@@ -3,6 +3,7 @@
 #include "core/execution/agent_event_runtime_store.hpp"
 #include "cli/interactive_chat_state.hpp"
 #include "cli/interactive_main_context.hpp"
+#include "cli/interactive_route_action_executor.hpp"
 #include "cli/intent_classifier.hpp"
 #include "cli/interactive_intent_registry.hpp"
 #include "cli/main_route_action.hpp"
@@ -55,13 +56,6 @@ namespace {
 constexpr int kInteractiveChatTimeoutMs = 120000;
 
 std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 120);
-TaskRunResult ExecuteMainRouteAction(const MainRouteAction& action,
-                                     SkillRegistry& skill_registry,
-                                     AgentRegistry& agent_registry,
-                                     const std::filesystem::path& workspace,
-                                     AgentLoop& loop,
-                                     AuditLogger& audit_logger);
-
 std::string MakeTaskId(const std::string& prefix) {
     const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::system_clock::now().time_since_epoch())
@@ -1090,7 +1084,13 @@ void RunChatPrompt(const std::string& prompt,
                 std::cout << "(main requested " << action->action
                           << " target=" << action->target_kind << ":" << action->target << ")\n";
                 const auto action_result = ExecuteMainRouteAction(
-                    *action, skill_registry, agent_registry, workspace, loop, audit_logger);
+                    *action,
+                    skill_registry,
+                    agent_registry,
+                    workspace,
+                    loop,
+                    audit_logger,
+                    [](const TaskRunResult& failed_result) { PrintResult(failed_result); });
                 bool pending_after_action = false;
                 if (pending_route_action != nullptr) {
                     if (!action_result.success && action_result.error_code == "InvalidRouteSkillInput") {
@@ -1183,61 +1183,6 @@ void RunChatPrompt(const std::string& prompt,
         }
         std::cerr << "\naudit_log: " << audit_logger.log_path().string() << '\n';
     }
-}
-
-TaskRunResult ExecuteMainRouteAction(const MainRouteAction& action,
-                                     SkillRegistry& skill_registry,
-                                     AgentRegistry& agent_registry,
-                                     const std::filesystem::path& workspace,
-                                     AgentLoop& loop,
-                                     AuditLogger& audit_logger) {
-    const auto validation = ValidateMainRouteAction(action, skill_registry, agent_registry);
-    if (!validation.valid) {
-        TaskRunResult result;
-        result.success = false;
-        result.route_target = action.target;
-        result.route_kind = action.target_kind == "agent" ? RouteTargetKind::agent : RouteTargetKind::skill;
-        result.error_code = validation.error_code;
-        result.error_message = validation.error_message;
-        result.summary = validation.error_message;
-        std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-        return result;
-    }
-
-    const auto objective = action.brief.empty() ? action.target : action.brief;
-    TaskRequest task{
-        .task_id = MakeTaskId("main-route"),
-        .task_type = action.target_kind == "agent" ? std::string("delegate") : action.target,
-        .objective = objective,
-        .workspace_path = workspace,
-    };
-    task.preferred_target = action.target;
-    task.idempotency_key = task.task_id;
-    task.inputs = action.arguments;
-    if (!task.inputs.contains("objective")) {
-        task.inputs["objective"] = objective;
-    }
-    task.inputs["main_route_action"] = action.action;
-    task.inputs["main_route_target_kind"] = action.target_kind;
-    task.inputs["main_route_target"] = action.target;
-    task.timeout_ms = 0;
-    task.allow_network = true;
-    if (const auto allow = action.arguments.find("allow_high_risk");
-        allow != action.arguments.end()) {
-        task.allow_high_risk = allow->second == "true" || allow->second == "1" || allow->second == "yes";
-    }
-    if (const auto approval = action.arguments.find("approval_id");
-        approval != action.arguments.end()) {
-        task.approval_id = approval->second;
-    }
-
-    auto task_cancel = InstallSignalCancellation();
-    const auto result = loop.run(task, std::move(task_cancel));
-    if (!result.success) {
-        PrintResult(result);
-    }
-    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-    return result;
 }
 
 struct BackgroundJob {
