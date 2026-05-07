@@ -125,6 +125,13 @@ natural language goes to the configured `main` agent with recent context, and
    - Keep the persisted transcript capped to the same recent-turn window used
      for runtime context.
 
+11. REPL context management commands: done
+   - Add `context show` to inspect the current persisted main-agent REPL
+     transcript and file path.
+   - Add `context clear` to clear in-memory context, pending route state, and
+     the persisted `repl-default.json` file.
+   - Show `main_context_turns` in `status`.
+
 ## Non-goals For This Batch
 
 - Persist arbitrary named chat sessions across process restarts.
@@ -150,5 +157,4 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
   small module with direct unit tests. (done)
 - Add an explicit approval path for high-risk main route actions instead of
   hard rejecting them. (done)
-- Add explicit user-facing session management commands if multiple named REPL
-  contexts are needed.
+- Add multiple named REPL contexts if users need separate concurrent topics.

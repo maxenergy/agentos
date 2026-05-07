@@ -2842,6 +2842,53 @@ void TestInteractiveMainRestoresPersistedContextAcrossReplRestarts() {
     SetEnvForTest("PATH", old_path);
     SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
 }
+
+void TestInteractiveMainContextShowAndClearCommands() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_context_commands");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_context_commands_counter.txt";
+    WriteMainContextContinuationCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent context command fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "访问一些有反爬虫的网站，用哪个浏览器？\n"
+        "context show\n"
+        "status\n"
+        "context clear\n"
+        "context show\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context show/clear command session should exit cleanly");
+    Expect(result.output.find("AgentOS main context") != std::string::npos,
+        "context show should print the main context heading");
+    Expect(result.output.find("turns:   1") != std::string::npos,
+        "context show should report the persisted turn count before clear");
+    Expect(result.output.find("访问一些有反爬虫的网站，用哪个浏览器？") != std::string::npos,
+        "context show should print the stored user turn");
+    Expect(result.output.find("main_context_turns: 1") != std::string::npos,
+        "status should include current main context turn count");
+    Expect(result.output.find("AgentOS main context cleared") != std::string::npos,
+        "context clear should print a clear confirmation");
+    Expect(result.output.find("turns:   0") != std::string::npos,
+        "context show after clear should report an empty context");
+    Expect(!std::filesystem::exists(workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json"),
+        "context clear should remove the persisted context file");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
 #endif
 
 void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
@@ -4539,6 +4586,7 @@ int main() {
 #ifndef _WIN32
     TestInteractiveMainReceivesContextForContinuationTurns();
     TestInteractiveMainRestoresPersistedContextAcrossReplRestarts();
+    TestInteractiveMainContextShowAndClearCommands();
 #endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();

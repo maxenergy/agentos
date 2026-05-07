@@ -899,6 +899,8 @@ void PrintHelp() {
         << "  agents                            List registered agent adapters\n"
         << "  skills                            List registered skills\n"
         << "  status                            Show runtime status summary\n"
+        << "  context show                      Show persisted main-agent REPL context\n"
+        << "  context clear                     Clear persisted main-agent REPL context\n"
         << "  memory summary                    Show memory summary\n"
         << "  memory stats                      Show skill/agent stats\n"
         << "  memory lessons                    Show lesson store\n"
@@ -925,6 +927,25 @@ void PrintHelp() {
         << "  chat What does this project do?\n"
         << "  你好                                (free-form, routed to default chat agent)\n"
         << "\n";
+}
+
+void PrintMainContextSummary(const std::filesystem::path& path,
+                             const std::vector<ChatTranscriptTurn>& history) {
+    std::cout << "AgentOS main context\n"
+              << "  session: repl-default\n"
+              << "  path:    " << path.string() << '\n'
+              << "  turns:   " << history.size() << '\n';
+    if (history.empty()) {
+        std::cout << "  (empty)\n\n";
+        return;
+    }
+    for (std::size_t i = 0; i < history.size(); ++i) {
+        std::cout << "\n[" << (i + 1) << "] user: " << history[i].user << '\n';
+        if (!history[i].assistant.empty()) {
+            std::cout << "    assistant: " << history[i].assistant << '\n';
+        }
+    }
+    std::cout << '\n';
 }
 
 // REPL chat always dispatches through the "main" adapter — the
@@ -1842,8 +1863,39 @@ int RunInteractiveCommand(
             std::cout << "  background_jobs: " << background_jobs.size() << '\n';
             std::cout << "  scheduled_tasks: " << scheduler.list().size() << '\n';
             std::cout << "  workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
+            std::cout << "  main_context_turns: " << chat_history.size() << '\n';
             std::cout << "  audit_log: " << audit_logger.log_path().string() << '\n';
             std::cout << '\n';
+            continue;
+        }
+
+        // ── context subcommands ────────────────────────────────────────
+        if (command == "context") {
+            if (tokens.size() < 2) {
+                std::cerr << "Usage: context show|clear\n";
+                continue;
+            }
+            const auto sub = tokens[1];
+            if (sub == "show") {
+                PrintMainContextSummary(chat_session_path, chat_history);
+                continue;
+            }
+            if (sub == "clear") {
+                chat_history.clear();
+                pending_route_action = {};
+                std::error_code ec;
+                const bool removed = std::filesystem::remove(chat_session_path, ec);
+                if (ec) {
+                    std::cerr << "context clear failed: " << ec.message() << '\n';
+                    continue;
+                }
+                std::cout << "AgentOS main context cleared\n"
+                          << "  session: repl-default\n"
+                          << "  path:    " << chat_session_path.string() << '\n'
+                          << "  removed: " << (removed ? "true" : "false") << "\n\n";
+                continue;
+            }
+            std::cerr << "Unknown context subcommand: " << sub << '\n';
             continue;
         }
 
