@@ -262,7 +262,6 @@ CommandResult RunAgentosInPtyWithInput(
 
     std::string output;
     std::size_t next_input_chunk = 0;
-    std::size_t prompt_search_start = 0;
     int status = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -278,14 +277,15 @@ CommandResult RunAgentosInPtyWithInput(
             }
             break;
         }
-        while (next_input_chunk < input_chunks.size()) {
-            const auto prompt_pos = output.find("agentos> ", prompt_search_start);
-            if (prompt_pos == std::string::npos) {
-                break;
+        if (next_input_chunk < input_chunks.size()) {
+            constexpr std::string_view prompt = "agentos> ";
+            if (output.size() < prompt.size() ||
+                output.compare(output.size() - prompt.size(), prompt.size(), prompt) != 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            } else {
+                const auto& chunk = input_chunks[next_input_chunk++];
+                (void)write(master_fd, chunk.data(), chunk.size());
             }
-            prompt_search_start = prompt_pos + 9;
-            const auto& chunk = input_chunks[next_input_chunk++];
-            (void)write(master_fd, chunk.data(), chunk.size());
         }
         const pid_t done = waitpid(pid, &status, WNOHANG);
         if (done == pid) {
@@ -2502,13 +2502,16 @@ void TestInteractiveFreeFormDispatch() {
 #ifndef _WIN32
     {
         const auto workspace = FreshWorkspace("interactive_utf8_pty_dispatch");
-        SetEnvForTest("PATH", old_path);
+        const auto empty_bin = workspace / "empty-bin";
+        std::filesystem::create_directories(empty_bin);
+        SetEnvForTest("PATH", empty_bin.string());
 
         const auto result = RunAgentosInPtyWithInput(
             workspace,
             {"interactive"},
             "你好\nexit\n");
-        Expect(result.exit_code == 0, "interactive UTF-8 pty dispatch should exit cleanly");
+        Expect(result.exit_code == 0,
+            "interactive UTF-8 pty dispatch should exit cleanly; output=" + result.output);
         Expect(result.output.find("你好") != std::string::npos,
             "interactive raw terminal input should preserve UTF-8 text");
         Expect(result.output.find("(route: chat_agent") != std::string::npos,

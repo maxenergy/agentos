@@ -1,6 +1,7 @@
 #include "cli/interactive_commands.hpp"
 
 #include "core/execution/agent_event_runtime_store.hpp"
+#include "cli/interactive_chat_state.hpp"
 #include "cli/intent_classifier.hpp"
 #include "cli/interactive_intent_registry.hpp"
 #include "cli/main_route_action.hpp"
@@ -51,19 +52,6 @@ namespace {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 constexpr int kInteractiveChatTimeoutMs = 120000;
-constexpr std::size_t kMaxChatContextTurns = 6;
-
-struct ChatTranscriptTurn {
-    std::string user;
-    std::string assistant;
-};
-
-struct PendingRouteAction {
-    bool active = false;
-    MainRouteAction action;
-    std::string error_code;
-    std::string error_message;
-};
 
 std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 120);
 TaskRunResult ExecuteMainRouteAction(const MainRouteAction& action,
@@ -112,62 +100,6 @@ std::string JoinAgentCapabilities(const std::vector<AgentCapability>& values) {
         }
     }
     return JoinStrings(names, ",");
-}
-
-std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& history) {
-    if (history.empty()) {
-        return {};
-    }
-    const auto start = history.size() > kMaxChatContextTurns
-        ? history.size() - kMaxChatContextTurns
-        : 0;
-    std::ostringstream out;
-    out << "[RECENT REPL CHAT CONTEXT]\n";
-    for (std::size_t i = start; i < history.size(); ++i) {
-        out << "User: " << history[i].user << "\n";
-        if (!history[i].assistant.empty()) {
-            out << "Assistant: " << ShortenForConsole(history[i].assistant, 1200) << "\n";
-        }
-    }
-    out << "[END RECENT REPL CHAT CONTEXT]";
-    return out.str();
-}
-
-void AppendChatTranscript(std::vector<ChatTranscriptTurn>& history,
-                          std::string user,
-                          std::string assistant) {
-    history.push_back({
-        .user = std::move(user),
-        .assistant = std::move(assistant),
-    });
-    if (history.size() > kMaxChatContextTurns) {
-        history.erase(history.begin(),
-                      history.begin() + static_cast<std::ptrdiff_t>(history.size() - kMaxChatContextTurns));
-    }
-}
-
-std::string RenderPendingRouteActionContext(const PendingRouteAction& pending) {
-    if (!pending.active) {
-        return {};
-    }
-    nlohmann::ordered_json payload;
-    payload["action"] = pending.action.action;
-    payload["target_kind"] = pending.action.target_kind;
-    payload["target"] = pending.action.target;
-    payload["brief"] = pending.action.brief;
-    payload["mode"] = pending.action.mode;
-    payload["error_code"] = pending.error_code;
-    payload["error_message"] = pending.error_message;
-    payload["arguments"] = pending.action.arguments;
-
-    std::ostringstream out;
-    out << "[PENDING AGENTOS ROUTE ACTION]\n"
-        << payload.dump(2) << "\n"
-        << "[END PENDING AGENTOS ROUTE ACTION]\n"
-        << "If the user is supplying missing information for this pending capability, "
-           "reuse the same registered target and emit a fresh agentos_route_action "
-           "with the completed arguments. Otherwise answer normally.";
-    return out.str();
 }
 
 // Tokenize a line by whitespace, respecting double-quoted spans.
