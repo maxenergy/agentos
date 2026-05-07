@@ -6,6 +6,7 @@
 #include "cli/interactive_intent_registry.hpp"
 #include "cli/main_route_action.hpp"
 #include "storage/main_agent_store.hpp"
+#include "utils/atomic_file.hpp"
 #include "utils/signal_cancellation.hpp"
 
 #ifdef _WIN32
@@ -18,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <clocale>
 #include <condition_variable>
 #include <cwchar>
@@ -901,6 +903,8 @@ void PrintHelp() {
         << "  status                            Show runtime status summary\n"
         << "  context show                      Show persisted main-agent REPL context\n"
         << "  context clear                     Clear persisted main-agent REPL context\n"
+        << "  context list                      List named main-agent REPL contexts\n"
+        << "  context use <name>                Switch to a named main-agent REPL context\n"
         << "  memory summary                    Show memory summary\n"
         << "  memory stats                      Show skill/agent stats\n"
         << "  memory lessons                    Show lesson store\n"
@@ -930,9 +934,10 @@ void PrintHelp() {
 }
 
 void PrintMainContextSummary(const std::filesystem::path& path,
+                             const std::string& session_name,
                              const std::vector<ChatTranscriptTurn>& history) {
     std::cout << "AgentOS main context\n"
-              << "  session: repl-default\n"
+              << "  session: " << session_name << '\n'
               << "  path:    " << path.string() << '\n'
               << "  turns:   " << history.size() << '\n';
     if (history.empty()) {
@@ -944,6 +949,86 @@ void PrintMainContextSummary(const std::filesystem::path& path,
         if (!history[i].assistant.empty()) {
             std::cout << "    assistant: " << history[i].assistant << '\n';
         }
+    }
+    std::cout << '\n';
+}
+
+bool IsValidContextName(const std::string& name) {
+    if (name.empty() || name == "." || name == "..") {
+        return false;
+    }
+    return std::all_of(name.begin(), name.end(), [](const unsigned char ch) {
+        return std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.';
+    });
+}
+
+std::filesystem::path MainContextSessionsDir(const std::filesystem::path& workspace) {
+    return workspace / "runtime" / "main_agent" / "sessions";
+}
+
+std::filesystem::path MainContextCurrentPath(const std::filesystem::path& workspace) {
+    return workspace / "runtime" / "main_agent" / "current_context.txt";
+}
+
+std::filesystem::path MainContextSessionPath(const std::filesystem::path& workspace,
+                                             const std::string& session_name) {
+    return MainContextSessionsDir(workspace) / (session_name + ".json");
+}
+
+std::string LoadCurrentMainContextName(const std::filesystem::path& workspace) {
+    std::ifstream input(MainContextCurrentPath(workspace), std::ios::binary);
+    if (!input) {
+        return "repl-default";
+    }
+    std::string name;
+    std::getline(input, name);
+    const auto start = name.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return "repl-default";
+    }
+    const auto end = name.find_last_not_of(" \t\r\n");
+    name = name.substr(start, end - start + 1);
+    return IsValidContextName(name) ? name : std::string("repl-default");
+}
+
+void SaveCurrentMainContextName(const std::filesystem::path& workspace,
+                                const std::string& session_name) {
+    WriteFileAtomically(MainContextCurrentPath(workspace), session_name + "\n");
+}
+
+void PrintMainContextList(const std::filesystem::path& workspace,
+                          const std::string& active_session) {
+    const auto sessions_dir = MainContextSessionsDir(workspace);
+    std::cout << "AgentOS main contexts\n"
+              << "  active: " << active_session << '\n'
+              << "  path:   " << sessions_dir.string() << '\n';
+
+    std::vector<std::string> names;
+    std::error_code ec;
+    if (std::filesystem::exists(sessions_dir, ec) && std::filesystem::is_directory(sessions_dir, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(sessions_dir, ec)) {
+            if (ec) {
+                break;
+            }
+            if (!entry.is_regular_file(ec) || entry.path().extension() != ".json") {
+                continue;
+            }
+            const auto name = entry.path().stem().string();
+            if (IsValidContextName(name)) {
+                names.push_back(name);
+            }
+        }
+    }
+    if (std::find(names.begin(), names.end(), active_session) == names.end()) {
+        names.push_back(active_session);
+    }
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+
+    for (const auto& name : names) {
+        const auto turns = LoadChatTranscript(MainContextSessionPath(workspace, name));
+        std::cout << "  " << (name == active_session ? "* " : "  ")
+                  << name << " turns=" << turns.size() << '\n';
     }
     std::cout << '\n';
 }
@@ -1001,7 +1086,8 @@ void RunChatPrompt(const std::string& prompt,
                    std::vector<ChatTranscriptTurn>* chat_history = nullptr,
                    PendingRouteAction* pending_route_action = nullptr,
                    bool allow_route_actions = true,
-                   std::optional<std::string> transcript_user_prompt = std::nullopt) {
+                   std::optional<std::string> transcript_user_prompt = std::nullopt,
+                   std::optional<std::filesystem::path> chat_session_path = std::nullopt) {
     const auto target = ResolveChatTarget(agent_registry, workspace);
     if (target.empty()) {
         std::cerr
@@ -1095,7 +1181,8 @@ void RunChatPrompt(const std::string& prompt,
                               chat_history,
                               pending_route_action,
                               false,
-                              prompt);
+                              prompt,
+                              chat_session_path);
                 return;
             }
         }
@@ -1134,7 +1221,7 @@ void RunChatPrompt(const std::string& prompt,
                 transcript_user_prompt.value_or(prompt),
                 result.summary);
             SaveChatTranscript(
-                workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json",
+                chat_session_path.value_or(MainContextSessionPath(workspace, "repl-default")),
                 *chat_history);
         }
     } else {
@@ -1740,7 +1827,8 @@ int RunInteractiveCommand(
     std::vector<std::shared_ptr<BackgroundJob>> background_jobs;
     const auto history_path = workspace / "runtime" / "repl_history.txt";
     std::vector<std::string> line_history = LoadReplHistory(history_path);
-    const auto chat_session_path = workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json";
+    std::string chat_session_name = LoadCurrentMainContextName(workspace);
+    std::filesystem::path chat_session_path = MainContextSessionPath(workspace, chat_session_name);
     std::vector<ChatTranscriptTurn> chat_history = LoadChatTranscript(chat_session_path);
     PendingRouteAction pending_route_action;
 
@@ -1863,6 +1951,7 @@ int RunInteractiveCommand(
             std::cout << "  background_jobs: " << background_jobs.size() << '\n';
             std::cout << "  scheduled_tasks: " << scheduler.list().size() << '\n';
             std::cout << "  workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
+            std::cout << "  main_context: " << chat_session_name << '\n';
             std::cout << "  main_context_turns: " << chat_history.size() << '\n';
             std::cout << "  audit_log: " << audit_logger.log_path().string() << '\n';
             std::cout << '\n';
@@ -1872,12 +1961,33 @@ int RunInteractiveCommand(
         // ── context subcommands ────────────────────────────────────────
         if (command == "context") {
             if (tokens.size() < 2) {
-                std::cerr << "Usage: context show|clear\n";
+                std::cerr << "Usage: context show|clear|list|use <name>\n";
                 continue;
             }
             const auto sub = tokens[1];
             if (sub == "show") {
-                PrintMainContextSummary(chat_session_path, chat_history);
+                PrintMainContextSummary(chat_session_path, chat_session_name, chat_history);
+                continue;
+            }
+            if (sub == "list") {
+                PrintMainContextList(workspace, chat_session_name);
+                continue;
+            }
+            if (sub == "use") {
+                if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
+                    std::cerr << "Usage: context use <name>\n"
+                              << "Context names may contain letters, numbers, '.', '_' and '-'.\n";
+                    continue;
+                }
+                chat_session_name = tokens[2];
+                chat_session_path = MainContextSessionPath(workspace, chat_session_name);
+                chat_history = LoadChatTranscript(chat_session_path);
+                pending_route_action = {};
+                SaveCurrentMainContextName(workspace, chat_session_name);
+                std::cout << "AgentOS main context selected\n"
+                          << "  session: " << chat_session_name << '\n'
+                          << "  path:    " << chat_session_path.string() << '\n'
+                          << "  turns:   " << chat_history.size() << "\n\n";
                 continue;
             }
             if (sub == "clear") {
@@ -1890,7 +2000,7 @@ int RunInteractiveCommand(
                     continue;
                 }
                 std::cout << "AgentOS main context cleared\n"
-                          << "  session: repl-default\n"
+                          << "  session: " << chat_session_name << '\n'
                           << "  path:    " << chat_session_path.string() << '\n'
                           << "  removed: " << (removed ? "true" : "false") << "\n\n";
                 continue;
@@ -2040,7 +2150,10 @@ int RunInteractiveCommand(
                 audit_logger,
                 workspace,
                 &chat_history,
-                &pending_route_action);
+                &pending_route_action,
+                true,
+                std::nullopt,
+                chat_session_path);
             continue;
         }
 
@@ -2124,7 +2237,10 @@ int RunInteractiveCommand(
                 audit_logger,
                 workspace,
                 &chat_history,
-                &pending_route_action);
+                &pending_route_action,
+                true,
+                std::nullopt,
+                chat_session_path);
             continue;
         case InteractiveRouteKind::chat_agent:
             RunChatPrompt(
@@ -2135,7 +2251,10 @@ int RunInteractiveCommand(
                 audit_logger,
                 workspace,
                 &chat_history,
-                &pending_route_action);
+                &pending_route_action,
+                true,
+                std::nullopt,
+                chat_session_path);
             continue;
         case InteractiveRouteKind::unknown_command:
             break;
@@ -2148,7 +2267,10 @@ int RunInteractiveCommand(
             audit_logger,
             workspace,
             &chat_history,
-            &pending_route_action);
+            &pending_route_action,
+            true,
+            std::nullopt,
+            chat_session_path);
     }
 
     for (const auto& job : background_jobs) {

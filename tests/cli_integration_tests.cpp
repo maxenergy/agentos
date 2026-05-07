@@ -606,15 +606,15 @@ void WriteMainContextContinuationCurlFixture(const std::filesystem::path& bin_di
         << "if [ \"$count\" = \"0\" ]; then\n"
         << "  printf '1\\n' > \"$counter\"\n"
         << "  cat <<'JSON'\n"
-        << R"({"choices":[{"message":{"content":"推荐授权低频自动化，并优先确认 ToS/API。"}}]})"
+        << R"({"choices":[{"message":{"content":"推荐低频批处理优先考虑官方接口或合规自动化。"}}]})"
         << "\nJSON\n"
         << "else\n"
         << "  printf '2\\n' > \"$counter\"\n"
         << "  if grep -q '\"role\":\"system\"' \"$body\" && "
            "grep -q '\"role\":\"assistant\"' \"$body\" && "
-           "grep -q '访问一些有反爬虫的网站，用哪个浏览器？' \"$body\" && "
-           "grep -q '推荐授权低频自动化' \"$body\" && "
-           "grep -q '低频，因为我抓取完一批企业数据后' \"$body\" && "
+           "grep -q '这个批处理方案应该用官方接口还是自动化流程？' \"$body\" && "
+           "grep -q '推荐低频批处理优先考虑官方接口' \"$body\" && "
+           "grep -q '低频，因为每批处理完成后' \"$body\" && "
            "grep -q 'contextual_repl_turn' \"$body\" && "
            "grep -q 'continuation of the prior topic' \"$body\"; then\n"
         << "    cat <<'JSON'\n"
@@ -626,6 +626,26 @@ void WriteMainContextContinuationCurlFixture(const std::filesystem::path& bin_di
         << "\nJSON\n"
         << "  fi\n"
         << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+}
+
+void WriteMainSimpleChatCurlFixture(const std::filesystem::path& bin_dir,
+                                    const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "next=$((count + 1))\n"
+        << "printf '%s\\n' \"$next\" > \"$counter\"\n"
+        << "printf '{\"choices\":[{\"message\":{\"content\":\"simple reply %s\"}}]}\\n' \"$next\"\n";
     output.close();
     std::filesystem::permissions(
         fixture_path,
@@ -2781,8 +2801,8 @@ void TestInteractiveMainReceivesContextForContinuationTurns() {
     const auto result = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "访问一些有反爬虫的网站，用哪个浏览器？\n"
-        "低频，因为我抓取完一批企业数据后，会根据企业画像生成聊天术语，外呼操作完成，到下一批抓取数据估计都有几小时。\n"
+        "这个批处理方案应该用官方接口还是自动化流程？\n"
+        "低频，因为每批处理完成后，会根据画像生成沟通术语，执行完成后到下一批估计都有几小时。\n"
         "exit\n");
     Expect(result.exit_code == 0, "interactive continuation context loop should exit cleanly");
     Expect(result.output.find("(route: chat_agent") != std::string::npos,
@@ -2819,18 +2839,18 @@ void TestInteractiveMainRestoresPersistedContextAcrossReplRestarts() {
     const auto first = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "访问一些有反爬虫的网站，用哪个浏览器？\nexit\n");
+        "这个批处理方案应该用官方接口还是自动化流程？\nexit\n");
     Expect(first.exit_code == 0, "first interactive persisted-context session should exit cleanly");
     const auto session_path = workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json";
     Expect(std::filesystem::exists(session_path),
         "first interactive session should persist main-agent REPL context");
-    Expect(ReadTextFile(session_path).find("推荐授权低频自动化") != std::string::npos,
+    Expect(ReadTextFile(session_path).find("推荐低频批处理优先考虑官方接口") != std::string::npos,
         "persisted main-agent REPL context should include assistant reply");
 
     const auto second = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "低频，因为我抓取完一批企业数据后，会根据企业画像生成聊天术语，外呼操作完成，到下一批抓取数据估计都有几小时。\nexit\n");
+        "低频，因为每批处理完成后，会根据画像生成沟通术语，执行完成后到下一批估计都有几小时。\nexit\n");
     Expect(second.exit_code == 0, "second interactive persisted-context session should exit cleanly");
     Expect(second.output.find("contextual continuation ok") != std::string::npos,
         "second REPL process should restore persisted context before calling main");
@@ -2864,7 +2884,7 @@ void TestInteractiveMainContextShowAndClearCommands() {
     const auto result = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "访问一些有反爬虫的网站，用哪个浏览器？\n"
+        "这个批处理方案应该用官方接口还是自动化流程？\n"
         "context show\n"
         "status\n"
         "context clear\n"
@@ -2875,7 +2895,7 @@ void TestInteractiveMainContextShowAndClearCommands() {
         "context show should print the main context heading");
     Expect(result.output.find("turns:   1") != std::string::npos,
         "context show should report the persisted turn count before clear");
-    Expect(result.output.find("访问一些有反爬虫的网站，用哪个浏览器？") != std::string::npos,
+    Expect(result.output.find("这个批处理方案应该用官方接口还是自动化流程？") != std::string::npos,
         "context show should print the stored user turn");
     Expect(result.output.find("main_context_turns: 1") != std::string::npos,
         "status should include current main context turn count");
@@ -2885,6 +2905,68 @@ void TestInteractiveMainContextShowAndClearCommands() {
         "context show after clear should report an empty context");
     Expect(!std::filesystem::exists(workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json"),
         "context clear should remove the persisted context file");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainNamedContextUseAndListCommands() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_named_contexts");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_named_contexts_counter.txt";
+    WriteMainSimpleChatCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent named context fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "context use alpha\n"
+        "alpha topic\n"
+        "context use beta\n"
+        "beta topic\n"
+        "context list\n"
+        "status\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive named context command session should exit cleanly");
+    Expect(result.output.find("session: alpha") != std::string::npos,
+        "context use alpha should select alpha");
+    Expect(result.output.find("session: beta") != std::string::npos,
+        "context use beta should select beta");
+    Expect(result.output.find("  alpha turns=1") != std::string::npos,
+        "context list should include alpha with one turn");
+    Expect(result.output.find("* beta turns=1") != std::string::npos,
+        "context list should mark beta as active with one turn");
+    Expect(result.output.find("main_context: beta") != std::string::npos,
+        "status should show the active named context");
+    Expect(std::filesystem::exists(workspace / "runtime" / "main_agent" / "sessions" / "alpha.json"),
+        "alpha context should persist to its own file");
+    Expect(std::filesystem::exists(workspace / "runtime" / "main_agent" / "sessions" / "beta.json"),
+        "beta context should persist to its own file");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "current_context.txt").find("beta") != std::string::npos,
+        "context use should persist the current named context");
+
+    const auto persisted = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "status\n"
+        "context list\n"
+        "exit\n");
+    Expect(persisted.exit_code == 0, "interactive named context persistence session should exit cleanly");
+    Expect(persisted.output.find("main_context: beta") != std::string::npos,
+        "interactive restart should restore the selected named context");
+    Expect(persisted.output.find("* beta turns=1") != std::string::npos,
+        "context list after restart should mark the restored named context active");
 
     SetEnvForTest("PATH", old_path);
     SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
@@ -4587,6 +4669,7 @@ int main() {
     TestInteractiveMainReceivesContextForContinuationTurns();
     TestInteractiveMainRestoresPersistedContextAcrossReplRestarts();
     TestInteractiveMainContextShowAndClearCommands();
+    TestInteractiveMainNamedContextUseAndListCommands();
 #endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();

@@ -132,9 +132,18 @@ natural language goes to the configured `main` agent with recent context, and
      the persisted `repl-default.json` file.
    - Show `main_context_turns` in `status`.
 
+12. Named REPL main-agent contexts: done
+   - Add `context use <name>` to switch between separate persisted
+     main-agent REPL transcripts.
+   - Add `context list` to show available contexts, active context, and turn
+     counts.
+   - Persist the selected context name in
+     `runtime/main_agent/current_context.txt` so REPL restarts resume the same
+     topic.
+   - Show the active `main_context` name in `status`.
+
 ## Non-goals For This Batch
 
-- Persist arbitrary named chat sessions across process restarts.
 - Build a full multi-step planner loop.
 - Remove explicit commands such as `run`, `schedule`, or `memory`.
 - Auto-run destructive tool actions without existing AgentOS policy checks.
@@ -157,4 +166,5 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
   small module with direct unit tests. (done)
 - Add an explicit approval path for high-risk main route actions instead of
   hard rejecting them. (done)
-- Add multiple named REPL contexts if users need separate concurrent topics.
+- Add context rename/delete/export commands if named contexts need lifecycle
+  management beyond `use`, `list`, `show`, and `clear`.

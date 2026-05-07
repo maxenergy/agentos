@@ -224,8 +224,8 @@ void TestChatPromptIncludesRecentReplContext() {
     agentos::AgentTask task;
     task.task_id = "chat-context";
     task.task_type = "chat";
-    task.objective = "低频，因为我抓取完一批企业数据后再外呼。";
-    task.context_json = R"({"conversation_context":"[RECENT REPL CHAT CONTEXT]\nUser: 访问有反爬虫的网站，用哪个浏览器？\nAssistant: 推荐低频授权场景优先考虑官方 API 或合规浏览器自动化。\n[END RECENT REPL CHAT CONTEXT]"})";
+    task.objective = "低频，因为每批处理完成后会隔几个小时再开始下一批。";
+    task.context_json = R"({"conversation_context":"[RECENT REPL CHAT CONTEXT]\nUser: 这个批处理方案应该用官方接口还是自动化流程？\nAssistant: 推荐低频批处理优先考虑官方接口或合规自动化。\n[END RECENT REPL CHAT CONTEXT]"})";
 
     const auto prompt = agentos::BuildMainAgentPrompt(task, &skill_registry, &agent_registry);
     Expect(prompt.find("primary conversational orchestrator") != std::string::npos,
@@ -234,7 +234,7 @@ void TestChatPromptIncludesRecentReplContext() {
            "main-agent prompt should include the structured route action contract");
     Expect(prompt.find("RECENT REPL CHAT CONTEXT") != std::string::npos,
            "main-agent prompt should include recent REPL context when provided");
-    Expect(prompt.find("低频，因为") != std::string::npos,
+    Expect(prompt.find("每批处理完成后") != std::string::npos,
            "main-agent prompt should keep the live user turn separate from context");
     Expect(prompt.find("continuation of the prior topic") != std::string::npos,
            "main-agent prompt should make contextual continuation the first routing question");

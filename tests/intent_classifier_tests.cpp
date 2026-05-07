@@ -98,7 +98,7 @@ void TestMemoryQuestionRoutesToLocalIntent() {
 
 void TestBusinessDiscussionWithGenerateTermsRoutesToChat() {
     const auto decision = Classify(
-        "低频，因为我抓取完一批企业数据后，会根据企业画像生成聊天术语，外呼操作完成，到下一批抓取数据估计都有几小时。");
+        "低频，因为每批处理完成后，会根据画像生成沟通术语，执行完成后到下一批估计都有几小时。");
     Expect(decision.route == agentos::InteractiveRouteKind::chat_agent,
         "business discussion with generated terms should stay on main chat");
     Expect(decision.execution_mode == agentos::InteractiveExecutionMode::sync,
