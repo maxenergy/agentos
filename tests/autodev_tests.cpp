@@ -43,6 +43,34 @@ int RunShell(const std::string& command) {
 }
 
 std::string QuoteShellArg(const std::string& value) {
+#ifdef _WIN32
+    if (value.find_first_of(" \t\n\"&<>|^") == std::string::npos) {
+        return value;
+    }
+
+    std::string quoted = "\"";
+    std::size_t backslashes = 0;
+    for (const char ch : value) {
+        if (ch == '\\') {
+            ++backslashes;
+        } else if (ch == '"') {
+            quoted.append(backslashes * 2 + 1, '\\');
+            quoted.push_back('"');
+            backslashes = 0;
+        } else {
+            quoted.append(backslashes, '\\');
+            backslashes = 0;
+            quoted.push_back(ch);
+        }
+    }
+    quoted.append(backslashes * 2, '\\');
+    quoted.push_back('"');
+    return quoted;
+#else
+    if (value.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+-=./:") == std::string::npos) {
+        return value;
+    }
+
     std::string quoted = "'";
     for (const char ch : value) {
         if (ch == '\'') {
@@ -53,6 +81,7 @@ std::string QuoteShellArg(const std::string& value) {
     }
     quoted.push_back('\'');
     return quoted;
+#endif
 }
 
 void InitGitRepo(const std::filesystem::path& repo) {
