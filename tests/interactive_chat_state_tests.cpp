@@ -47,6 +47,37 @@ void TestRenderRecentChatContext() {
            "recent chat context should skip empty assistant text");
 }
 
+void TestRenderRecentChatContextPrivacyLevels() {
+    std::vector<agentos::ChatTranscriptTurn> history;
+    agentos::AppendChatTranscript(history, "first", "reply");
+
+    const auto none = agentos::RenderRecentChatContext(
+        history,
+        agentos::ContextPrivacyLevel::none);
+    Expect(none.empty(), "privacy=none should not render prior chat context");
+
+    const auto verbatim = agentos::RenderRecentChatContext(
+        history,
+        agentos::ContextPrivacyLevel::verbatim);
+    Expect(verbatim.find("[RECENT REPL CHAT CONTEXT]") != std::string::npos,
+           "privacy=verbatim should use provider-message-compatible transcript markers");
+    Expect(verbatim.find("User: first") != std::string::npos,
+           "privacy=verbatim should include user text");
+    Expect(verbatim.find("Assistant: reply") != std::string::npos,
+           "privacy=verbatim should include assistant text");
+}
+
+void TestContextPrivacyLevelParsing() {
+    Expect(agentos::ParseContextPrivacyLevel("none") == agentos::ContextPrivacyLevel::none,
+           "privacy parser should accept none");
+    Expect(agentos::ParseContextPrivacyLevel("verbatim") == agentos::ContextPrivacyLevel::verbatim,
+           "privacy parser should accept verbatim");
+    Expect(agentos::ParseContextPrivacyLevel("digest") == agentos::ContextPrivacyLevel::digest,
+           "privacy parser should accept digest");
+    Expect(agentos::ParseContextPrivacyLevel("unknown") == agentos::ContextPrivacyLevel::digest,
+           "privacy parser should default unknown values to digest");
+}
+
 void TestRenderRecentChatContextSanitizesSensitiveDetails() {
     std::vector<agentos::ChatTranscriptTurn> history;
     agentos::AppendChatTranscript(
@@ -132,6 +163,8 @@ void TestMalformedChatTranscriptLoadsEmpty() {
 int main() {
     TestAppendChatTranscriptKeepsRecentTurns();
     TestRenderRecentChatContext();
+    TestRenderRecentChatContextPrivacyLevels();
+    TestContextPrivacyLevelParsing();
     TestRenderRecentChatContextSanitizesSensitiveDetails();
     TestRenderPendingRouteActionContext();
     TestChatTranscriptPersistsRecentTurns();

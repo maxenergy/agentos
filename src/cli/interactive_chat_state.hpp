@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace agentos {
@@ -20,7 +21,18 @@ struct PendingRouteAction {
     std::string error_message;
 };
 
-std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& history);
+enum class ContextPrivacyLevel {
+    digest,
+    none,
+    verbatim,
+};
+
+std::string ContextPrivacyLevelName(ContextPrivacyLevel level);
+
+ContextPrivacyLevel ParseContextPrivacyLevel(std::string_view value);
+
+std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& history,
+                                    ContextPrivacyLevel privacy = ContextPrivacyLevel::digest);
 
 void AppendChatTranscript(std::vector<ChatTranscriptTurn>& history,
                           std::string user,

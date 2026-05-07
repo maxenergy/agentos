@@ -153,6 +153,14 @@ natural language goes to the configured `main` agent with recent context, and
    - Preserve context-first routing guidance so follow-up turns still stay in
      the main conversational path unless a live tool/action is needed.
 
+14. Configurable REPL context privacy: done
+   - Add `context privacy [digest|none|verbatim]`.
+   - Default each named context to `digest`.
+   - Persist per-context privacy under `runtime/main_agent/privacy/<name>.txt`.
+   - Keep `none` available for strict privacy and `verbatim` available for
+     local debugging when exact prior turns are needed.
+   - Show active `main_context_privacy` in `status`.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -180,4 +188,4 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
 - Add context rename/delete/export commands if named contexts need lifecycle
   management beyond `use`, `list`, `show`, and `clear`.
 - Add configurable context privacy levels if users need to choose between
-  `digest`, `verbatim`, and `none` per REPL context.
+  `digest`, `verbatim`, and `none` per REPL context. (done)

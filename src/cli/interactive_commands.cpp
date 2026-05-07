@@ -904,6 +904,8 @@ void PrintHelp() {
         << "  context show                      Show persisted main-agent REPL context\n"
         << "  context clear                     Clear persisted main-agent REPL context\n"
         << "  context list                      List named main-agent REPL contexts\n"
+        << "  context privacy [digest|none|verbatim]\n"
+        << "                                    Show or set context sent to main-agent\n"
         << "  context use <name>                Switch to a named main-agent REPL context\n"
         << "  memory summary                    Show memory summary\n"
         << "  memory stats                      Show skill/agent stats\n"
@@ -973,6 +975,38 @@ std::filesystem::path MainContextCurrentPath(const std::filesystem::path& worksp
 std::filesystem::path MainContextSessionPath(const std::filesystem::path& workspace,
                                              const std::string& session_name) {
     return MainContextSessionsDir(workspace) / (session_name + ".json");
+}
+
+std::filesystem::path MainContextPrivacyDir(const std::filesystem::path& workspace) {
+    return workspace / "runtime" / "main_agent" / "privacy";
+}
+
+std::filesystem::path MainContextPrivacyPath(const std::filesystem::path& workspace,
+                                             const std::string& session_name) {
+    return MainContextPrivacyDir(workspace) / (session_name + ".txt");
+}
+
+ContextPrivacyLevel LoadMainContextPrivacy(const std::filesystem::path& workspace,
+                                           const std::string& session_name) {
+    std::ifstream input(MainContextPrivacyPath(workspace, session_name), std::ios::binary);
+    if (!input) {
+        return ContextPrivacyLevel::digest;
+    }
+    std::string value;
+    std::getline(input, value);
+    const auto start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return ContextPrivacyLevel::digest;
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return ParseContextPrivacyLevel(value.substr(start, end - start + 1));
+}
+
+void SaveMainContextPrivacy(const std::filesystem::path& workspace,
+                            const std::string& session_name,
+                            const ContextPrivacyLevel privacy) {
+    WriteFileAtomically(MainContextPrivacyPath(workspace, session_name),
+                        ContextPrivacyLevelName(privacy) + "\n");
 }
 
 std::string LoadCurrentMainContextName(const std::filesystem::path& workspace) {
@@ -1087,7 +1121,8 @@ void RunChatPrompt(const std::string& prompt,
                    PendingRouteAction* pending_route_action = nullptr,
                    bool allow_route_actions = true,
                    std::optional<std::string> transcript_user_prompt = std::nullopt,
-                   std::optional<std::filesystem::path> chat_session_path = std::nullopt) {
+                   std::optional<std::filesystem::path> chat_session_path = std::nullopt,
+                   ContextPrivacyLevel context_privacy = ContextPrivacyLevel::digest) {
     const auto target = ResolveChatTarget(agent_registry, workspace);
     if (target.empty()) {
         std::cerr
@@ -1124,7 +1159,7 @@ void RunChatPrompt(const std::string& prompt,
         "capability only when the live turn explicitly needs tool, agent, code, research, or file "
         "execution now";
     if (chat_history != nullptr) {
-        const auto context = RenderRecentChatContext(*chat_history);
+        const auto context = RenderRecentChatContext(*chat_history, context_privacy);
         if (!context.empty()) {
             task.inputs["conversation_context"] = context;
         }
@@ -1182,7 +1217,8 @@ void RunChatPrompt(const std::string& prompt,
                               pending_route_action,
                               false,
                               prompt,
-                              chat_session_path);
+                              chat_session_path,
+                              context_privacy);
                 return;
             }
         }
@@ -1830,6 +1866,7 @@ int RunInteractiveCommand(
     std::string chat_session_name = LoadCurrentMainContextName(workspace);
     std::filesystem::path chat_session_path = MainContextSessionPath(workspace, chat_session_name);
     std::vector<ChatTranscriptTurn> chat_history = LoadChatTranscript(chat_session_path);
+    ContextPrivacyLevel context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
     PendingRouteAction pending_route_action;
 
     std::string line;
@@ -1953,6 +1990,7 @@ int RunInteractiveCommand(
             std::cout << "  workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
             std::cout << "  main_context: " << chat_session_name << '\n';
             std::cout << "  main_context_turns: " << chat_history.size() << '\n';
+            std::cout << "  main_context_privacy: " << ContextPrivacyLevelName(context_privacy) << '\n';
             std::cout << "  audit_log: " << audit_logger.log_path().string() << '\n';
             std::cout << '\n';
             continue;
@@ -1961,7 +1999,7 @@ int RunInteractiveCommand(
         // ── context subcommands ────────────────────────────────────────
         if (command == "context") {
             if (tokens.size() < 2) {
-                std::cerr << "Usage: context show|clear|list|use <name>\n";
+                std::cerr << "Usage: context show|clear|list|privacy [digest|none|verbatim]|use <name>\n";
                 continue;
             }
             const auto sub = tokens[1];
@@ -1982,12 +2020,33 @@ int RunInteractiveCommand(
                 chat_session_name = tokens[2];
                 chat_session_path = MainContextSessionPath(workspace, chat_session_name);
                 chat_history = LoadChatTranscript(chat_session_path);
+                context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
                 pending_route_action = {};
                 SaveCurrentMainContextName(workspace, chat_session_name);
                 std::cout << "AgentOS main context selected\n"
                           << "  session: " << chat_session_name << '\n'
+                          << "  privacy: " << ContextPrivacyLevelName(context_privacy) << '\n'
                           << "  path:    " << chat_session_path.string() << '\n'
                           << "  turns:   " << chat_history.size() << "\n\n";
+                continue;
+            }
+            if (sub == "privacy") {
+                if (tokens.size() == 2) {
+                    std::cout << "AgentOS main context privacy\n"
+                              << "  session: " << chat_session_name << '\n'
+                              << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
+                    continue;
+                }
+                if (tokens[2] != "digest" && tokens[2] != "none" && tokens[2] != "verbatim") {
+                    std::cerr << "Usage: context privacy [digest|none|verbatim]\n";
+                    continue;
+                }
+                context_privacy = ParseContextPrivacyLevel(tokens[2]);
+                SaveMainContextPrivacy(workspace, chat_session_name, context_privacy);
+                pending_route_action = {};
+                std::cout << "AgentOS main context privacy updated\n"
+                          << "  session: " << chat_session_name << '\n'
+                          << "  privacy: " << ContextPrivacyLevelName(context_privacy) << "\n\n";
                 continue;
             }
             if (sub == "clear") {
@@ -2153,7 +2212,8 @@ int RunInteractiveCommand(
                 &pending_route_action,
                 true,
                 std::nullopt,
-                chat_session_path);
+                chat_session_path,
+                context_privacy);
             continue;
         }
 
@@ -2240,7 +2300,8 @@ int RunInteractiveCommand(
                 &pending_route_action,
                 true,
                 std::nullopt,
-                chat_session_path);
+                chat_session_path,
+                context_privacy);
             continue;
         case InteractiveRouteKind::chat_agent:
             RunChatPrompt(
@@ -2254,7 +2315,8 @@ int RunInteractiveCommand(
                 &pending_route_action,
                 true,
                 std::nullopt,
-                chat_session_path);
+                chat_session_path,
+                context_privacy);
             continue;
         case InteractiveRouteKind::unknown_command:
             break;
@@ -2270,7 +2332,8 @@ int RunInteractiveCommand(
             &pending_route_action,
             true,
             std::nullopt,
-            chat_session_path);
+            chat_session_path,
+            context_privacy);
     }
 
     for (const auto& job : background_jobs) {

@@ -8,6 +8,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 namespace agentos {
 
@@ -56,14 +57,52 @@ std::string SanitizeContextText(std::string text) {
 
 }  // namespace
 
-std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& history) {
+std::string ContextPrivacyLevelName(const ContextPrivacyLevel level) {
+    switch (level) {
+    case ContextPrivacyLevel::digest:
+        return "digest";
+    case ContextPrivacyLevel::none:
+        return "none";
+    case ContextPrivacyLevel::verbatim:
+        return "verbatim";
+    }
+    return "digest";
+}
+
+ContextPrivacyLevel ParseContextPrivacyLevel(const std::string_view value) {
+    if (value == "none") {
+        return ContextPrivacyLevel::none;
+    }
+    if (value == "verbatim") {
+        return ContextPrivacyLevel::verbatim;
+    }
+    return ContextPrivacyLevel::digest;
+}
+
+std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& history,
+                                    const ContextPrivacyLevel privacy) {
     if (history.empty()) {
+        return {};
+    }
+    if (privacy == ContextPrivacyLevel::none) {
         return {};
     }
     const auto start = history.size() > kMaxChatContextTurns
         ? history.size() - kMaxChatContextTurns
         : 0;
     std::ostringstream out;
+    if (privacy == ContextPrivacyLevel::verbatim) {
+        out << "[RECENT REPL CHAT CONTEXT]\n";
+        for (std::size_t i = start; i < history.size(); ++i) {
+            out << "User: " << history[i].user << "\n";
+            if (!history[i].assistant.empty()) {
+                out << "Assistant: " << ShortenCopy(history[i].assistant, 1200) << "\n";
+            }
+        }
+        out << "[END RECENT REPL CHAT CONTEXT]";
+        return out.str();
+    }
+
     out << "[REPL CONTEXT DIGEST]\n"
         << "turn_count: " << history.size() << "\n"
         << "note: This is a sanitized continuity digest, not the full local transcript.\n";

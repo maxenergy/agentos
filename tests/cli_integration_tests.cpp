@@ -2971,6 +2971,40 @@ void TestInteractiveMainNamedContextUseAndListCommands() {
     SetEnvForTest("PATH", old_path);
     SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
 }
+
+void TestInteractiveMainContextPrivacyCommands() {
+    const auto workspace = FreshWorkspace("interactive_main_context_privacy");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "status\n"
+        "context privacy\n"
+        "context privacy none\n"
+        "status\n"
+        "context use alpha\n"
+        "context privacy verbatim\n"
+        "context use beta\n"
+        "context privacy\n"
+        "context use alpha\n"
+        "context privacy\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context privacy command session should exit cleanly");
+    Expect(result.output.find("main_context_privacy: digest") != std::string::npos,
+        "status should show default digest privacy");
+    Expect(result.output.find("privacy: none") != std::string::npos,
+        "context privacy none should update the current context");
+    Expect(result.output.find("main_context_privacy: none") != std::string::npos,
+        "status should show updated none privacy");
+    Expect(result.output.find("session: beta\n  privacy: digest") != std::string::npos,
+        "new named contexts should default to digest privacy");
+    Expect(result.output.find("session: alpha\n  privacy: verbatim") != std::string::npos,
+        "context use should restore per-context privacy");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "privacy" / "repl-default.txt").find("none") != std::string::npos,
+        "context privacy should persist repl-default privacy");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "privacy" / "alpha.txt").find("verbatim") != std::string::npos,
+        "context privacy should persist named context privacy");
+}
 #endif
 
 void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
@@ -4670,6 +4704,7 @@ int main() {
     TestInteractiveMainRestoresPersistedContextAcrossReplRestarts();
     TestInteractiveMainContextShowAndClearCommands();
     TestInteractiveMainNamedContextUseAndListCommands();
+    TestInteractiveMainContextPrivacyCommands();
 #endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();
