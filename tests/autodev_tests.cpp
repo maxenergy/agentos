@@ -42,6 +42,14 @@ int RunShell(const std::string& command) {
     return std::system(command.c_str());
 }
 
+std::string NullRedirect() {
+#ifdef _WIN32
+    return " >NUL 2>&1";
+#else
+    return " >/dev/null 2>&1";
+#endif
+}
+
 std::string QuoteShellArg(const std::string& value) {
 #ifdef _WIN32
     if (value.find_first_of(" \t\n\"&<>|^") == std::string::npos) {
@@ -86,7 +94,7 @@ std::string QuoteShellArg(const std::string& value) {
 
 void InitGitRepo(const std::filesystem::path& repo) {
     std::filesystem::create_directories(repo);
-    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " init >/dev/null 2>&1") == 0,
+    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " init" + NullRedirect()) == 0,
         "test fixture should initialize git repo");
     Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " config user.email test@example.com") == 0,
         "test fixture should configure git email");
@@ -98,7 +106,7 @@ void InitGitRepo(const std::filesystem::path& repo) {
     }
     Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " add README.md") == 0,
         "test fixture should stage initial file");
-    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " commit -m initial >/dev/null 2>&1") == 0,
+    Expect(RunShell("git -C " + QuoteShellArg(repo.string()) + " commit -m initial" + NullRedirect()) == 0,
         "test fixture should commit initial file");
 }
 

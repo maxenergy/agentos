@@ -99,9 +99,17 @@ std::string QuoteShellArg(const std::string& value) {
 #endif
 }
 
+std::string NullRedirect() {
+#ifdef _WIN32
+    return " >NUL 2>&1";
+#else
+    return " >/dev/null 2>&1";
+#endif
+}
+
 void InitGitRepoForCliTest(const std::filesystem::path& repo) {
     std::filesystem::create_directories(repo);
-    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " init >/dev/null 2>&1").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " init" + NullRedirect()).c_str());
     (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " config user.email test@example.com").c_str());
     (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " config user.name Test").c_str());
     {
@@ -109,7 +117,7 @@ void InitGitRepoForCliTest(const std::filesystem::path& repo) {
         readme << "fixture\n";
     }
     (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " add README.md").c_str());
-    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " commit -m initial >/dev/null 2>&1").c_str());
+    (void)std::system((std::string("git -C ") + QuoteShellArg(repo.string()) + " commit -m initial" + NullRedirect()).c_str());
 }
 
 int DecodeProcessStatus(const int status) {
@@ -3460,7 +3468,7 @@ void TestAutoDevCommands() {
         "autodev status should show workspace recovery guidance");
     (void)std::system((std::string("git -C ") + QuoteShellArg(dirty_target.string()) + " add README.md").c_str());
     (void)std::system((std::string("git -C ") + QuoteShellArg(dirty_target.string()) +
-                       " commit -m recover-dirty >/dev/null 2>&1").c_str());
+                       " commit -m recover-dirty" + NullRedirect()).c_str());
     const auto recover_dirty = RunAgentos(workspace, {"autodev", "recover-blocked", "job_id=" + dirty_job_id});
     Expect(recover_dirty.exit_code == 0,
         "autodev recover-blocked should rerun prepare-workspace after dirty target is fixed");

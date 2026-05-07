@@ -613,7 +613,7 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
 
 #ifdef _WIN32
     const auto binary = "cmd";
-    const auto args_template = R"(/d,/s,/c,echo {"message":"{{message}}"})";
+    const auto args_template = R"(/d,/s,/c,echo {^"message^":^"{{message}}^"})";
     const auto health_args_template = "/d,/s,/c,exit /b 0";
 #else
     const auto binary = "sh";
@@ -699,7 +699,7 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
     {
 #ifdef _WIN32
         const auto json_args_template =
-            R"(  "args_template": ["/d", "/s", "/c", "echo {\"\"plugin\"\":\"\"json\"\",\"\"message\"\":\"\"{{message}}\"\"}"],)";
+            R"(  "args_template": ["/d", "/s", "/c", "echo {^\"plugin^\":^\"json^\",^\"message^\":^\"{{message}}^\"}"],)";
         const auto json_health_args_template = R"(  "health_args_template": ["/d", "/s", "/c", "exit 0"])";
 #else
         const auto json_args_template =
@@ -920,10 +920,10 @@ void TestPluginSpecLoaderAndInvoker(const std::filesystem::path& workspace) {
 #ifdef _WIN32
     const std::vector<std::string> json_rpc_args = {
         "/d", "/s", "/c",
-        R"(echo {"jsonrpc":"2.0","id":"agentos-plugin","result":{"message":"json-rpc-ok"}})"};
+        R"(echo {^"jsonrpc^":^"2.0^",^"id^":^"agentos-plugin^",^"result^":{^"message^":^"json-rpc-ok^"}})"};
     const std::vector<std::string> json_rpc_invalid_args = {
         "/d", "/s", "/c",
-        R"(echo {"jsonrpc":"2.0","id":"agentos-plugin","error":{"code":-32000,"message":"failed"}})"};
+        R"(echo {^"jsonrpc^":^"2.0^",^"id^":^"agentos-plugin^",^"error^":{^"code^":-32000,^"message^":^"failed^"}})"};
 #else
     const std::vector<std::string> json_rpc_args = {
         "-c", "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":\"agentos-plugin\",\"result\":{\"message\":\"json-rpc-ok\"}}'"};
