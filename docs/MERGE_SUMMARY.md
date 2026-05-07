@@ -4,13 +4,14 @@ Branch: `codex/improve-interactive-routing`
 
 Base checked against: `origin/main`
 
-As of 2026-05-07, this branch is ahead of `origin/main` by 86 commits and has
-no commits behind `origin/main`.
+As of 2026-05-07, this branch had no commits behind `origin/main` when checked
+locally. Recheck before merging with:
 
-Diff size:
-
-```text
-58 files changed, 17798 insertions(+), 711 deletions(-)
+```bash
+git fetch origin main codex/improve-interactive-routing
+git rev-list --count origin/main..HEAD
+git rev-list --count HEAD..origin/main
+git diff --shortstat origin/main...HEAD
 ```
 
 ## Scope
