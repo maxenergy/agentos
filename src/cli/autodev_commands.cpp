@@ -211,8 +211,8 @@ AutoDevProgressView ComputeProgress(const AutoDevJob& job, const std::vector<Aut
     if (progress.tasks_total > 0 &&
         (job.phase == "codex_execution" || job.phase == "repairing" || job.phase == "final_review")) {
         const auto task_percent = static_cast<int>((60 * progress.tasks_passed) / progress.tasks_total);
-        progress.overall_percent = std::max(progress.phase_weight, 30 + task_percent);
-        progress.overall_percent = std::min(progress.overall_percent, job.phase == "final_review" ? 90 : 89);
+        progress.overall_percent = (std::max)(progress.phase_weight, 30 + task_percent);
+        progress.overall_percent = (std::min)(progress.overall_percent, job.phase == "final_review" ? 90 : 89);
         return progress;
     }
     progress.overall_percent = progress.phase_weight;
@@ -2830,8 +2830,8 @@ int RunStatus(const std::filesystem::path& workspace, const int argc, char* argv
     const auto watch_requested = options.find("watch") != options.end() ||
         (argc >= 3 && std::string(argv[2]) == "watch");
     if (watch_requested) {
-        const auto iterations = std::max(1, ParseIntOption(options, "iterations", 1));
-        const auto interval_ms = std::max(0, ParseIntOption(options, "interval_ms", 1000));
+        const auto iterations = (std::max)(1, ParseIntOption(options, "iterations", 1));
+        const auto interval_ms = (std::max)(0, ParseIntOption(options, "interval_ms", 1000));
         std::cout << "AutoDev watch\n"
                   << "job_id:      " << job_id_it->second << '\n'
                   << "iterations:  " << iterations << '\n'

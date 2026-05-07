@@ -281,7 +281,7 @@ std::string NextSpecRevision(const std::filesystem::path& dir) {
         std::smatch match;
         const auto name = entry.path().filename().string();
         if (std::regex_match(name, match, pattern)) {
-            max_revision = std::max(max_revision, std::stoi(match[1].str()));
+            max_revision = (std::max)(max_revision, std::stoi(match[1].str()));
         }
     }
 
@@ -407,7 +407,7 @@ std::vector<AutoDevTask> MaterializeTasksFromSpec(
         } else if (raw_task.contains("acceptance_criteria") && raw_task.at("acceptance_criteria").is_array()) {
             task.acceptance_total = static_cast<int>(raw_task.at("acceptance_criteria").size());
         }
-        task.max_retries = std::max(0, raw_task.value("max_retries", 3));
+        task.max_retries = (std::max)(0, raw_task.value("max_retries", 3));
         tasks.push_back(std::move(task));
         ++generated_id;
     }
@@ -425,7 +425,7 @@ std::string NextTurnId(const nlohmann::json& turn_records) {
             std::smatch match;
             const auto turn_id = turn.at("turn_id").get<std::string>();
             if (std::regex_match(turn_id, match, pattern)) {
-                max_turn = std::max(max_turn, std::stoi(match[1].str()));
+                max_turn = (std::max)(max_turn, std::stoi(match[1].str()));
             }
         }
     }
@@ -447,7 +447,7 @@ std::string NextSnapshotId(const nlohmann::json& snapshot_records) {
             std::smatch match;
             const auto snapshot_id = snapshot.at("snapshot_id").get<std::string>();
             if (std::regex_match(snapshot_id, match, pattern)) {
-                max_snapshot = std::max(max_snapshot, std::stoi(match[1].str()));
+                max_snapshot = (std::max)(max_snapshot, std::stoi(match[1].str()));
             }
         }
     }
@@ -469,7 +469,7 @@ std::string NextRollbackId(const nlohmann::json& rollback_records) {
             std::smatch match;
             const auto rollback_id = rollback.at("rollback_id").get<std::string>();
             if (std::regex_match(rollback_id, match, pattern)) {
-                max_rollback = std::max(max_rollback, std::stoi(match[1].str()));
+                max_rollback = (std::max)(max_rollback, std::stoi(match[1].str()));
             }
         }
     }
@@ -491,7 +491,7 @@ std::string NextRepairId(const nlohmann::json& repair_records) {
             std::smatch match;
             const auto repair_id = repair.at("repair_id").get<std::string>();
             if (std::regex_match(repair_id, match, pattern)) {
-                max_repair = std::max(max_repair, std::stoi(match[1].str()));
+                max_repair = (std::max)(max_repair, std::stoi(match[1].str()));
             }
         }
     }
@@ -513,7 +513,7 @@ std::string NextVerificationId(const nlohmann::json& verification_records) {
             std::smatch match;
             const auto verification_id = verification.at("verification_id").get<std::string>();
             if (std::regex_match(verification_id, match, pattern)) {
-                max_verification = std::max(max_verification, std::stoi(match[1].str()));
+                max_verification = (std::max)(max_verification, std::stoi(match[1].str()));
             }
         }
     }
@@ -533,7 +533,7 @@ std::string NextDiffId(const nlohmann::json& diff_records) {
             std::smatch match;
             const auto diff_id = diff.at("diff_id").get<std::string>();
             if (std::regex_match(diff_id, match, pattern)) {
-                max_diff = std::max(max_diff, std::stoi(match[1].str()));
+                max_diff = (std::max)(max_diff, std::stoi(match[1].str()));
             }
         }
     }
@@ -555,7 +555,7 @@ std::string NextAcceptanceId(const nlohmann::json& acceptance_records) {
             std::smatch match;
             const auto acceptance_id = acceptance.at("acceptance_id").get<std::string>();
             if (std::regex_match(acceptance_id, match, pattern)) {
-                max_acceptance = std::max(max_acceptance, std::stoi(match[1].str()));
+                max_acceptance = (std::max)(max_acceptance, std::stoi(match[1].str()));
             }
         }
     }
@@ -577,7 +577,7 @@ std::string NextFinalReviewId(const nlohmann::json& final_review_records) {
             std::smatch match;
             const auto final_review_id = final_review.at("final_review_id").get<std::string>();
             if (std::regex_match(final_review_id, match, pattern)) {
-                max_final_review = std::max(max_final_review, std::stoi(match[1].str()));
+                max_final_review = (std::max)(max_final_review, std::stoi(match[1].str()));
             }
         }
     }

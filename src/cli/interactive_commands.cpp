@@ -826,7 +826,7 @@ int Utf8ExpectedContinuationCount(const unsigned char byte) {
 }
 
 std::size_t Utf8PreviousCodepointStart(const std::string& value, std::size_t cursor) {
-    cursor = std::min(cursor, value.size());
+    cursor = (std::min)(cursor, value.size());
     if (cursor == 0) {
         return 0;
     }
@@ -838,7 +838,7 @@ std::size_t Utf8PreviousCodepointStart(const std::string& value, std::size_t cur
 }
 
 std::size_t Utf8NextCodepointEnd(const std::string& value, std::size_t cursor) {
-    cursor = std::min(cursor, value.size());
+    cursor = (std::min)(cursor, value.size());
     if (cursor >= value.size()) {
         return value.size();
     }
@@ -1835,9 +1835,9 @@ void RedrawInputLine(const std::string& prompt,
                      const std::size_t cursor) {
     std::cout << "\r" << prompt << line << "\x1b[K";
 #ifdef _WIN32
-    const auto right = line.size() - std::min(cursor, line.size());
+    const auto right = line.size() - (std::min)(cursor, line.size());
 #else
-    const auto right = DisplayColumns(line.substr(std::min(cursor, line.size())));
+    const auto right = DisplayColumns(line.substr((std::min)(cursor, line.size())));
 #endif
     if (right > 0) {
         std::cout << "\x1b[" << right << "D";
