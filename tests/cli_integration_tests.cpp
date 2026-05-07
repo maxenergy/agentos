@@ -320,6 +320,19 @@ std::string ReadTextFile(const std::filesystem::path& path) {
     return buffer.str();
 }
 
+std::string EscapeJsonBackslashes(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char ch : value) {
+        if (ch == '\\') {
+            escaped += "\\\\";
+        } else {
+            escaped.push_back(ch);
+        }
+    }
+    return escaped;
+}
+
 std::string ExtractTokenValue(const std::string& text, const std::string& key) {
     const auto start = text.find(key);
     if (start == std::string::npos) {
@@ -3276,7 +3289,7 @@ void TestAutoDevCommands() {
         "job.json should record prepare_workspace next action");
     Expect(job_json.find("\"status\": \"declared\"") != std::string::npos,
         "job.json should record declared skill pack when skill_pack_path is provided");
-    Expect(job_json.find(skill_pack.string()) != std::string::npos,
+    Expect(job_json.find(EscapeJsonBackslashes(skill_pack.string())) != std::string::npos,
         "job.json should record skill_pack_path");
 
     const auto events = ReadTextFile(job_dir / "events.ndjson");

@@ -38,6 +38,18 @@ std::string ReadFile(const std::filesystem::path& path) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+std::string NormalizeNewlines(const std::string& value) {
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '\r' && i + 1 < value.size() && value[i + 1] == '\n') {
+            continue;
+        }
+        normalized.push_back(value[i]);
+    }
+    return normalized;
+}
+
 int RunShell(const std::string& command) {
     return std::system(command.c_str());
 }
@@ -1096,7 +1108,7 @@ void TestRecordExecutionBlockedAppendsAuditEventOnly() {
     Expect(!soft_rollback.rollback.target_files.empty() &&
                soft_rollback.rollback.target_files.front() == "README.md",
         "rollback_soft should target only allowed tracked task files");
-    Expect(ReadFile(approved.job.job_worktree_path / "README.md") == "fixture\n",
+    Expect(NormalizeNewlines(ReadFile(approved.job.job_worktree_path / "README.md")) == "fixture\n",
         "rollback_soft should restore tracked allowed file content in job worktree");
     Expect(std::filesystem::exists(approved.job.job_worktree_path / "package.json"),
         "rollback_soft should not clean untracked files");
