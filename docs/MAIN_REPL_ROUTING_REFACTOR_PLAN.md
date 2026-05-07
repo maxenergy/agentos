@@ -1,5 +1,7 @@
 # Main REPL Routing Refactor Plan
 
+Current merge-readiness summary: [MAIN_REPL_ROUTING_STATUS.md](MAIN_REPL_ROUTING_STATUS.md).
+
 ## Goal
 
 Make the interactive REPL behave like a conversational orchestrator: ordinary
