@@ -70,6 +70,22 @@ std::string MakeTaskId(const std::string& prefix) {
     return prefix + "-" + std::to_string(value);
 }
 
+std::filesystem::path MainRoutingTracePath(const std::filesystem::path& workspace) {
+    return workspace / "runtime" / "main_agent" / "routing_trace.jsonl";
+}
+
+void AppendMainRoutingTrace(const std::filesystem::path& workspace,
+                            nlohmann::ordered_json event) {
+    const auto path = MainRoutingTracePath(workspace);
+    std::filesystem::create_directories(path.parent_path());
+    event["schema"] = "agentos.main_routing_trace.v1";
+    event["recorded_at_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count();
+    std::ofstream output(path, std::ios::binary | std::ios::app);
+    output << event.dump() << '\n';
+}
+
 std::vector<std::string> SplitCommaList(const std::string& value) {
     std::vector<std::string> items;
     std::stringstream input(value);
@@ -1146,8 +1162,9 @@ void RunChatPrompt(const std::string& prompt,
     // GEMINI.md / CLAUDE.md / AGENTS.md from cwd — the workspace_path
     // is just where the audit log lives and where curl temp files get
     // staged. No scratch dir or override files needed.
+    const auto trace_task_id = MakeTaskId("interactive-chat");
     TaskRequest task{
-        .task_id = MakeTaskId("interactive-chat"),
+        .task_id = trace_task_id,
         .task_type = "chat",
         .objective = prompt,
         .workspace_path = workspace,
@@ -1178,6 +1195,17 @@ void RunChatPrompt(const std::string& prompt,
               << " — 120s ceiling, falls back to gemini/anthropic/openai/qwen on failure; Ctrl-C to cancel)"
               << std::endl;
 
+    AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+        {"event", "main_request"},
+        {"task_id", task.task_id},
+        {"target", target},
+        {"context_privacy", ContextPrivacyLevelName(context_privacy)},
+        {"conversation_context_sent", task.inputs.contains("conversation_context")},
+        {"pending_route_action_sent", task.inputs.contains("pending_route_action")},
+        {"allow_route_actions", allow_route_actions},
+        {"prompt_chars", prompt.size()},
+    });
+
     const auto result = RunChatWithFallback(task, agent_registry, loop, target);
 
     // Concise chat output: print just the assistant reply plus a one-line
@@ -1190,12 +1218,27 @@ void RunChatPrompt(const std::string& prompt,
         for (const auto& step : result.steps) {
             duration_ms += step.duration_ms;
         }
+        const auto parsed_action = allow_route_actions
+            ? ParseMainRouteAction(result.summary)
+            : std::optional<MainRouteAction>{};
+        AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+            {"event", "main_response"},
+            {"task_id", task.task_id},
+            {"target", target},
+            {"success", true},
+            {"duration_ms", duration_ms},
+            {"summary_empty", result.summary.empty()},
+            {"route_action_requested", parsed_action.has_value()},
+            {"route_action_target_kind", parsed_action.has_value() ? parsed_action->target_kind : std::string{}},
+            {"route_action_target", parsed_action.has_value() ? parsed_action->target : std::string{}},
+        });
         if (allow_route_actions) {
-            if (const auto action = ParseMainRouteAction(result.summary); action.has_value()) {
+            if (const auto action = parsed_action; action.has_value()) {
                 std::cout << "(main requested " << action->action
                           << " target=" << action->target_kind << ":" << action->target << ")\n";
                 const auto action_result = ExecuteMainRouteAction(
                     *action, skill_registry, agent_registry, workspace, loop, audit_logger);
+                bool pending_after_action = false;
                 if (pending_route_action != nullptr) {
                     if (!action_result.success && action_result.error_code == "InvalidRouteSkillInput") {
                         pending_route_action->active = true;
@@ -1205,7 +1248,18 @@ void RunChatPrompt(const std::string& prompt,
                     } else {
                         *pending_route_action = {};
                     }
+                    pending_after_action = pending_route_action->active;
                 }
+                AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+                    {"event", "route_action_result"},
+                    {"task_id", task.task_id},
+                    {"action", action->action},
+                    {"target_kind", action->target_kind},
+                    {"target", action->target},
+                    {"success", action_result.success},
+                    {"error_code", action_result.error_code},
+                    {"pending_after_action", pending_after_action},
+                });
                 const auto synthesis_prompt = BuildRouteActionResultPrompt(prompt, *action, action_result);
                 RunChatPrompt(synthesis_prompt,
                               skill_registry,
@@ -1261,6 +1315,14 @@ void RunChatPrompt(const std::string& prompt,
                 *chat_history);
         }
     } else {
+        AppendMainRoutingTrace(workspace, nlohmann::ordered_json{
+            {"event", "main_response"},
+            {"task_id", task.task_id},
+            {"target", target},
+            {"success", false},
+            {"error_code", result.error_code},
+            {"route_action_requested", false},
+        });
         std::cerr << "chat failed (" << target << "): "
                   << (result.error_code.empty() ? "<no error_code>" : result.error_code);
         if (!result.error_message.empty()) {
@@ -1991,6 +2053,7 @@ int RunInteractiveCommand(
             std::cout << "  main_context: " << chat_session_name << '\n';
             std::cout << "  main_context_turns: " << chat_history.size() << '\n';
             std::cout << "  main_context_privacy: " << ContextPrivacyLevelName(context_privacy) << '\n';
+            std::cout << "  main_routing_trace: " << MainRoutingTracePath(workspace).string() << '\n';
             std::cout << "  audit_log: " << audit_logger.log_path().string() << '\n';
             std::cout << '\n';
             continue;

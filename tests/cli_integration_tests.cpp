@@ -2769,6 +2769,22 @@ void TestInteractiveMainRouteActionContextAfterClarification() {
     Expect(ReadTextFile(counter_path).find("4") != std::string::npos,
         "main curl fixture should be called for invalid action, clarification, retry, and final synthesis");
 
+    const auto trace = ReadTextFile(workspace / "runtime" / "main_agent" / "routing_trace.jsonl");
+    Expect(trace.find("\"event\":\"main_request\"") != std::string::npos,
+        "main routing trace should record main requests");
+    Expect(trace.find("\"context_privacy\":\"digest\"") != std::string::npos,
+        "main routing trace should record context privacy");
+    Expect(trace.find("\"pending_route_action_sent\":true") != std::string::npos,
+        "main routing trace should record pending route action context");
+    Expect(trace.find("\"route_action_requested\":true") != std::string::npos,
+        "main routing trace should record main-requested route actions");
+    Expect(trace.find("\"event\":\"route_action_result\"") != std::string::npos,
+        "main routing trace should record route action execution results");
+    Expect(trace.find("\"pending_after_action\":true") != std::string::npos,
+        "main routing trace should record pending state after missing input");
+    Expect(trace.find("\"pending_after_action\":false") != std::string::npos,
+        "main routing trace should record pending state after successful retry");
+
     const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
     Expect(audit.find("\"query\":\"AI browser\"") != std::string::npos ||
                audit.find("\"query\": \"AI browser\"") != std::string::npos ||
@@ -2813,6 +2829,11 @@ void TestInteractiveMainReceivesContextForContinuationTurns() {
         "second turn should not lose prior context before main decides routing");
     Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
         "main continuation fixture should be called once per user turn");
+    const auto trace = ReadTextFile(workspace / "runtime" / "main_agent" / "routing_trace.jsonl");
+    Expect(trace.find("\"conversation_context_sent\":true") != std::string::npos,
+        "main routing trace should show continuation context was sent");
+    Expect(trace.find("\"context_privacy\":\"digest\"") != std::string::npos,
+        "main routing trace should show default digest privacy");
 
     SetEnvForTest("PATH", old_path);
     SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);

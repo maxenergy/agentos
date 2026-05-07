@@ -161,6 +161,17 @@ natural language goes to the configured `main` agent with recent context, and
      local debugging when exact prior turns are needed.
    - Show active `main_context_privacy` in `status`.
 
+15. Main routing trace: done
+   - Write privacy-safe JSONL trace records to
+     `runtime/main_agent/routing_trace.jsonl`.
+   - Record main request metadata without user prompt text:
+     `context_privacy`, whether conversation context was sent, whether a
+     pending route action was sent, and whether route actions were allowed.
+   - Record main responses, requested route-action targets, route-action
+     execution results, and pending-action state transitions.
+   - Show the trace path in `status` so misrouting can be debugged without
+     guessing which prompt shape was used.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -189,3 +200,5 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
   management beyond `use`, `list`, `show`, and `clear`.
 - Add configurable context privacy levels if users need to choose between
   `digest`, `verbatim`, and `none` per REPL context. (done)
+- Add a `context trace [tail|clear]` command for inspecting or resetting
+  `routing_trace.jsonl` from inside the REPL.
