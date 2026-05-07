@@ -116,6 +116,73 @@ std::optional<std::size_t> ParsePositiveSize(const std::string& value) {
     }
 }
 
+std::string TraceJsonValue(const nlohmann::json& json,
+                           const std::string& key,
+                           const std::string& fallback = "") {
+    if (!json.contains(key)) {
+        return fallback;
+    }
+    const auto& value = json.at(key);
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (value.is_boolean()) {
+        return value.get<bool>() ? "true" : "false";
+    }
+    if (value.is_number_integer()) {
+        return std::to_string(value.get<long long>());
+    }
+    if (value.is_number_unsigned()) {
+        return std::to_string(value.get<unsigned long long>());
+    }
+    if (value.is_number_float()) {
+        std::ostringstream out;
+        out << value.get<double>();
+        return out.str();
+    }
+    return fallback;
+}
+
+std::string FormatRoutingTraceLine(const std::string& line) {
+    try {
+        const auto json = nlohmann::json::parse(line);
+        const auto event = TraceJsonValue(json, "event", "unknown");
+        std::ostringstream out;
+        out << event;
+        if (json.contains("task_id")) {
+            out << " task=" << TraceJsonValue(json, "task_id");
+        }
+        if (event == "main_request") {
+            out << " target=" << TraceJsonValue(json, "target")
+                << " privacy=" << TraceJsonValue(json, "context_privacy", "digest")
+                << " context=" << TraceJsonValue(json, "conversation_context_sent", "false")
+                << " pending=" << TraceJsonValue(json, "pending_route_action_sent", "false")
+                << " route_actions=" << TraceJsonValue(json, "allow_route_actions", "false");
+        } else if (event == "main_response") {
+            out << " success=" << TraceJsonValue(json, "success", "false")
+                << " route_action=" << TraceJsonValue(json, "route_action_requested", "false");
+            if (json.contains("route_action_target")) {
+                out << " target=" << TraceJsonValue(json, "route_action_target_kind")
+                    << ":" << TraceJsonValue(json, "route_action_target");
+            }
+            if (json.contains("duration_ms")) {
+                out << " duration_ms=" << TraceJsonValue(json, "duration_ms");
+            }
+        } else if (event == "route_action_result") {
+            out << " target=" << TraceJsonValue(json, "target_kind")
+                << ":" << TraceJsonValue(json, "target")
+                << " success=" << TraceJsonValue(json, "success", "false")
+                << " pending_after=" << TraceJsonValue(json, "pending_after_action", "false");
+            if (!TraceJsonValue(json, "error_code").empty()) {
+                out << " error=" << TraceJsonValue(json, "error_code");
+            }
+        }
+        return out.str();
+    } catch (...) {
+        return line;
+    }
+}
+
 std::vector<std::string> SplitCommaList(const std::string& value) {
     std::vector<std::string> items;
     std::stringstream input(value);
@@ -952,7 +1019,7 @@ void PrintHelp() {
         << "  context list                      List named main-agent REPL contexts\n"
         << "  context privacy [digest|none|verbatim]\n"
         << "                                    Show or set context sent to main-agent\n"
-        << "  context trace tail [n]            Show recent main-agent routing trace records\n"
+        << "  context trace tail [n] [--pretty] Show recent main-agent routing trace records\n"
         << "  context trace clear               Clear main-agent routing trace records\n"
         << "  context use <name>                Switch to a named main-agent REPL context\n"
         << "  memory summary                    Show memory summary\n"
@@ -2108,30 +2175,43 @@ int RunInteractiveCommand(
             }
             if (sub == "trace") {
                 if (tokens.size() < 3) {
-                    std::cerr << "Usage: context trace tail [n]|clear\n";
+                    std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
                     continue;
                 }
                 const auto trace_path = MainRoutingTracePath(workspace);
                 if (tokens[2] == "tail") {
                     std::size_t count = 10;
-                    if (tokens.size() >= 4) {
-                        const auto parsed = ParsePositiveSize(tokens[3]);
-                        if (!parsed.has_value()) {
-                            std::cerr << "Usage: context trace tail [n]\n";
+                    bool pretty = false;
+                    bool saw_count = false;
+                    bool valid_tail_args = true;
+                    for (std::size_t i = 3; i < tokens.size(); ++i) {
+                        if (tokens[i] == "--pretty") {
+                            pretty = true;
                             continue;
                         }
+                        const auto parsed = ParsePositiveSize(tokens[i]);
+                        if (!parsed.has_value() || saw_count) {
+                            valid_tail_args = false;
+                            break;
+                        }
                         count = std::min<std::size_t>(*parsed, 100);
+                        saw_count = true;
+                    }
+                    if (!valid_tail_args) {
+                        std::cerr << "Usage: context trace tail [n] [--pretty]\n";
+                        continue;
                     }
                     const auto lines = TailTextFile(trace_path, count);
                     std::cout << "AgentOS main routing trace\n"
                               << "  path:  " << trace_path.string() << '\n'
-                              << "  lines: " << lines.size() << "\n";
+                              << "  lines: " << lines.size() << '\n'
+                              << "  format: " << (pretty ? "pretty" : "jsonl") << "\n";
                     if (lines.empty()) {
                         std::cout << "  (empty)\n\n";
                         continue;
                     }
                     for (const auto& trace_line : lines) {
-                        std::cout << trace_line << '\n';
+                        std::cout << (pretty ? FormatRoutingTraceLine(trace_line) : trace_line) << '\n';
                     }
                     std::cout << '\n';
                     continue;
@@ -2142,7 +2222,7 @@ int RunInteractiveCommand(
                               << "  path: " << trace_path.string() << "\n\n";
                     continue;
                 }
-                std::cerr << "Usage: context trace tail [n]|clear\n";
+                std::cerr << "Usage: context trace tail [n] [--pretty]|clear\n";
                 continue;
             }
             if (sub == "use") {

@@ -178,6 +178,13 @@ natural language goes to the configured `main` agent with recent context, and
    - Cap tail output at 100 records to avoid dumping large trace files.
    - Add `context trace clear` to truncate the routing trace file.
 
+17. Pretty routing trace output: done
+   - Add `context trace tail [n] --pretty`.
+   - Format `main_request`, `main_response`, and `route_action_result`
+     records as compact key-value lines for faster REPL debugging.
+   - Keep JSONL as the default output so machine-readable trace inspection
+     remains unchanged.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -209,4 +216,4 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
 - Add a `context trace [tail|clear]` command for inspecting or resetting
   `routing_trace.jsonl` from inside the REPL. (done)
 - Add a compact human-readable trace formatter if raw JSONL is too noisy for
-  day-to-day debugging.
+  day-to-day debugging. (done)

@@ -3035,14 +3035,16 @@ void TestInteractiveMainContextTraceCommands() {
         std::ofstream output(trace_path, std::ios::binary);
         output
             << R"({"event":"main_request","task_id":"one","context_privacy":"digest"})" << '\n'
-            << R"({"event":"main_response","task_id":"two","route_action_requested":false})" << '\n'
-            << R"({"event":"route_action_result","task_id":"three","target":"host_info"})" << '\n';
+            << R"({"event":"main_response","task_id":"two","route_action_requested":false,"success":true})" << '\n'
+            << R"({"event":"route_action_result","task_id":"three","target_kind":"skill","target":"host_info","success":true,"pending_after_action":false})" << '\n';
     }
 
     const auto result = RunAgentosWithStdin(
         workspace,
         {"interactive"},
         "context trace tail 2\n"
+        "context trace tail --pretty\n"
+        "context trace tail 2 --pretty\n"
         "context trace clear\n"
         "context trace tail\n"
         "exit\n");
@@ -3055,6 +3057,14 @@ void TestInteractiveMainContextTraceCommands() {
         "context trace tail 2 should print second trace record");
     Expect(result.output.find("\"task_id\":\"three\"") != std::string::npos,
         "context trace tail 2 should print newest trace record");
+    Expect(result.output.find("format: pretty") != std::string::npos,
+        "context trace tail --pretty should report pretty format");
+    Expect(result.output.find("main_request task=one") != std::string::npos,
+        "context trace tail --pretty should format main request records");
+    Expect(result.output.find("main_response task=two success=true route_action=false") != std::string::npos,
+        "context trace tail --pretty should format main response records");
+    Expect(result.output.find("route_action_result task=three target=skill:host_info success=true pending_after=false") != std::string::npos,
+        "context trace tail --pretty should format route action result records");
     Expect(result.output.find("AgentOS main routing trace cleared") != std::string::npos,
         "context trace clear should print confirmation");
     Expect(result.output.find("(empty)") != std::string::npos,
