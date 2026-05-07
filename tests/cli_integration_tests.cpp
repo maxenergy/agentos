@@ -2797,6 +2797,51 @@ void TestInteractiveMainReceivesContextForContinuationTurns() {
     SetEnvForTest("PATH", old_path);
     SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
 }
+
+void TestInteractiveMainRestoresPersistedContextAcrossReplRestarts() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_persisted_context");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_persisted_context_counter.txt";
+    WriteMainContextContinuationCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent persisted-context fixture config should save");
+
+    const auto first = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "访问一些有反爬虫的网站，用哪个浏览器？\nexit\n");
+    Expect(first.exit_code == 0, "first interactive persisted-context session should exit cleanly");
+    const auto session_path = workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json";
+    Expect(std::filesystem::exists(session_path),
+        "first interactive session should persist main-agent REPL context");
+    Expect(ReadTextFile(session_path).find("推荐授权低频自动化") != std::string::npos,
+        "persisted main-agent REPL context should include assistant reply");
+
+    const auto second = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "低频，因为我抓取完一批企业数据后，会根据企业画像生成聊天术语，外呼操作完成，到下一批抓取数据估计都有几小时。\nexit\n");
+    Expect(second.exit_code == 0, "second interactive persisted-context session should exit cleanly");
+    Expect(second.output.find("contextual continuation ok") != std::string::npos,
+        "second REPL process should restore persisted context before calling main");
+    Expect(second.output.find("contextual continuation missing") == std::string::npos,
+        "second REPL process should not lose persisted context");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "persisted-context fixture should be called once per REPL process");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
 #endif
 
 void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
@@ -4493,6 +4538,7 @@ int main() {
     TestInteractiveMainRouteActionContextAfterClarification();
 #ifndef _WIN32
     TestInteractiveMainReceivesContextForContinuationTurns();
+    TestInteractiveMainRestoresPersistedContextAcrossReplRestarts();
 #endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();

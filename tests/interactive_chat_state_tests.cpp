@@ -1,5 +1,8 @@
 #include "cli/interactive_chat_state.hpp"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -67,12 +70,49 @@ void TestRenderPendingRouteActionContext() {
            "pending context should instruct main to emit a fresh route action");
 }
 
+void TestChatTranscriptPersistsRecentTurns() {
+    const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto path = std::filesystem::temp_directory_path() /
+        ("agentos-chat-transcript-test-" + suffix + ".json");
+    std::filesystem::remove(path);
+
+    std::vector<agentos::ChatTranscriptTurn> history;
+    for (int i = 0; i < 8; ++i) {
+        agentos::AppendChatTranscript(history, "persist-user-" + std::to_string(i), "persist-assistant-" + std::to_string(i));
+    }
+    agentos::SaveChatTranscript(path, history);
+
+    const auto loaded = agentos::LoadChatTranscript(path);
+    Expect(loaded.size() == 6, "persisted chat transcript should keep the six most recent turns");
+    Expect(!loaded.empty() && loaded.front().user == "persist-user-2",
+           "persisted chat transcript should drop older turns");
+    Expect(!loaded.empty() && loaded.back().assistant == "persist-assistant-7",
+           "persisted chat transcript should reload the newest assistant text");
+
+    std::filesystem::remove(path);
+}
+
+void TestMalformedChatTranscriptLoadsEmpty() {
+    const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto path = std::filesystem::temp_directory_path() /
+        ("agentos-chat-transcript-malformed-" + suffix + ".json");
+    {
+        std::ofstream output(path, std::ios::binary);
+        output << "{not json\n";
+    }
+    const auto loaded = agentos::LoadChatTranscript(path);
+    Expect(loaded.empty(), "malformed persisted chat transcript should load as empty history");
+    std::filesystem::remove(path);
+}
+
 }  // namespace
 
 int main() {
     TestAppendChatTranscriptKeepsRecentTurns();
     TestRenderRecentChatContext();
     TestRenderPendingRouteActionContext();
+    TestChatTranscriptPersistsRecentTurns();
+    TestMalformedChatTranscriptLoadsEmpty();
 
     if (failures != 0) {
         std::cerr << failures << " failure(s)\n";

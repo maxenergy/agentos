@@ -1112,6 +1112,9 @@ void RunChatPrompt(const std::string& prompt,
                 *chat_history,
                 transcript_user_prompt.value_or(prompt),
                 result.summary);
+            SaveChatTranscript(
+                workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json",
+                *chat_history);
         }
     } else {
         std::cerr << "chat failed (" << target << "): "
@@ -1716,7 +1719,8 @@ int RunInteractiveCommand(
     std::vector<std::shared_ptr<BackgroundJob>> background_jobs;
     const auto history_path = workspace / "runtime" / "repl_history.txt";
     std::vector<std::string> line_history = LoadReplHistory(history_path);
-    std::vector<ChatTranscriptTurn> chat_history;
+    const auto chat_session_path = workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json";
+    std::vector<ChatTranscriptTurn> chat_history = LoadChatTranscript(chat_session_path);
     PendingRouteAction pending_route_action;
 
     std::string line;

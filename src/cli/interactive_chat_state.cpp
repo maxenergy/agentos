@@ -1,7 +1,10 @@
 #include "cli/interactive_chat_state.hpp"
 
+#include "utils/atomic_file.hpp"
+
 #include <nlohmann/json.hpp>
 
+#include <fstream>
 #include <sstream>
 #include <string>
 
@@ -50,6 +53,56 @@ void AppendChatTranscript(std::vector<ChatTranscriptTurn>& history,
         history.erase(history.begin(),
                       history.begin() + static_cast<std::ptrdiff_t>(history.size() - kMaxChatContextTurns));
     }
+}
+
+std::vector<ChatTranscriptTurn> LoadChatTranscript(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return {};
+    }
+    try {
+        const auto json = nlohmann::json::parse(input);
+        const auto* turns = &json;
+        if (json.is_object() && json.contains("turns") && json["turns"].is_array()) {
+            turns = &json["turns"];
+        }
+        if (!turns->is_array()) {
+            return {};
+        }
+        std::vector<ChatTranscriptTurn> history;
+        for (const auto& turn : *turns) {
+            if (!turn.is_object()) {
+                continue;
+            }
+            const auto user = turn.value("user", std::string{});
+            const auto assistant = turn.value("assistant", std::string{});
+            if (!user.empty() || !assistant.empty()) {
+                AppendChatTranscript(history, user, assistant);
+            }
+        }
+        return history;
+    } catch (...) {
+        return {};
+    }
+}
+
+void SaveChatTranscript(const std::filesystem::path& path,
+                        const std::vector<ChatTranscriptTurn>& history) {
+    nlohmann::ordered_json turns = nlohmann::ordered_json::array();
+    const auto start = history.size() > kMaxChatContextTurns
+        ? history.size() - kMaxChatContextTurns
+        : 0;
+    for (std::size_t i = start; i < history.size(); ++i) {
+        turns.push_back(nlohmann::ordered_json{
+            {"user", history[i].user},
+            {"assistant", history[i].assistant},
+        });
+    }
+    const nlohmann::ordered_json payload{
+        {"schema", "agentos.repl_chat_transcript.v1"},
+        {"turns", turns},
+    };
+    WriteFileAtomically(path, payload.dump(2) + "\n");
 }
 
 std::string RenderPendingRouteActionContext(const PendingRouteAction& pending) {

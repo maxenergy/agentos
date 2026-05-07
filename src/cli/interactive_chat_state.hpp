@@ -2,6 +2,7 @@
 
 #include "cli/main_route_action.hpp"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,11 @@ std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& histo
 void AppendChatTranscript(std::vector<ChatTranscriptTurn>& history,
                           std::string user,
                           std::string assistant);
+
+std::vector<ChatTranscriptTurn> LoadChatTranscript(const std::filesystem::path& path);
+
+void SaveChatTranscript(const std::filesystem::path& path,
+                        const std::vector<ChatTranscriptTurn>& history);
 
 std::string RenderPendingRouteActionContext(const PendingRouteAction& pending);
 

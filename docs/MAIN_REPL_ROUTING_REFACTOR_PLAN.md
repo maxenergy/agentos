@@ -117,9 +117,17 @@ natural language goes to the configured `main` agent with recent context, and
    - Send Gemini/Vertex requests with `systemInstruction` plus user/model
      contents so the same context boundary is preserved there.
 
+10. Persisted REPL main-agent context: done
+   - Store recent main-agent REPL turns under
+     `runtime/main_agent/sessions/repl-default.json`.
+   - Reload that transcript when `agentos interactive` starts so REPL restarts
+     keep conversational continuity.
+   - Keep the persisted transcript capped to the same recent-turn window used
+     for runtime context.
+
 ## Non-goals For This Batch
 
-- Persist chat sessions across process restarts.
+- Persist arbitrary named chat sessions across process restarts.
 - Build a full multi-step planner loop.
 - Remove explicit commands such as `run`, `schedule`, or `memory`.
 - Auto-run destructive tool actions without existing AgentOS policy checks.
@@ -133,7 +141,7 @@ ctest --test-dir build --output-on-failure
 git diff --check
 ```
 
-Latest result: all focused tests passed, full suite passed `24/24`, and
+Latest result: all focused tests passed, full suite passed `25/25`, and
 `git diff --check` passed.
 
 ## Next Candidate Slices
@@ -142,5 +150,5 @@ Latest result: all focused tests passed, full suite passed `24/24`, and
   small module with direct unit tests. (done)
 - Add an explicit approval path for high-risk main route actions instead of
   hard rejecting them. (done)
-- Persist chat/session context across REPL restarts if the product needs
-  long-running conversational continuity.
+- Add explicit user-facing session management commands if multiple named REPL
+  contexts are needed.
