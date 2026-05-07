@@ -18,6 +18,9 @@ Status: merge-ready on branch `codex/improve-interactive-routing`.
 - REPL chat context persists across restarts under
   `runtime/main_agent/sessions/<name>.json`.
 - Named contexts are supported with `context use <name>` and `context list`.
+- Named context lifecycle commands are available:
+  `context delete <name>`, `context rename <old> <new>`, and
+  `context export <name> [path]`.
 - Context privacy is configurable per named context:
   `digest`, `none`, or `verbatim`.
 - Default `digest` mode sends a sanitized continuity digest instead of full
@@ -79,11 +82,8 @@ Known non-blocking notes:
 
 ## Optional Follow-ups
 
-- Add `context delete`, `context rename`, or `context export` if named context
-  lifecycle management becomes necessary.
 - Add more polished examples to `docs/MAIN_REPL.md` after the REPL UX settles.
 - Move additional top-level REPL command families into modules if
   `interactive_commands.cpp` needs another cleanup pass.
 - Add a route-action result object type if route-action synthesis grows beyond
   the current prompt-based handoff.
-

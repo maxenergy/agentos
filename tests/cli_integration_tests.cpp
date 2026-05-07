@@ -3072,6 +3072,65 @@ void TestInteractiveMainContextTraceCommands() {
     Expect(ReadTextFile(trace_path).empty(),
         "context trace clear should truncate routing trace file");
 }
+
+void TestInteractiveMainContextLifecycleCommands() {
+    const auto workspace = FreshWorkspace("interactive_main_context_lifecycle");
+    const auto sessions_dir = workspace / "runtime" / "main_agent" / "sessions";
+    const auto privacy_dir = workspace / "runtime" / "main_agent" / "privacy";
+    std::filesystem::create_directories(sessions_dir);
+    std::filesystem::create_directories(privacy_dir);
+    {
+        std::ofstream session(sessions_dir / "alpha.json", std::ios::binary);
+        session
+            << R"({"schema":"agentos.repl_chat_transcript.v1","turns":[{"user":"alpha turn","assistant":"alpha reply"}]})"
+            << '\n';
+    }
+    {
+        std::ofstream privacy(privacy_dir / "alpha.txt", std::ios::binary);
+        privacy << "none\n";
+    }
+    {
+        std::ofstream current(workspace / "runtime" / "main_agent" / "current_context.txt", std::ios::binary);
+        current << "alpha\n";
+    }
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "status\n"
+        "context rename alpha gamma\n"
+        "context use gamma\n"
+        "context export gamma\n"
+        "context delete gamma\n"
+        "status\n"
+        "context list\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive context lifecycle command session should exit cleanly");
+    Expect(result.output.find("main_context: alpha") != std::string::npos,
+        "interactive startup should restore alpha context");
+    Expect(result.output.find("AgentOS main context renamed") != std::string::npos,
+        "context rename should print confirmation");
+    Expect(result.output.find("session: gamma") != std::string::npos,
+        "context use gamma should select renamed context");
+    Expect(result.output.find("AgentOS main context exported") != std::string::npos,
+        "context export should print confirmation");
+    Expect(result.output.find("AgentOS main context deleted") != std::string::npos,
+        "context delete should print confirmation");
+    Expect(result.output.find("active: repl-default") != std::string::npos,
+        "deleting the active context should switch back to repl-default");
+    Expect(!std::filesystem::exists(sessions_dir / "alpha.json"),
+        "context rename should remove old session file");
+    Expect(!std::filesystem::exists(sessions_dir / "gamma.json"),
+        "context delete should remove renamed session file");
+    Expect(!std::filesystem::exists(privacy_dir / "alpha.txt"),
+        "context rename should remove old privacy file");
+    Expect(!std::filesystem::exists(privacy_dir / "gamma.txt"),
+        "context delete should remove renamed privacy file");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "exports" / "gamma.json").find("alpha turn") != std::string::npos,
+        "context export should copy the renamed session transcript");
+    Expect(ReadTextFile(workspace / "runtime" / "main_agent" / "current_context.txt").find("repl-default") != std::string::npos,
+        "deleting the active context should persist repl-default as current");
+}
 #endif
 
 void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
@@ -4773,6 +4832,7 @@ int main() {
     TestInteractiveMainNamedContextUseAndListCommands();
     TestInteractiveMainContextPrivacyCommands();
     TestInteractiveMainContextTraceCommands();
+    TestInteractiveMainContextLifecycleCommands();
 #endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();

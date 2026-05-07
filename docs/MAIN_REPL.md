@@ -27,6 +27,9 @@ context show
 context clear
 context list
 context use <name>
+context delete <name>
+context rename <old> <new>
+context export <name> [path]
 context privacy [digest|none|verbatim]
 context trace tail [n] [--pretty]
 context trace clear
@@ -35,7 +38,11 @@ context trace clear
 `context show` prints the current local transcript. `context clear` clears the
 current transcript and pending route action. `context list` shows named
 contexts and turn counts. `context use <name>` switches to another persisted
-conversation.
+conversation. `context delete <name>` removes a named transcript and privacy
+setting; deleting the active context switches back to `repl-default`.
+`context rename <old> <new>` renames a context transcript and privacy setting.
+`context export <name> [path]` copies a transcript JSON file to a target path,
+or to `runtime/main_agent/exports/<name>.json` when no path is supplied.
 
 Named context state is stored under:
 
@@ -123,4 +130,3 @@ for scripts and exact inspection.
 6. If context was too thin, use `context privacy verbatim` temporarily to test
    whether exact wording changes the route.
 7. Return to `context privacy digest` after debugging.
-

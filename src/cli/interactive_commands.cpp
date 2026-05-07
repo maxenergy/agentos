@@ -897,6 +897,9 @@ void PrintHelp() {
         << "  context show                      Show persisted main-agent REPL context\n"
         << "  context clear                     Clear persisted main-agent REPL context\n"
         << "  context list                      List named main-agent REPL contexts\n"
+        << "  context delete <name>             Delete a named main-agent REPL context\n"
+        << "  context rename <old> <new>        Rename a main-agent REPL context\n"
+        << "  context export <name> [path]      Export a persisted context transcript\n"
         << "  context privacy [digest|none|verbatim]\n"
         << "                                    Show or set context sent to main-agent\n"
         << "  context trace tail [n] [--pretty] Show recent main-agent routing trace records\n"
@@ -1257,7 +1260,7 @@ void HandleContextCommand(const std::vector<std::string>& tokens,
                           ContextPrivacyLevel& context_privacy,
                           PendingRouteAction& pending_route_action) {
     if (tokens.size() < 2) {
-        std::cerr << "Usage: context show|clear|list|privacy [digest|none|verbatim]|use <name>\n";
+        std::cerr << "Usage: context show|clear|list|use|delete|rename|export|privacy|trace\n";
         return;
     }
 
@@ -1339,6 +1342,146 @@ void HandleContextCommand(const std::vector<std::string>& tokens,
                   << "  privacy: " << ContextPrivacyLevelName(context_privacy) << '\n'
                   << "  path:    " << chat_session_path.string() << '\n'
                   << "  turns:   " << chat_history.size() << "\n\n";
+        return;
+    }
+    if (sub == "delete") {
+        if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
+            std::cerr << "Usage: context delete <name>\n";
+            return;
+        }
+        const auto name = tokens[2];
+        std::error_code ec;
+        const bool removed_session = std::filesystem::remove(MainContextSessionPath(workspace, name), ec);
+        if (ec) {
+            std::cerr << "context delete failed: " << ec.message() << '\n';
+            return;
+        }
+        const bool removed_privacy = std::filesystem::remove(MainContextPrivacyPath(workspace, name), ec);
+        if (ec) {
+            std::cerr << "context delete failed: " << ec.message() << '\n';
+            return;
+        }
+        if (chat_session_name == name) {
+            chat_session_name = "repl-default";
+            chat_session_path = MainContextSessionPath(workspace, chat_session_name);
+            chat_history = LoadChatTranscript(chat_session_path);
+            context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
+            pending_route_action = {};
+            SaveCurrentMainContextName(workspace, chat_session_name);
+        }
+        std::cout << "AgentOS main context deleted\n"
+                  << "  session: " << name << '\n'
+                  << "  removed_session: " << (removed_session ? "true" : "false") << '\n'
+                  << "  removed_privacy: " << (removed_privacy ? "true" : "false") << '\n'
+                  << "  active: " << chat_session_name << "\n\n";
+        return;
+    }
+    if (sub == "rename") {
+        if (tokens.size() < 4 ||
+            !IsValidContextName(tokens[2]) ||
+            !IsValidContextName(tokens[3]) ||
+            tokens[2] == tokens[3]) {
+            std::cerr << "Usage: context rename <old> <new>\n";
+            return;
+        }
+        const auto old_name = tokens[2];
+        const auto new_name = tokens[3];
+        const auto old_session = MainContextSessionPath(workspace, old_name);
+        const auto new_session = MainContextSessionPath(workspace, new_name);
+        const auto old_privacy = MainContextPrivacyPath(workspace, old_name);
+        const auto new_privacy = MainContextPrivacyPath(workspace, new_name);
+        std::error_code ec;
+        const bool old_session_exists = std::filesystem::exists(old_session, ec);
+        const bool old_privacy_exists = !ec && std::filesystem::exists(old_privacy, ec);
+        if (ec) {
+            std::cerr << "context rename failed: " << ec.message() << '\n';
+            return;
+        }
+        if (!old_session_exists && !old_privacy_exists) {
+            std::cerr << "context rename failed: source context not found\n";
+            return;
+        }
+        if (std::filesystem::exists(new_session, ec) || std::filesystem::exists(new_privacy, ec)) {
+            std::cerr << "context rename failed: destination context already exists\n";
+            return;
+        }
+        if (ec) {
+            std::cerr << "context rename failed: " << ec.message() << '\n';
+            return;
+        }
+        if (old_session_exists) {
+            std::filesystem::create_directories(new_session.parent_path(), ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+            std::filesystem::rename(old_session, new_session, ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+        }
+        if (old_privacy_exists) {
+            std::filesystem::create_directories(new_privacy.parent_path(), ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+            std::filesystem::rename(old_privacy, new_privacy, ec);
+            if (ec) {
+                std::cerr << "context rename failed: " << ec.message() << '\n';
+                return;
+            }
+        }
+        if (chat_session_name == old_name) {
+            chat_session_name = new_name;
+            chat_session_path = new_session;
+            chat_history = LoadChatTranscript(chat_session_path);
+            context_privacy = LoadMainContextPrivacy(workspace, chat_session_name);
+            pending_route_action = {};
+            SaveCurrentMainContextName(workspace, chat_session_name);
+        }
+        std::cout << "AgentOS main context renamed\n"
+                  << "  from: " << old_name << '\n'
+                  << "  to:   " << new_name << '\n'
+                  << "  active: " << chat_session_name << "\n\n";
+        return;
+    }
+    if (sub == "export") {
+        if (tokens.size() < 3 || !IsValidContextName(tokens[2])) {
+            std::cerr << "Usage: context export <name> [path]\n";
+            return;
+        }
+        const auto name = tokens[2];
+        const auto source = MainContextSessionPath(workspace, name);
+        std::error_code ec;
+        if (!std::filesystem::exists(source, ec)) {
+            std::cerr << "context export failed: source context not found\n";
+            return;
+        }
+        const auto destination = tokens.size() >= 4
+            ? std::filesystem::path(tokens[3])
+            : workspace / "runtime" / "main_agent" / "exports" / (name + ".json");
+        if (!destination.parent_path().empty()) {
+            std::filesystem::create_directories(destination.parent_path(), ec);
+            if (ec) {
+                std::cerr << "context export failed: " << ec.message() << '\n';
+                return;
+            }
+        }
+        std::filesystem::copy_file(
+            source,
+            destination,
+            std::filesystem::copy_options::overwrite_existing,
+            ec);
+        if (ec) {
+            std::cerr << "context export failed: " << ec.message() << '\n';
+            return;
+        }
+        std::cout << "AgentOS main context exported\n"
+                  << "  session: " << name << '\n'
+                  << "  source:  " << source.string() << '\n'
+                  << "  path:    " << destination.string() << "\n\n";
         return;
     }
     if (sub == "privacy") {

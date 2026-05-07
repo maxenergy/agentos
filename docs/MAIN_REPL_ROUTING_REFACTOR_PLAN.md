@@ -222,6 +222,14 @@ natural language goes to the configured `main` agent with recent context, and
    - Move `schedule list/history` branching into `HandleScheduleCommand(...)`.
    - Keep scheduler command output unchanged while reducing main-loop branching.
 
+24. Named context lifecycle commands: done
+   - Add `context delete <name>` to remove a named transcript and privacy
+     setting; deleting the active context switches back to `repl-default`.
+   - Add `context rename <old> <new>` to rename transcript and privacy files.
+   - Add `context export <name> [path]` to copy a transcript JSON file to an
+     explicit path or `runtime/main_agent/exports/<name>.json`.
+   - Update Main REPL docs and CLI integration coverage for rename/export/delete.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -247,7 +255,7 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
 - Add an explicit approval path for high-risk main route actions instead of
   hard rejecting them. (done)
 - Add context rename/delete/export commands if named contexts need lifecycle
-  management beyond `use`, `list`, `show`, and `clear`.
+  management beyond `use`, `list`, `show`, and `clear`. (done)
 - Add configurable context privacy levels if users need to choose between
   `digest`, `verbatim`, and `none` per REPL context. (done)
 - Add a `context trace [tail|clear]` command for inspecting or resetting
