@@ -211,6 +211,11 @@ natural language goes to the configured `main` agent with recent context, and
      dedicated `HandleContextCommand(...)` helper.
    - Keep the main REPL loop focused on top-level command dispatch.
 
+22. Memory command handler extraction: done
+   - Move `memory summary/stats/lessons/workflows/stored-workflows` branching
+     into `HandleMemoryCommand(...)`.
+   - Keep memory command output unchanged while reducing main-loop branching.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -248,4 +253,4 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
   `interactive_commands.cpp` if that file needs another maintenance pass.
   (done)
 - Move more top-level command families (`memory`, `schedule`) into handlers if
-  interactive command maintenance continues.
+  interactive command maintenance continues. (`memory` done)

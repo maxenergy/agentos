@@ -1378,6 +1378,93 @@ void HandleContextCommand(const std::vector<std::string>& tokens,
     std::cerr << "Unknown context subcommand: " << sub << '\n';
 }
 
+void HandleMemoryCommand(const std::vector<std::string>& tokens,
+                         const MemoryManager& memory_manager) {
+    if (tokens.size() < 2) {
+        std::cerr << "Usage: memory summary|stats|lessons|workflows|stored-workflows\n";
+        return;
+    }
+    const auto sub = tokens[1];
+    if (sub == "summary") {
+        std::cout << "task_log_entries: " << memory_manager.task_log().size() << '\n';
+        std::cout << "workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "stats") {
+        const auto& skill_stats = memory_manager.skill_stats();
+        const auto& agent_stats = memory_manager.agent_stats();
+        std::cout << "Skill stats (" << skill_stats.size() << "):\n";
+        for (const auto& [name, stats] : skill_stats) {
+            std::cout << "  " << name
+                      << "  calls=" << stats.total_calls
+                      << "  success=" << stats.success_calls
+                      << "  avg_ms=" << stats.avg_latency_ms
+                      << '\n';
+        }
+        std::cout << "Agent stats (" << agent_stats.size() << "):\n";
+        for (const auto& [name, stats] : agent_stats) {
+            std::cout << "  " << name
+                      << "  runs=" << stats.total_runs
+                      << "  success=" << stats.success_runs
+                      << "  avg_ms=" << stats.avg_duration_ms
+                      << '\n';
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "lessons") {
+        const auto lessons = memory_manager.lesson_store().list();
+        if (lessons.empty()) {
+            std::cout << "No lessons recorded.\n";
+        } else {
+            std::cout << "Lessons (" << lessons.size() << "):\n";
+            for (const auto& lesson : lessons) {
+                std::cout << "  " << lesson.summary
+                          << "  count=" << lesson.occurrence_count
+                          << "  error=" << lesson.error_code
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "workflows") {
+        const auto candidates = memory_manager.workflow_candidates();
+        if (candidates.empty()) {
+            std::cout << "No workflow candidates.\n";
+        } else {
+            std::cout << "Workflow candidates (" << candidates.size() << "):\n";
+            for (const auto& wf : candidates) {
+                std::cout << "  " << wf.name
+                          << "  trigger=" << wf.trigger_task_type
+                          << "  score=" << wf.score
+                          << "  use=" << wf.use_count
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "stored-workflows") {
+        const auto stored = memory_manager.workflow_store().list();
+        if (stored.empty()) {
+            std::cout << "No stored workflows.\n";
+        } else {
+            std::cout << "Stored workflows (" << stored.size() << "):\n";
+            for (const auto& wf : stored) {
+                std::cout << "  " << wf.name
+                          << "  trigger=" << wf.trigger_task_type
+                          << "  enabled=" << (wf.enabled ? "true" : "false")
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    std::cerr << "Unknown memory subcommand: " << sub << '\n';
+}
+
 UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
                                             const AgentRegistry& agent_registry,
                                             const MemoryManager& memory_manager,
@@ -2000,81 +2087,7 @@ int RunInteractiveCommand(
 
         // ── memory subcommands ──────────────────────────────────────────
         if (command == "memory") {
-            if (tokens.size() < 2) {
-                std::cerr << "Usage: memory summary|stats|lessons|workflows|stored-workflows\n";
-                continue;
-            }
-            const auto sub = tokens[1];
-            if (sub == "summary") {
-                std::cout << "task_log_entries: " << memory_manager.task_log().size() << '\n';
-                std::cout << "workflow_candidates: " << memory_manager.workflow_candidates().size() << '\n';
-                std::cout << '\n';
-            } else if (sub == "stats") {
-                const auto& skill_stats = memory_manager.skill_stats();
-                const auto& agent_stats = memory_manager.agent_stats();
-                std::cout << "Skill stats (" << skill_stats.size() << "):\n";
-                for (const auto& [name, stats] : skill_stats) {
-                    std::cout << "  " << name
-                              << "  calls=" << stats.total_calls
-                              << "  success=" << stats.success_calls
-                              << "  avg_ms=" << stats.avg_latency_ms
-                              << '\n';
-                }
-                std::cout << "Agent stats (" << agent_stats.size() << "):\n";
-                for (const auto& [name, stats] : agent_stats) {
-                    std::cout << "  " << name
-                              << "  runs=" << stats.total_runs
-                              << "  success=" << stats.success_runs
-                              << "  avg_ms=" << stats.avg_duration_ms
-                              << '\n';
-                }
-                std::cout << '\n';
-            } else if (sub == "lessons") {
-                const auto lessons = memory_manager.lesson_store().list();
-                if (lessons.empty()) {
-                    std::cout << "No lessons recorded.\n";
-                } else {
-                    std::cout << "Lessons (" << lessons.size() << "):\n";
-                    for (const auto& lesson : lessons) {
-                        std::cout << "  " << lesson.summary
-                                  << "  count=" << lesson.occurrence_count
-                                  << "  error=" << lesson.error_code
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else if (sub == "workflows") {
-                const auto candidates = memory_manager.workflow_candidates();
-                if (candidates.empty()) {
-                    std::cout << "No workflow candidates.\n";
-                } else {
-                    std::cout << "Workflow candidates (" << candidates.size() << "):\n";
-                    for (const auto& wf : candidates) {
-                        std::cout << "  " << wf.name
-                                  << "  trigger=" << wf.trigger_task_type
-                                  << "  score=" << wf.score
-                                  << "  use=" << wf.use_count
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else if (sub == "stored-workflows") {
-                const auto stored = memory_manager.workflow_store().list();
-                if (stored.empty()) {
-                    std::cout << "No stored workflows.\n";
-                } else {
-                    std::cout << "Stored workflows (" << stored.size() << "):\n";
-                    for (const auto& wf : stored) {
-                        std::cout << "  " << wf.name
-                                  << "  trigger=" << wf.trigger_task_type
-                                  << "  enabled=" << (wf.enabled ? "true" : "false")
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else {
-                std::cerr << "Unknown memory subcommand: " << sub << '\n';
-            }
+            HandleMemoryCommand(tokens, memory_manager);
             continue;
         }
 
