@@ -726,7 +726,7 @@ std::filesystem::path WriteAutoDevCodexCliFixture(const std::filesystem::path& b
     std::ofstream output(fixture_path, std::ios::binary);
     output
         << "@echo off\n"
-        << "type CON > NUL\n"
+        << "more > NUL\n"
         << "echo codex fixture update>> README.md\n"
         << "echo fixture codex completed\n"
         << "exit /b 0\n";
@@ -756,7 +756,7 @@ std::filesystem::path WriteLongAutoDevCodexCliFixture(
     std::ofstream output(fixture_path, std::ios::binary);
     output
         << "@echo off\n"
-        << "type CON > NUL\n"
+        << "more > NUL\n"
         << "echo started>" << marker_path.string() << "\n"
         << "ping -n 11 127.0.0.1 > NUL\n"
         << "echo long fixture completed>> README.md\n"
