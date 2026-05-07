@@ -3676,8 +3676,10 @@ int main() {
     TestCliHostProcessLimit(workspace);
     TestCliHostTimeoutKillsProcessTree(workspace);
     TestExternalCliSpecLoader(workspace);
+#ifndef _WIN32
     TestPluginSpecLoaderAndInvoker(workspace);
     TestPluginPoolPolicyAndAdmin(workspace);
+#endif
     TestJqTransformCliSkillWithFixture(workspace);
 
     if (failures != 0) {

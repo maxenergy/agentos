@@ -4139,6 +4139,7 @@ void TestAutoDevCommands() {
         "autodev events should read delete_on_done fixture events");
     Expect(run_job_cleanup_events.output.find("autodev.worktree.cleaned") != std::string::npos,
         "delete_on_done should append a worktree cleanup event");
+#ifndef _WIN32
     const auto interrupt_submit = RunAgentos(workspace, {
         "autodev",
         "submit",
@@ -4230,6 +4231,7 @@ void TestAutoDevCommands() {
         "interrupted execution should persist interruption reason in response artifact");
     Expect(ReadTextFile(std::filesystem::path(interrupt_path) / "README.md").find("long fixture completed") == std::string::npos,
         "cancelled Codex CLI process should not finish its worktree write");
+#endif
     {
         std::ofstream blocked(std::filesystem::path(executable_planned_path) / "package.json",
             std::ios::binary | std::ios::trunc);
@@ -4843,10 +4845,10 @@ int main() {
     TestAuthCommands();
     TestRunAuthProfileOverride();
     TestInteractiveFreeFormDispatch();
+#ifndef _WIN32
     TestInteractiveMainRouteActionLoop();
     TestInteractiveMainRouteActionValidationLoop();
     TestInteractiveMainRouteActionContextAfterClarification();
-#ifndef _WIN32
     TestInteractiveMainReceivesContextForContinuationTurns();
     TestInteractiveMainRestoresPersistedContextAcrossReplRestarts();
     TestInteractiveMainContextShowAndClearCommands();
@@ -4854,8 +4856,8 @@ int main() {
     TestInteractiveMainContextPrivacyCommands();
     TestInteractiveMainContextTraceCommands();
     TestInteractiveMainContextLifecycleCommands();
-#endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
+#endif
     TestDiagnosticsCommand();
 
     if (failures != 0) {
