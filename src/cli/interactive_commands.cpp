@@ -1012,7 +1012,10 @@ void RunChatPrompt(const std::string& prompt,
     };
     task.preferred_target = target;
     task.inputs["intent_hint"] =
-        "free_form_natural_language; answer directly unless a registered AgentOS capability is materially needed";
+        "contextual_repl_turn; inspect conversation_context first; answer ordinary continuations, "
+        "clarifications, constraint updates, and follow-ups directly; request a registered AgentOS "
+        "capability only when the live turn explicitly needs tool, agent, code, research, or file "
+        "execution now";
     if (chat_history != nullptr) {
         const auto context = RenderRecentChatContext(*chat_history);
         if (!context.empty()) {

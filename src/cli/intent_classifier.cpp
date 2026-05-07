@@ -234,7 +234,7 @@ void PrintRouteDecision(const RouteDecisionExplanation& decision,
             std::cout << "需要联网研究或集成分析";
             break;
         case InteractiveRouteKind::chat_agent:
-            std::cout << "未匹配到本地 skill、开发或研究触发条件";
+            std::cout << "交由主代理结合上下文判断";
             break;
         case InteractiveRouteKind::unknown_command:
             std::cout << "命令不存在";

@@ -236,6 +236,10 @@ void TestChatPromptIncludesRecentReplContext() {
            "main-agent prompt should include recent REPL context when provided");
     Expect(prompt.find("低频，因为") != std::string::npos,
            "main-agent prompt should keep the live user turn separate from context");
+    Expect(prompt.find("continuation of the prior topic") != std::string::npos,
+           "main-agent prompt should make contextual continuation the first routing question");
+    Expect(prompt.find("Do not delegate merely because") != std::string::npos,
+           "main-agent prompt should avoid keyword-style delegation from normal conversation text");
 }
 
 }  // namespace

@@ -29,6 +29,9 @@ natural language goes to the configured `main` agent with recent context, and
 4. `main` receives:
    - live registered skills and agents from manifests/profiles;
    - recent REPL chat context;
+   - context-first routing guidance that treats follow-ups, clarifications,
+     and constraint updates as the same conversation before considering
+     delegation;
    - a small routing contract that says it may answer directly or emit a
      structured route action.
 5. A structured route action is a JSON object:
@@ -98,6 +101,13 @@ natural language goes to the configured `main` agent with recent context, and
    - Replace regex-final-routing expectations with main-first expectations.
    - Add prompt/action parsing regressions.
    - Update REPL dispatch docs.
+
+8. Context-first continuation guard: done
+   - Make `main` decide whether the live turn continues the prior topic before
+     it emits any route action.
+   - Pass a contextual REPL intent hint alongside recent transcript.
+   - Cover the browser/low-frequency continuation scenario with a real
+     interactive main-agent fixture.
 
 ## Non-goals For This Batch
 

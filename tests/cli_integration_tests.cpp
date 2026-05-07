@@ -586,6 +586,53 @@ void WriteMainRouteActionContextCurlFixture(const std::filesystem::path& bin_dir
 #endif
 }
 
+#ifndef _WIN32
+void WriteMainContextContinuationCurlFixture(const std::filesystem::path& bin_dir,
+                                             const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "body=''\n"
+        << "prev=''\n"
+        << "for arg in \"$@\"; do\n"
+        << "  if [ \"$prev\" = '-d' ]; then body=${arg#@}; fi\n"
+        << "  prev=$arg\n"
+        << "done\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"推荐授权低频自动化，并优先确认 ToS/API。"}}]})"
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  if grep -q 'RECENT REPL CHAT CONTEXT' \"$body\" && "
+           "grep -q 'User: 访问一些有反爬虫的网站，用哪个浏览器？' \"$body\" && "
+           "grep -q 'Assistant: 推荐授权低频自动化' \"$body\" && "
+           "grep -q '低频，因为我抓取完一批企业数据后' \"$body\" && "
+           "grep -q 'contextual_repl_turn' \"$body\" && "
+           "grep -q 'continuation of the prior topic' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"contextual continuation ok"}}]})"
+        << "\nJSON\n"
+        << "  else\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"contextual continuation missing"}}]})"
+        << "\nJSON\n"
+        << "  fi\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+}
+#endif
+
 void WriteMainRouteActionHighRiskCurlFixture(const std::filesystem::path& bin_dir,
                                              const std::filesystem::path& counter_path,
                                              const std::string& approval_id = {}) {
@@ -2711,6 +2758,46 @@ void TestInteractiveMainRouteActionContextAfterClarification() {
     SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
 }
 
+#ifndef _WIN32
+void TestInteractiveMainReceivesContextForContinuationTurns() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_context_continuation");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_context_continuation_counter.txt";
+    WriteMainContextContinuationCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent continuation fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "访问一些有反爬虫的网站，用哪个浏览器？\n"
+        "低频，因为我抓取完一批企业数据后，会根据企业画像生成聊天术语，外呼操作完成，到下一批抓取数据估计都有几小时。\n"
+        "exit\n");
+    Expect(result.exit_code == 0, "interactive continuation context loop should exit cleanly");
+    Expect(result.output.find("(route: chat_agent") != std::string::npos,
+        "continuation turns should still enter the main conversational route");
+    Expect(result.output.find("contextual continuation ok") != std::string::npos,
+        "second turn should reach main with prior REPL context and contextual routing guidance");
+    Expect(result.output.find("contextual continuation missing") == std::string::npos,
+        "second turn should not lose prior context before main decides routing");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "main continuation fixture should be called once per user turn");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+#endif
+
 void TestInteractiveMainRouteActionHighRiskApprovalLoop() {
     const auto old_path = ReadEnvForTest("PATH").value_or("");
     const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
@@ -4403,6 +4490,9 @@ int main() {
     TestInteractiveMainRouteActionLoop();
     TestInteractiveMainRouteActionValidationLoop();
     TestInteractiveMainRouteActionContextAfterClarification();
+#ifndef _WIN32
+    TestInteractiveMainReceivesContextForContinuationTurns();
+#endif
     TestInteractiveMainRouteActionHighRiskApprovalLoop();
     TestDiagnosticsCommand();
 
