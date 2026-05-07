@@ -1465,6 +1465,47 @@ void HandleMemoryCommand(const std::vector<std::string>& tokens,
     std::cerr << "Unknown memory subcommand: " << sub << '\n';
 }
 
+void HandleScheduleCommand(const std::vector<std::string>& tokens,
+                           const Scheduler& scheduler) {
+    if (tokens.size() < 2) {
+        std::cerr << "Usage: schedule list|history\n";
+        return;
+    }
+    const auto sub = tokens[1];
+    if (sub == "list") {
+        const auto tasks = scheduler.list();
+        if (tasks.empty()) {
+            std::cout << "No scheduled tasks.\n";
+        } else {
+            for (const auto& t : tasks) {
+                std::cout << "  " << t.schedule_id
+                          << "  enabled=" << (t.enabled ? "true" : "false")
+                          << "  task=" << t.task.task_type
+                          << "  runs=" << t.run_count
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    if (sub == "history") {
+        const auto records = scheduler.run_history();
+        if (records.empty()) {
+            std::cout << "No scheduler run history.\n";
+        } else {
+            for (const auto& r : records) {
+                std::cout << "  " << r.schedule_id
+                          << "  task_id=" << r.task_id
+                          << "  success=" << (r.success ? "true" : "false")
+                          << '\n';
+            }
+        }
+        std::cout << '\n';
+        return;
+    }
+    std::cerr << "Unknown schedule subcommand: " << sub << '\n';
+}
+
 UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
                                             const AgentRegistry& agent_registry,
                                             const MemoryManager& memory_manager,
@@ -2093,41 +2134,7 @@ int RunInteractiveCommand(
 
         // ── schedule subcommands ────────────────────────────────────────
         if (command == "schedule") {
-            if (tokens.size() < 2) {
-                std::cerr << "Usage: schedule list|history\n";
-                continue;
-            }
-            const auto sub = tokens[1];
-            if (sub == "list") {
-                const auto tasks = scheduler.list();
-                if (tasks.empty()) {
-                    std::cout << "No scheduled tasks.\n";
-                } else {
-                    for (const auto& t : tasks) {
-                        std::cout << "  " << t.schedule_id
-                                  << "  enabled=" << (t.enabled ? "true" : "false")
-                                  << "  task=" << t.task.task_type
-                                  << "  runs=" << t.run_count
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else if (sub == "history") {
-                const auto records = scheduler.run_history();
-                if (records.empty()) {
-                    std::cout << "No scheduler run history.\n";
-                } else {
-                    for (const auto& r : records) {
-                        std::cout << "  " << r.schedule_id
-                                  << "  task_id=" << r.task_id
-                                  << "  success=" << (r.success ? "true" : "false")
-                                  << '\n';
-                    }
-                }
-                std::cout << '\n';
-            } else {
-                std::cerr << "Unknown schedule subcommand: " << sub << '\n';
-            }
+            HandleScheduleCommand(tokens, scheduler);
             continue;
         }
 

@@ -216,6 +216,10 @@ natural language goes to the configured `main` agent with recent context, and
      into `HandleMemoryCommand(...)`.
    - Keep memory command output unchanged while reducing main-loop branching.
 
+23. Schedule command handler extraction: done
+   - Move `schedule list/history` branching into `HandleScheduleCommand(...)`.
+   - Keep scheduler command output unchanged while reducing main-loop branching.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -253,4 +257,4 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
   `interactive_commands.cpp` if that file needs another maintenance pass.
   (done)
 - Move more top-level command families (`memory`, `schedule`) into handlers if
-  interactive command maintenance continues. (`memory` done)
+  interactive command maintenance continues. (`memory`, `schedule` done)
