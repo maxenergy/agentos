@@ -1157,6 +1157,14 @@ TaskRunResult ExecuteMainRouteAction(const MainRouteAction& action,
     task.inputs["main_route_target"] = action.target;
     task.timeout_ms = 0;
     task.allow_network = true;
+    if (const auto allow = action.arguments.find("allow_high_risk");
+        allow != action.arguments.end()) {
+        task.allow_high_risk = allow->second == "true" || allow->second == "1" || allow->second == "yes";
+    }
+    if (const auto approval = action.arguments.find("approval_id");
+        approval != action.arguments.end()) {
+        task.approval_id = approval->second;
+    }
 
     auto task_cancel = InstallSignalCancellation();
     const auto result = loop.run(task, std::move(task_cancel));

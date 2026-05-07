@@ -209,9 +209,43 @@ void TestValidatesRegisteredSkillInputsAndRisk() {
 
     action.target = "dangerous_tool";
     validation = agentos::ValidateMainRouteAction(action, skill_registry, agent_registry);
-    Expect(!validation.valid, "high-risk skill should be rejected by route action validation");
-    Expect(validation.error_code == "RouteSkillRequiresApproval",
-           "high-risk skill should use RouteSkillRequiresApproval");
+    Expect(!validation.valid, "high-risk skill should require approval by route action validation");
+    Expect(validation.error_code == "ApprovalRequired",
+           "high-risk skill should use ApprovalRequired");
+    Expect(validation.error_message.find("agentos trust approval-request") != std::string::npos,
+           "approval-required message should include approval request command");
+    Expect(validation.error_message.find("allow_high_risk=true") != std::string::npos,
+           "approval-required message should explain retry arguments");
+
+    action.arguments["allow_high_risk"] = "true";
+    action.arguments["approval_id"] = "approval-123";
+    validation = agentos::ValidateMainRouteAction(action, skill_registry, agent_registry);
+    Expect(validation.valid,
+           "high-risk skill with explicit approval arguments should pass route validation for PolicyEngine");
+}
+
+void TestBuildsApprovalRequiredPrompt() {
+    agentos::MainRouteAction action;
+    action.action = "call_capability";
+    action.target_kind = "skill";
+    action.target = "dangerous_tool";
+
+    agentos::TaskRunResult result;
+    result.success = false;
+    result.summary =
+        "approval required for high-risk skill dangerous_tool. Request approval with: "
+        "agentos trust approval-request subject=main-route-skill:dangerous_tool";
+    result.route_target = "dangerous_tool";
+    result.error_code = "ApprovalRequired";
+    result.error_message = result.summary;
+
+    const auto prompt = agentos::BuildRouteActionResultPrompt("run risky tool", action, result);
+    Expect(prompt.find("\"error_code\": \"ApprovalRequired\"") != std::string::npos,
+           "approval prompt should include machine-readable error code");
+    Expect(prompt.find("needs explicit user approval") != std::string::npos,
+           "approval prompt should instruct main to explain approval requirement");
+    Expect(prompt.find("allow_high_risk=true") != std::string::npos,
+           "approval prompt should explain retry flag");
 }
 
 void TestValidatesActionShape() {
@@ -244,6 +278,7 @@ int main() {
     TestBuildsRouteActionResultPrompt();
     TestBuildsMissingInputClarificationPrompt();
     TestValidatesRegisteredSkillInputsAndRisk();
+    TestBuildsApprovalRequiredPrompt();
     TestValidatesActionShape();
 
     if (failures != 0) {

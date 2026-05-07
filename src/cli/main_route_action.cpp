@@ -95,6 +95,35 @@ MainRouteActionValidation InvalidRouteAction(std::string error_code, std::string
     };
 }
 
+bool BoolArgument(const StringMap& arguments, const std::string& key) {
+    const auto it = arguments.find(key);
+    if (it == arguments.end()) {
+        return false;
+    }
+    return it->second == "true" || it->second == "1" || it->second == "yes";
+}
+
+bool HasApprovalArguments(const StringMap& arguments) {
+    const auto approval = arguments.find("approval_id");
+    return BoolArgument(arguments, "allow_high_risk") &&
+           approval != arguments.end() &&
+           !approval->second.empty();
+}
+
+std::string ApprovalRequiredMessage(const MainRouteAction& action) {
+    const auto subject = "main-route-" + action.target_kind + ":" + action.target;
+    const auto reason = action.brief.empty()
+        ? "main-agent requested high-risk capability"
+        : action.brief;
+    std::ostringstream out;
+    out << "approval required for high-risk " << action.target_kind << " " << action.target
+        << ". Request approval with: agentos trust approval-request subject=" << subject
+        << " reason=\"" << reason << "\" requested_by=local-user"
+        << ". After an operator approves it with `agentos trust approval-approve approval=<approval_id>`, "
+           "retry the same route action with arguments allow_high_risk=true and approval_id=<approval_id>.";
+    return out.str();
+}
+
 }  // namespace
 
 std::optional<MainRouteAction> ParseMainRouteAction(const std::string& text) {
@@ -157,10 +186,10 @@ MainRouteActionValidation ValidateMainRouteAction(const MainRouteAction& action,
             return InvalidRouteAction("InvalidRouteSkillInput", input_validation.error_message);
         }
         if (PermissionModel::requires_high_risk_approval(manifest.risk_level)) {
-            return InvalidRouteAction(
-                "RouteSkillRequiresApproval",
-                "main requested high-risk skill " + action.target +
-                    " without an explicit user approval path");
+            if (HasApprovalArguments(action.arguments)) {
+                return {};
+            }
+            return InvalidRouteAction("ApprovalRequired", ApprovalRequiredMessage(action));
         }
         return {};
     }
@@ -173,10 +202,10 @@ MainRouteActionValidation ValidateMainRouteAction(const MainRouteAction& action,
     }
     const auto profile = agent->profile();
     if (PermissionModel::requires_high_risk_approval(profile.risk_level)) {
-        return InvalidRouteAction(
-            "RouteAgentRequiresApproval",
-            "main requested high-risk agent " + action.target +
-                " without an explicit user approval path");
+        if (HasApprovalArguments(action.arguments)) {
+            return {};
+        }
+        return InvalidRouteAction("ApprovalRequired", ApprovalRequiredMessage(action));
     }
     return {};
 }
@@ -207,6 +236,10 @@ std::string BuildRouteActionResultPrompt(const std::string& original_prompt,
     if (!result.success && result.error_code == "InvalidRouteSkillInput") {
         out << "The selected capability is valid but required inputs are missing or invalid; "
                "ask the user one concise clarification question naming the missing field(s). ";
+    } else if (!result.success && result.error_code == "ApprovalRequired") {
+        out << "The selected capability is high risk and needs explicit user approval before execution; "
+               "show the approval command from the route result and explain that the user should approve it, "
+               "then retry with allow_high_risk=true and approval_id=<approval_id>. ";
     } else if (!result.success) {
         out << "Explain the route failure plainly and suggest the smallest useful next step. ";
     }

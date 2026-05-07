@@ -86,7 +86,15 @@ natural language goes to the configured `main` agent with recent context, and
    - Clear pending state once the next route action no longer fails for missing
      inputs.
 
-6. Tests and docs: done
+6. High-risk approval guidance: done
+   - High-risk route actions without approval arguments return
+     `ApprovalRequired` instead of executing.
+   - The result includes the existing `agentos trust approval-request` path and
+     tells `main` to explain the approval/retry flow.
+   - Route actions carrying `allow_high_risk=true` and `approval_id=<id>` pass
+     REPL validation and are left to the normal PolicyEngine approval check.
+
+7. Tests and docs: done
    - Replace regex-final-routing expectations with main-first expectations.
    - Add prompt/action parsing regressions.
    - Update REPL dispatch docs.
@@ -113,8 +121,8 @@ Latest result: all focused tests passed, full suite passed `24/24`, and
 ## Next Candidate Slices
 
 - Move REPL chat/pending-route state out of `interactive_commands.cpp` into a
-  small module with direct unit tests.
+  small module with direct unit tests. (done)
 - Add an explicit approval path for high-risk main route actions instead of
-  hard rejecting them.
+  hard rejecting them. (done)
 - Persist chat/session context across REPL restarts if the product needs
   long-running conversational continuity.
