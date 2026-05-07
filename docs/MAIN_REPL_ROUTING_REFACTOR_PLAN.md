@@ -185,6 +185,12 @@ natural language goes to the configured `main` agent with recent context, and
    - Keep JSONL as the default output so machine-readable trace inspection
      remains unchanged.
 
+18. User-facing Main REPL docs: done
+   - Add `docs/MAIN_REPL.md` with the current routing model, context
+     commands, privacy levels, routing trace, and misrouting debug checklist.
+   - Link the Main REPL documentation from README's current implementation
+     status.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -217,3 +223,4 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
   `routing_trace.jsonl` from inside the REPL. (done)
 - Add a compact human-readable trace formatter if raw JSONL is too noisy for
   day-to-day debugging. (done)
+- Add command examples or screenshots after the REPL UX stabilizes further.
