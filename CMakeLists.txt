@@ -39,6 +39,7 @@ add_library(agentos_core
     src/cli/intent_classifier.cpp
     src/cli/interactive_chat_state.cpp
     src/cli/interactive_intent_registry.cpp
+    src/cli/interactive_main_context.cpp
     src/cli/interactive_route_policy.cpp
     src/cli/interactive_commands.cpp
     src/cli/main_route_action.cpp

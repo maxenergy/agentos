@@ -1,4 +1,5 @@
 #include "cli/interactive_chat_state.hpp"
+#include "cli/interactive_main_context.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -158,6 +159,57 @@ void TestMalformedChatTranscriptLoadsEmpty() {
     std::filesystem::remove(path);
 }
 
+void TestRoutingTraceFormatting() {
+    const auto request = agentos::FormatRoutingTraceLine(
+        R"({"event":"main_request","task_id":"one","target":"main","context_privacy":"digest","conversation_context_sent":true,"pending_route_action_sent":false,"allow_route_actions":true})");
+    Expect(request == "main_request task=one target=main privacy=digest context=true pending=false route_actions=true",
+           "routing trace pretty formatter should format main_request records");
+
+    const auto response = agentos::FormatRoutingTraceLine(
+        R"({"event":"main_response","task_id":"two","success":true,"route_action_requested":true,"route_action_target_kind":"skill","route_action_target":"host_info","duration_ms":42})");
+    Expect(response == "main_response task=two success=true route_action=true target=skill:host_info duration_ms=42",
+           "routing trace pretty formatter should format main_response records");
+
+    const auto action = agentos::FormatRoutingTraceLine(
+        R"({"event":"route_action_result","task_id":"three","target_kind":"skill","target":"host_info","success":false,"pending_after_action":true,"error_code":"InvalidRouteSkillInput"})");
+    Expect(action == "route_action_result task=three target=skill:host_info success=false pending_after=true error=InvalidRouteSkillInput",
+           "routing trace pretty formatter should format route_action_result records");
+
+    Expect(agentos::FormatRoutingTraceLine("{not json") == "{not json",
+           "routing trace pretty formatter should preserve malformed lines");
+}
+
+void TestMainContextHelpers() {
+    const auto suffix = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto workspace = std::filesystem::temp_directory_path() /
+        ("agentos-main-context-test-" + suffix);
+    std::filesystem::remove_all(workspace);
+
+    Expect(agentos::IsValidContextName("alpha_1.test"),
+           "context name validator should accept safe names");
+    Expect(!agentos::IsValidContextName("../bad"),
+           "context name validator should reject path-like names");
+    Expect(agentos::LoadCurrentMainContextName(workspace) == "repl-default",
+           "missing current context should default to repl-default");
+
+    agentos::SaveCurrentMainContextName(workspace, "alpha");
+    Expect(agentos::LoadCurrentMainContextName(workspace) == "alpha",
+           "current context helper should persist selected context");
+
+    Expect(agentos::LoadMainContextPrivacy(workspace, "alpha") == agentos::ContextPrivacyLevel::digest,
+           "missing privacy file should default to digest");
+    agentos::SaveMainContextPrivacy(workspace, "alpha", agentos::ContextPrivacyLevel::none);
+    Expect(agentos::LoadMainContextPrivacy(workspace, "alpha") == agentos::ContextPrivacyLevel::none,
+           "privacy helper should persist per-context privacy");
+
+    agentos::AppendMainRoutingTrace(workspace, {{"event", "main_request"}, {"task_id", "trace-1"}});
+    const auto lines = agentos::TailTextFile(agentos::MainRoutingTracePath(workspace), 1);
+    Expect(lines.size() == 1 && lines.front().find("\"task_id\":\"trace-1\"") != std::string::npos,
+           "routing trace helper should append and tail trace records");
+
+    std::filesystem::remove_all(workspace);
+}
+
 }  // namespace
 
 int main() {
@@ -169,6 +221,8 @@ int main() {
     TestRenderPendingRouteActionContext();
     TestChatTranscriptPersistsRecentTurns();
     TestMalformedChatTranscriptLoadsEmpty();
+    TestRoutingTraceFormatting();
+    TestMainContextHelpers();
 
     if (failures != 0) {
         std::cerr << failures << " failure(s)\n";

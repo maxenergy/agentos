@@ -191,6 +191,14 @@ natural language goes to the configured `main` agent with recent context, and
    - Link the Main REPL documentation from README's current implementation
      status.
 
+19. Main REPL context helper module: done
+   - Move context path/name/privacy helpers out of `interactive_commands.cpp`
+     into `src/cli/interactive_main_context.*`.
+   - Move routing trace append/tail/pretty formatting helpers into the same
+     module.
+   - Add direct unit coverage for context helper persistence, trace append/tail,
+     and pretty trace formatting.
+
 ## Non-goals For This Batch
 
 - Build a full multi-step planner loop.
@@ -224,3 +232,5 @@ Latest result: all focused tests passed, full suite passed `25/25`, and
 - Add a compact human-readable trace formatter if raw JSONL is too noisy for
   day-to-day debugging. (done)
 - Add command examples or screenshots after the REPL UX stabilizes further.
+- Move route-action execution and synthesis helpers out of
+  `interactive_commands.cpp` if that file needs another maintenance pass.
