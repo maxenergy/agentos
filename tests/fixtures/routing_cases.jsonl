@@ -8,4 +8,4 @@
 {"name":"memory question","input":"你记得什么？","expected_route":"local_intent","expected_target":"interactive_runtime","expected_mode":"sync","must_not_route":"chat_agent"}
 {"name":"AI news search","input":"帮我搜索今天的 AI 新闻","expected_route":"chat_agent","expected_target":"main","expected_mode":"sync","must_not_route":"research_agent"}
 {"name":"Google weekly news top5","input":"帮我搜索谷歌看一周新闻top5","expected_route":"chat_agent","expected_target":"main","expected_mode":"sync","must_not_route":"research_agent"}
-{"name":"business chat continuation with generated terms","input":"低频，因为每批处理完成后，会根据画像生成沟通术语，执行完成后到下一批估计都有几小时。","expected_route":"chat_agent","expected_target":"main","expected_mode":"sync","must_not_route":"development_agent"}
+{"name":"batch cadence continuation","input":"补充一下节奏：每批处理完成后，下一批通常间隔几个小时。","expected_route":"chat_agent","expected_target":"main","expected_mode":"sync","must_not_route":"development_agent"}

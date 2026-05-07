@@ -25,6 +25,8 @@ Status: merge-ready on branch `codex/improve-interactive-routing`.
   `digest`, `none`, or `verbatim`.
 - Default `digest` mode sends a sanitized continuity digest instead of full
   prior turns.
+- Continuation-route tests use neutral batch-cadence examples so regression
+  coverage does not depend on business-specific prompt text.
 - Main routing trace records are written to
   `runtime/main_agent/routing_trace.jsonl`.
 - Trace can be inspected or cleared in the REPL:
@@ -58,6 +60,15 @@ Focused coverage includes:
 - `agentos_main_agent_prompt_tests`
 - `agentos_main_route_action_tests`
 - `agentos_interactive_chat_state_tests`
+
+Merge-prep smoke coverage on 2026-05-07:
+
+- A two-turn interactive session sends a digest of the first turn to `main`
+  before the second turn is answered.
+- A second REPL process restores the persisted default context before calling
+  `main`.
+- A short cadence clarification stays on `chat_agent -> main` and is covered
+  by both classifier fixture and interactive integration tests.
 
 ## Merge Readiness
 

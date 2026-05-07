@@ -108,8 +108,8 @@ natural language goes to the configured `main` agent with recent context, and
    - Make `main` decide whether the live turn continues the prior topic before
      it emits any route action.
    - Pass a contextual REPL intent hint alongside recent transcript.
-   - Cover the browser/low-frequency continuation scenario with a real
-     interactive main-agent fixture.
+   - Cover a batch-cadence continuation scenario with a real interactive
+     main-agent fixture.
 
 9. Provider-native main-agent message history: done
    - Split main-agent chat requests into provider-native system/user/assistant

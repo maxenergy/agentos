@@ -606,15 +606,15 @@ void WriteMainContextContinuationCurlFixture(const std::filesystem::path& bin_di
         << "if [ \"$count\" = \"0\" ]; then\n"
         << "  printf '1\\n' > \"$counter\"\n"
         << "  cat <<'JSON'\n"
-        << R"({"choices":[{"message":{"content":"推荐低频批处理优先考虑官方接口或合规自动化。"}}]})"
+        << R"({"choices":[{"message":{"content":"建议把批处理节奏、交付格式和后续处理边界写清楚。"}}]})"
         << "\nJSON\n"
         << "else\n"
         << "  printf '2\\n' > \"$counter\"\n"
         << "  if grep -q '\"role\":\"system\"' \"$body\" && "
            "grep -q 'REPL CONTEXT DIGEST' \"$body\" && "
-           "grep -q '这个批处理方案应该用官方接口还是自动化流程？' \"$body\" && "
-           "grep -q '推荐低频批处理优先考虑官方接口' \"$body\" && "
-           "grep -q '低频，因为每批处理完成后' \"$body\" && "
+           "grep -q '这个批处理方案应该如何安排？' \"$body\" && "
+           "grep -q '建议把批处理节奏' \"$body\" && "
+           "grep -q '补充一下节奏' \"$body\" && "
            "grep -q 'contextual_repl_turn' \"$body\" && "
            "grep -q 'continuation of the prior topic' \"$body\"; then\n"
         << "    cat <<'JSON'\n"
@@ -2817,8 +2817,8 @@ void TestInteractiveMainReceivesContextForContinuationTurns() {
     const auto result = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "这个批处理方案应该用官方接口还是自动化流程？\n"
-        "低频，因为每批处理完成后，会根据画像生成沟通术语，执行完成后到下一批估计都有几小时。\n"
+        "这个批处理方案应该如何安排？\n"
+        "补充一下节奏：每批处理完成后，下一批通常间隔几个小时。\n"
         "exit\n");
     Expect(result.exit_code == 0, "interactive continuation context loop should exit cleanly");
     Expect(result.output.find("(route: chat_agent") != std::string::npos,
@@ -2860,18 +2860,18 @@ void TestInteractiveMainRestoresPersistedContextAcrossReplRestarts() {
     const auto first = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "这个批处理方案应该用官方接口还是自动化流程？\nexit\n");
+        "这个批处理方案应该如何安排？\nexit\n");
     Expect(first.exit_code == 0, "first interactive persisted-context session should exit cleanly");
     const auto session_path = workspace / "runtime" / "main_agent" / "sessions" / "repl-default.json";
     Expect(std::filesystem::exists(session_path),
         "first interactive session should persist main-agent REPL context");
-    Expect(ReadTextFile(session_path).find("推荐低频批处理优先考虑官方接口") != std::string::npos,
+    Expect(ReadTextFile(session_path).find("建议把批处理节奏") != std::string::npos,
         "persisted main-agent REPL context should include assistant reply");
 
     const auto second = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "低频，因为每批处理完成后，会根据画像生成沟通术语，执行完成后到下一批估计都有几小时。\nexit\n");
+        "补充一下节奏：每批处理完成后，下一批通常间隔几个小时。\nexit\n");
     Expect(second.exit_code == 0, "second interactive persisted-context session should exit cleanly");
     Expect(second.output.find("contextual continuation ok") != std::string::npos,
         "second REPL process should restore persisted context before calling main");
@@ -2905,7 +2905,7 @@ void TestInteractiveMainContextShowAndClearCommands() {
     const auto result = RunAgentosWithStdin(
         workspace,
         {"interactive"},
-        "这个批处理方案应该用官方接口还是自动化流程？\n"
+        "这个批处理方案应该如何安排？\n"
         "context show\n"
         "status\n"
         "context clear\n"
@@ -2916,7 +2916,7 @@ void TestInteractiveMainContextShowAndClearCommands() {
         "context show should print the main context heading");
     Expect(result.output.find("turns:   1") != std::string::npos,
         "context show should report the persisted turn count before clear");
-    Expect(result.output.find("这个批处理方案应该用官方接口还是自动化流程？") != std::string::npos,
+    Expect(result.output.find("这个批处理方案应该如何安排？") != std::string::npos,
         "context show should print the stored user turn");
     Expect(result.output.find("main_context_turns: 1") != std::string::npos,
         "status should include current main context turn count");

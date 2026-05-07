@@ -96,15 +96,15 @@ void TestMemoryQuestionRoutesToLocalIntent() {
         "memory question should be handled by the interactive runtime");
 }
 
-void TestBusinessDiscussionWithGenerateTermsRoutesToChat() {
+void TestBatchCadenceContinuationRoutesToChat() {
     const auto decision = Classify(
-        "低频，因为每批处理完成后，会根据画像生成沟通术语，执行完成后到下一批估计都有几小时。");
+        "补充一下节奏：每批处理完成后，下一批通常间隔几个小时。");
     Expect(decision.route == agentos::InteractiveRouteKind::chat_agent,
-        "business discussion with generated terms should stay on main chat");
+        "batch cadence continuation should stay on main chat");
     Expect(decision.execution_mode == agentos::InteractiveExecutionMode::sync,
-        "business discussion should remain synchronous");
+        "batch cadence discussion should remain synchronous");
     Expect(decision.selected_target == "main",
-        "business discussion should target main");
+        "batch cadence discussion should target main");
 }
 
 }  // namespace
@@ -117,7 +117,7 @@ int main() {
     TestMainAgentOllamaConfigRoutesToLocalIntent();
     TestCurrentModelQuestionRoutesToLocalIntent();
     TestMemoryQuestionRoutesToLocalIntent();
-    TestBusinessDiscussionWithGenerateTermsRoutesToChat();
+    TestBatchCadenceContinuationRoutesToChat();
 
     if (failures != 0) {
         std::cerr << failures << " intent classifier test assertion(s) failed\n";
