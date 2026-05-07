@@ -4,13 +4,13 @@ Branch: `codex/improve-interactive-routing`
 
 Base checked against: `origin/main`
 
-As of 2026-05-07, this branch is ahead of `origin/main` by 84 commits and has
+As of 2026-05-07, this branch is ahead of `origin/main` by 86 commits and has
 no commits behind `origin/main`.
 
 Diff size:
 
 ```text
-57 files changed, 17683 insertions(+), 707 deletions(-)
+58 files changed, 17798 insertions(+), 711 deletions(-)
 ```
 
 ## Scope
