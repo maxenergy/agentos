@@ -37,35 +37,35 @@ agentos::RouteDecisionExplanation Classify(const std::string& line) {
 void TestResearchFirstSkillLibraryUrlRoutesToResearch() {
     const auto decision = Classify(
         "帮我研究这个项目，如何加入到我们的技能库：https://github.com/maxenergy/skills.git");
-    Expect(decision.route == agentos::InteractiveRouteKind::research_agent,
-        "research-first skill-library URL should route to research_agent");
-    Expect(decision.execution_mode == agentos::InteractiveExecutionMode::async_job,
-        "research-first skill-library URL should still run as async job");
-    Expect(decision.selected_target == "research_request",
-        "research-first skill-library URL should target research_request");
+    Expect(decision.route == agentos::InteractiveRouteKind::chat_agent,
+        "research-shaped natural language should first route to main");
+    Expect(decision.execution_mode == agentos::InteractiveExecutionMode::sync,
+        "main-first routing should be synchronous");
+    Expect(decision.selected_target == "main",
+        "research-shaped natural language should target main");
 }
 
 void TestExplicitInstallRoutesToDevelopment() {
     const auto decision = Classify(
         "把 https://github.com/maxenergy/skills.git 安装到 .agents/skills 技能库");
-    Expect(decision.route == agentos::InteractiveRouteKind::development_agent,
-        "explicit repo installation should route to development_agent");
-    Expect(decision.selected_target == "development_request",
-        "explicit repo installation should target development_request");
+    Expect(decision.route == agentos::InteractiveRouteKind::chat_agent,
+        "development-shaped natural language should first route to main");
+    Expect(decision.selected_target == "main",
+        "development-shaped natural language should target main");
 }
 
 void TestArtifactRequestRoutesToDevelopment() {
     const auto decision = Classify("帮我写一个 3 页 PPT 大纲并保存为文件");
-    Expect(decision.route == agentos::InteractiveRouteKind::development_agent,
-        "artifact creation request should route to development_agent");
+    Expect(decision.route == agentos::InteractiveRouteKind::chat_agent,
+        "artifact creation request should first route to main");
 }
 
 void TestCommandLineToolBuildRoutesToDevelopment() {
     const auto decision = Classify("please build a small command line tool");
-    Expect(decision.route == agentos::InteractiveRouteKind::development_agent,
-        "command line tool build request should route to development_agent");
-    Expect(decision.execution_mode == agentos::InteractiveExecutionMode::async_job,
-        "command line tool build request should run as async job");
+    Expect(decision.route == agentos::InteractiveRouteKind::chat_agent,
+        "command line tool build request should first route to main");
+    Expect(decision.execution_mode == agentos::InteractiveExecutionMode::sync,
+        "main-first build request should run synchronously until main requests a route action");
 }
 
 void TestMainAgentOllamaConfigRoutesToLocalIntent() {
@@ -96,6 +96,17 @@ void TestMemoryQuestionRoutesToLocalIntent() {
         "memory question should be handled by the interactive runtime");
 }
 
+void TestBusinessDiscussionWithGenerateTermsRoutesToChat() {
+    const auto decision = Classify(
+        "低频，因为我抓取完一批企业数据后，会根据企业画像生成聊天术语，外呼操作完成，到下一批抓取数据估计都有几小时。");
+    Expect(decision.route == agentos::InteractiveRouteKind::chat_agent,
+        "business discussion with generated terms should stay on main chat");
+    Expect(decision.execution_mode == agentos::InteractiveExecutionMode::sync,
+        "business discussion should remain synchronous");
+    Expect(decision.selected_target == "main",
+        "business discussion should target main");
+}
+
 }  // namespace
 
 int main() {
@@ -106,6 +117,7 @@ int main() {
     TestMainAgentOllamaConfigRoutesToLocalIntent();
     TestCurrentModelQuestionRoutesToLocalIntent();
     TestMemoryQuestionRoutesToLocalIntent();
+    TestBusinessDiscussionWithGenerateTermsRoutesToChat();
 
     if (failures != 0) {
         std::cerr << failures << " intent classifier test assertion(s) failed\n";

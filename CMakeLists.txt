@@ -40,6 +40,7 @@ add_library(agentos_core
     src/cli/interactive_intent_registry.cpp
     src/cli/interactive_route_policy.cpp
     src/cli/interactive_commands.cpp
+    src/cli/main_route_action.cpp
     src/cli/main_agent_commands.cpp
     src/cli/serve_commands.cpp
     src/cli/memory_commands.cpp
@@ -274,6 +275,10 @@ add_executable(agentos_main_agent_prompt_tests tests/main_agent_prompt_tests.cpp
 target_link_libraries(agentos_main_agent_prompt_tests PRIVATE agentos_core)
 add_test(NAME agentos_main_agent_prompt_tests COMMAND agentos_main_agent_prompt_tests)
 
+add_executable(agentos_main_route_action_tests tests/main_route_action_tests.cpp)
+target_link_libraries(agentos_main_route_action_tests PRIVATE agentos_core)
+add_test(NAME agentos_main_route_action_tests COMMAND agentos_main_route_action_tests)
+
 if(MSVC)
     target_compile_options(agentos_core PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos PRIVATE /W4 /permissive- /EHsc)
@@ -300,6 +305,7 @@ if(MSVC)
     target_compile_options(agentos_learn_skill_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_chat_fallback_tests PRIVATE /W4 /permissive- /EHsc)
     target_compile_options(agentos_main_agent_prompt_tests PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(agentos_main_route_action_tests PRIVATE /W4 /permissive- /EHsc)
 else()
     target_compile_options(agentos_core PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos PRIVATE -Wall -Wextra -Wpedantic)
@@ -326,4 +332,5 @@ else()
     target_compile_options(agentos_learn_skill_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_chat_fallback_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(agentos_main_agent_prompt_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(agentos_main_route_action_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()

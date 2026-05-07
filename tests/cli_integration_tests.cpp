@@ -399,6 +399,182 @@ void WriteCurlTokenFixture(const std::filesystem::path& bin_dir) {
 #endif
 }
 
+void WriteMainRouteActionCurlFixture(const std::filesystem::path& bin_dir,
+                                     const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"host_info\\\",\\\"brief\\\":\\\"GOAL: inspect host info for REPL route action test. FORMAT: concise JSON-backed summary. SUCCESS: host_info skill runs.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"objective\\\":\\\"inspect host info\\\"}}}\"}}]}\n"
+        << ") else (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"route action synthesis complete\"}}]}\n"
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"host_info\",\"brief\":\"GOAL: inspect host info for REPL route action test. FORMAT: concise JSON-backed summary. SUCCESS: host_info skill runs.\",\"mode\":\"sync\",\"arguments\":{\"objective\":\"inspect host info\"}}}"}}]})"
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"route action synthesis complete"}}]})"
+        << "\nJSON\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
+void WriteMainRouteActionMissingInputCurlFixture(const std::filesystem::path& bin_dir,
+                                                const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"news_search\\\",\\\"brief\\\":\\\"GOAL: search news.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{}}}\"}}]}\n"
+        << ") else (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"route action validation synthesis complete\"}}]}\n"
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"news_search\",\"brief\":\"GOAL: search news.\",\"mode\":\"sync\",\"arguments\":{}}}"}}]})"
+        << "\nJSON\n"
+        << "else\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"route action validation synthesis complete"}}]})"
+        << "\nJSON\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
+void WriteMainRouteActionContextCurlFixture(const std::filesystem::path& bin_dir,
+                                           const std::filesystem::path& counter_path) {
+    std::filesystem::create_directories(bin_dir);
+#ifdef _WIN32
+    const auto fixture_path = bin_dir / "curl.cmd";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "@echo off\n"
+        << "set COUNTER=" << counter_path.string() << "\n"
+        << "if not exist \"%COUNTER%\" echo 0>\"%COUNTER%\"\n"
+        << "set /p COUNT=<\"%COUNTER%\"\n"
+        << "if \"%COUNT%\"==\"0\" (\n"
+        << "  echo 1>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"news_search\\\",\\\"brief\\\":\\\"GOAL: search news.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{}}}\"}}]}\n"
+        << ") else if \"%COUNT%\"==\"1\" (\n"
+        << "  echo 2>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"please provide query\"}}]}\n"
+        << ") else if \"%COUNT%\"==\"2\" (\n"
+        << "  echo 3>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"{\\\"agentos_route_action\\\":{\\\"action\\\":\\\"call_capability\\\",\\\"target_kind\\\":\\\"skill\\\",\\\"target\\\":\\\"news_search\\\",\\\"brief\\\":\\\"GOAL: search news with supplied query.\\\",\\\"mode\\\":\\\"sync\\\",\\\"arguments\\\":{\\\"query\\\":\\\"AI browser\\\"}}}\"}}]}\n"
+        << ") else (\n"
+        << "  echo 4>\"%COUNTER%\"\n"
+        << "  echo {\"choices\":[{\"message\":{\"content\":\"context ok\"}}]}\n"
+        << ")\n"
+        << "exit /b 0\n";
+#else
+    const auto fixture_path = bin_dir / "curl";
+    std::ofstream output(fixture_path, std::ios::binary);
+    output
+        << "#!/usr/bin/env sh\n"
+        << "counter=" << QuoteShellArg(counter_path.string()) << "\n"
+        << "if [ ! -f \"$counter\" ]; then printf '0\\n' > \"$counter\"; fi\n"
+        << "count=$(cat \"$counter\")\n"
+        << "body=''\n"
+        << "prev=''\n"
+        << "for arg in \"$@\"; do\n"
+        << "  if [ \"$prev\" = '-d' ]; then body=${arg#@}; fi\n"
+        << "  prev=$arg\n"
+        << "done\n"
+        << "if [ \"$count\" = \"0\" ]; then\n"
+        << "  printf '1\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"news_search\",\"brief\":\"GOAL: search news.\",\"mode\":\"sync\",\"arguments\":{}}}"}}]})"
+        << "\nJSON\n"
+        << "elif [ \"$count\" = \"1\" ]; then\n"
+        << "  printf '2\\n' > \"$counter\"\n"
+        << "  cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"please provide query"}}]})"
+        << "\nJSON\n"
+        << "elif [ \"$count\" = \"2\" ]; then\n"
+        << "  printf '3\\n' > \"$counter\"\n"
+        << "  if grep -q 'AGENTOS ROUTE ACTION RESULT' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"context leaked internal route result"}}]})"
+        << "\nJSON\n"
+        << "  elif grep -q 'User: search news through main' \"$body\" && grep -q 'Assistant: please provide query' \"$body\" && grep -q 'PENDING AGENTOS ROUTE ACTION' \"$body\" && grep -q 'news_search' \"$body\" && grep -q 'query' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"{\"agentos_route_action\":{\"action\":\"call_capability\",\"target_kind\":\"skill\",\"target\":\"news_search\",\"brief\":\"GOAL: search news with supplied query.\",\"mode\":\"sync\",\"arguments\":{\"query\":\"AI browser\"}}}"}}]})"
+        << "\nJSON\n"
+        << "  else\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"context missing pending route action"}}]})"
+        << "\nJSON\n"
+        << "  fi\n"
+        << "else\n"
+        << "  printf '4\\n' > \"$counter\"\n"
+        << "  if grep -q 'PENDING AGENTOS ROUTE ACTION' \"$body\"; then\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"pending leaked after success"}}]})"
+        << "\nJSON\n"
+        << "  else\n"
+        << "    cat <<'JSON'\n"
+        << R"({"choices":[{"message":{"content":"context ok"}}]})"
+        << "\nJSON\n"
+        << "  fi\n"
+        << "fi\n";
+    output.close();
+    std::filesystem::permissions(
+        fixture_path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
+#endif
+}
+
 std::filesystem::path WriteAutoDevCodexCliFixture(const std::filesystem::path& bin_dir) {
     std::filesystem::create_directories(bin_dir);
 #ifdef _WIN32
@@ -2272,21 +2448,16 @@ void TestInteractiveFreeFormDispatch() {
             workspace,
             {"interactive"},
             "please build a small command line tool\nexit\n");
-        Expect(result.exit_code == 0, "interactive development dispatch should exit cleanly");
-        Expect(result.output.find("(route: development_agent -> development_request") != std::string::npos,
-            "interactive development free-form text should be classified as a development route");
-        Expect(result.output.find("mode=async_job") != std::string::npos,
-            "interactive development route should declare async job execution mode");
-        Expect(result.output.find("(background development job started: dev-") != std::string::npos,
-            "interactive development dispatch should enqueue a background job");
-        Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
-            "interactive development dispatch should invoke the registered development_request skill");
+        Expect(result.exit_code == 0, "interactive development-shaped input should exit cleanly");
+        Expect(result.output.find("(route: chat_agent") != std::string::npos,
+            "interactive development-shaped free-form text should route to main first");
+        Expect(result.output.find("mode=sync") != std::string::npos,
+            "main-first development-shaped route should declare sync mode");
+        Expect(result.output.find("main-agent is not configured") != std::string::npos,
+            "main-first development-shaped route should preserve the main-agent setup hint");
         const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
-        Expect(audit.find("development_request") != std::string::npos,
-            "interactive development dispatch should be visible in audit as a normal task");
-        const auto task_log = ReadTextFile(workspace / "runtime" / "memory" / "task_log.tsv");
-        Expect(task_log.find("development_request") != std::string::npos,
-            "interactive development dispatch should be visible in memory as a normal task");
+        Expect(audit.find("development_request") == std::string::npos,
+            "interactive development-shaped text should not preemptively invoke development_request");
     }
 
     {
@@ -2299,23 +2470,16 @@ void TestInteractiveFreeFormDispatch() {
             workspace,
             {"interactive"},
             "please research current provider integration details\nexit\n");
-        Expect(result.exit_code == 0, "interactive research dispatch should exit cleanly");
-        Expect(result.output.find("(route: research_agent -> research_request") != std::string::npos,
-            "interactive research free-form text should be classified as a research route");
-        Expect(result.output.find("mode=async_job") != std::string::npos,
-            "interactive research route should declare async job execution mode");
-        Expect(result.output.find("(background research job started: research-") != std::string::npos,
-            "interactive research dispatch should enqueue a background job");
-        Expect(result.output.find("Use `jobs` to inspect progress") != std::string::npos,
-            "interactive research dispatch should return a job inspection hint");
-        Expect(result.output.find("error_code: AgentUnavailable") != std::string::npos,
-            "interactive research dispatch should invoke the registered research_request skill");
+        Expect(result.exit_code == 0, "interactive research-shaped input should exit cleanly");
+        Expect(result.output.find("(route: chat_agent") != std::string::npos,
+            "interactive research-shaped free-form text should route to main first");
+        Expect(result.output.find("mode=sync") != std::string::npos,
+            "main-first research-shaped route should declare sync mode");
+        Expect(result.output.find("main-agent is not configured") != std::string::npos,
+            "main-first research-shaped route should preserve the main-agent setup hint");
         const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
-        Expect(audit.find("research_request") != std::string::npos,
-            "interactive research dispatch should be visible in audit as a normal task");
-        const auto task_log = ReadTextFile(workspace / "runtime" / "memory" / "task_log.tsv");
-        Expect(task_log.find("research_request") != std::string::npos,
-            "interactive research dispatch should be visible in memory as a normal task");
+        Expect(audit.find("research_request") == std::string::npos,
+            "interactive research-shaped text should not preemptively invoke research_request");
     }
 
     {
@@ -2337,25 +2501,6 @@ void TestInteractiveFreeFormDispatch() {
 
 #ifndef _WIN32
     {
-        const auto workspace = FreshWorkspace("interactive_exit_running_job");
-        const auto bin_dir = workspace / "bin";
-        WriteSleepingCodexFixture(bin_dir);
-        SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
-        SetEnvForTest("AGENTOS_DEV_MAX_ATTEMPTS", "1");
-
-        const auto result = RunAgentosWithStdin(
-            workspace,
-            {"interactive"},
-            "please build a small command line tool\nexit\nexit --wait\n");
-        Expect(result.exit_code == 0, "interactive exit --wait should exit cleanly after a running job");
-        Expect(result.output.find("background job(s) still running") != std::string::npos,
-            "interactive exit should report running jobs instead of blocking immediately");
-        Expect(result.output.find("exit --wait") != std::string::npos,
-            "interactive exit should tell the user how to wait explicitly");
-        SetEnvForTest("AGENTOS_DEV_MAX_ATTEMPTS", "");
-    }
-
-    {
         const auto workspace = FreshWorkspace("interactive_utf8_pty_dispatch");
         SetEnvForTest("PATH", old_path);
 
@@ -2372,6 +2517,126 @@ void TestInteractiveFreeFormDispatch() {
 #endif
 
     SetEnvForTest("PATH", old_path);
+}
+
+void TestInteractiveMainRouteActionLoop() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_route_counter.txt";
+    WriteMainRouteActionCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "inspect host through main\nexit\n");
+    Expect(result.exit_code == 0, "interactive main route action loop should exit cleanly");
+    Expect(result.output.find("(main requested call_capability target=skill:host_info)") != std::string::npos,
+        "REPL should detect and announce main route action");
+    Expect(result.output.find("route action synthesis complete") != std::string::npos,
+        "REPL should feed route result back to main for synthesis");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "main curl fixture should be called twice: action then synthesis");
+
+    const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("host_info") != std::string::npos,
+        "route action execution should invoke host_info through normal task audit");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainRouteActionValidationLoop() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_validation_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_route_validation_counter.txt";
+    WriteMainRouteActionMissingInputCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent validation fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "search news through main\nexit\n");
+    Expect(result.exit_code == 0, "interactive main route action validation loop should exit cleanly");
+    Expect(result.output.find("(main requested call_capability target=skill:news_search)") != std::string::npos,
+        "REPL should announce the invalid route action target");
+    Expect(result.output.find("route action validation synthesis complete") != std::string::npos,
+        "REPL should feed validation failure back to main for synthesis");
+    Expect(result.output.find("success: false") == std::string::npos,
+        "validation failure should not be dumped as raw task output before synthesis");
+    Expect(ReadTextFile(counter_path).find("2") != std::string::npos,
+        "main curl fixture should be called twice: invalid action then synthesis");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
+}
+
+void TestInteractiveMainRouteActionContextAfterClarification() {
+    const auto old_path = ReadEnvForTest("PATH").value_or("");
+    const auto old_api_key = ReadEnvForTest("AGENTOS_TEST_MAIN_KEY").value_or("");
+    const auto workspace = FreshWorkspace("interactive_main_route_action_context_loop");
+    const auto bin_dir = workspace / "bin";
+    const auto counter_path = workspace / "main_route_context_counter.txt";
+    WriteMainRouteActionContextCurlFixture(bin_dir, counter_path);
+    SetEnvForTest("PATH", bin_dir.string() + PathListSeparatorForTest() + old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", "fixture-key");
+
+    const auto set_main = RunAgentos(workspace, {
+        "main-agent", "set",
+        "provider=openai-chat",
+        "base_url=https://main.fixture.test/v1",
+        "model=fixture-main",
+        "api_key_env=AGENTOS_TEST_MAIN_KEY"});
+    Expect(set_main.exit_code == 0, "main-agent context fixture config should save");
+
+    const auto result = RunAgentosWithStdin(
+        workspace,
+        {"interactive"},
+        "search news through main\nAI browser\nthanks\nexit\n");
+    Expect(result.exit_code == 0, "interactive main route action context loop should exit cleanly");
+    Expect(result.output.find("please provide query") != std::string::npos,
+        "first route validation synthesis should ask for the missing query");
+    Expect(result.output.find("context ok") != std::string::npos,
+        "third turn should receive clean context after successful retry");
+    Expect(result.output.find("context leaked internal route result") == std::string::npos,
+        "recent chat context should not contain the internal route result prompt");
+    Expect(result.output.find("context missing pending route action") == std::string::npos,
+        "second turn should include pending route action context");
+    Expect(result.output.find("pending leaked after success") == std::string::npos,
+        "pending route action should clear after successful retry");
+    Expect(ReadTextFile(counter_path).find("4") != std::string::npos,
+        "main curl fixture should be called for invalid action, clarification, retry, and final synthesis");
+
+    const auto audit = ReadTextFile(workspace / "runtime" / "audit.log");
+    Expect(audit.find("\"query\":\"AI browser\"") != std::string::npos ||
+               audit.find("\"query\": \"AI browser\"") != std::string::npos ||
+               audit.find("AI browser") != std::string::npos,
+        "successful retry should invoke news_search with the supplied query");
+
+    SetEnvForTest("PATH", old_path);
+    SetEnvForTest("AGENTOS_TEST_MAIN_KEY", old_api_key);
 }
 
 void TestAutoDevCommands() {
@@ -3970,6 +4235,9 @@ int main() {
     TestAuthCommands();
     TestRunAuthProfileOverride();
     TestInteractiveFreeFormDispatch();
+    TestInteractiveMainRouteActionLoop();
+    TestInteractiveMainRouteActionValidationLoop();
+    TestInteractiveMainRouteActionContextAfterClarification();
     TestDiagnosticsCommand();
 
     if (failures != 0) {

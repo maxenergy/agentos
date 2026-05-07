@@ -39,7 +39,8 @@ InteractiveRouteVerdict MakeInteractiveRouteVerdict(
     }
 
     const auto& signals = proposal.signals;
-    if (signals.development && (!signals.research || signals.workspace_mutation)) {
+    if (signals.development && (signals.workspace_mutation || signals.artifact) &&
+        (!signals.research || signals.workspace_mutation)) {
         decision.route = InteractiveRouteKind::development_agent;
         decision.score += 4;
         decision.reasons.push_back("requires file/code/artifact style development work");

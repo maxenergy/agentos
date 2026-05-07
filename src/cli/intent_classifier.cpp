@@ -28,7 +28,7 @@ bool RegexAny(const std::string& line, const std::string& pattern) {
 
 bool LooksLikeWorkspaceMutationRequest(const std::string& line) {
     static const std::regex mutation_re(
-        R"((\b(write|create|build|develop|implement|generate|scaffold|modify|edit|patch|code|program|app|install|setup|configure|add|save|persist)\b)|编写|创建|实现|生成|修改|开发|安装|配置|新增|添加|写入|写文件|保存|保存为文件|落地|安装到|接入到\s*\.agents|加入到\s*\.agents)",
+        R"((\b(write|create|build|develop|implement|scaffold|modify|edit|patch|code|program|app|install|setup|configure|add|save|persist)\b)|\bgenerate\b.{0,60}\b(file|code|project|repo|repository|plugin|skill|command|manifest|doc|document|artifact)\b|编写|创建|修改|安装|配置|新增|添加|写入|写文件|保存|保存为文件|落地|安装到|接入到\s*\.agents|加入到\s*\.agents|生成.{0,60}(文件|代码|项目|仓库|插件|技能|命令|manifest|文档|产物|交付|PPT|大纲))",
         std::regex_constants::icase);
     return std::regex_search(line, mutation_re);
 }
@@ -143,20 +143,18 @@ RouteDecisionExplanation ClassifyInteractiveRequest(
         return MakeInteractiveRouteVerdict(proposal, targets).decision;
     }
 
-    if (looks_like_registered_skill_use && looks_like_registered_skill_use(line)) {
-        proposal.route = InteractiveRouteKind::direct_skill;
-        proposal.score += 5;
-        proposal.reasons.push_back("asks to use a registered skill as a tool");
-        const auto resolved = resolve_registered_skill ? resolve_registered_skill(line) : std::string{};
-        proposal.selected_target = resolved.empty() ? "interactive_runtime" : resolved;
-        proposal.authoritative = true;
-        return MakeInteractiveRouteVerdict(proposal, targets).decision;
-    }
+    proposal.route = InteractiveRouteKind::chat_agent;
+    proposal.selected_target = targets.chat;
+    proposal.score += 1;
+    proposal.reasons.push_back("free-form natural language is handled by main");
+    proposal.authoritative = true;
 
     decision = MakeInteractiveRouteVerdict(proposal, targets).decision;
     (void)usage_snapshot;
     (void)workspace;
     (void)agent_registry;
+    (void)looks_like_registered_skill_use;
+    (void)resolve_registered_skill;
     return decision;
 }
 

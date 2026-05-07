@@ -3,6 +3,7 @@
 #include "core/execution/agent_event_runtime_store.hpp"
 #include "cli/intent_classifier.hpp"
 #include "cli/interactive_intent_registry.hpp"
+#include "cli/main_route_action.hpp"
 #include "storage/main_agent_store.hpp"
 #include "utils/signal_cancellation.hpp"
 
@@ -50,6 +51,27 @@ namespace {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 constexpr int kInteractiveChatTimeoutMs = 120000;
+constexpr std::size_t kMaxChatContextTurns = 6;
+
+struct ChatTranscriptTurn {
+    std::string user;
+    std::string assistant;
+};
+
+struct PendingRouteAction {
+    bool active = false;
+    MainRouteAction action;
+    std::string error_code;
+    std::string error_message;
+};
+
+std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 120);
+TaskRunResult ExecuteMainRouteAction(const MainRouteAction& action,
+                                     SkillRegistry& skill_registry,
+                                     AgentRegistry& agent_registry,
+                                     const std::filesystem::path& workspace,
+                                     AgentLoop& loop,
+                                     AuditLogger& audit_logger);
 
 std::string MakeTaskId(const std::string& prefix) {
     const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -90,6 +112,62 @@ std::string JoinAgentCapabilities(const std::vector<AgentCapability>& values) {
         }
     }
     return JoinStrings(names, ",");
+}
+
+std::string RenderRecentChatContext(const std::vector<ChatTranscriptTurn>& history) {
+    if (history.empty()) {
+        return {};
+    }
+    const auto start = history.size() > kMaxChatContextTurns
+        ? history.size() - kMaxChatContextTurns
+        : 0;
+    std::ostringstream out;
+    out << "[RECENT REPL CHAT CONTEXT]\n";
+    for (std::size_t i = start; i < history.size(); ++i) {
+        out << "User: " << history[i].user << "\n";
+        if (!history[i].assistant.empty()) {
+            out << "Assistant: " << ShortenForConsole(history[i].assistant, 1200) << "\n";
+        }
+    }
+    out << "[END RECENT REPL CHAT CONTEXT]";
+    return out.str();
+}
+
+void AppendChatTranscript(std::vector<ChatTranscriptTurn>& history,
+                          std::string user,
+                          std::string assistant) {
+    history.push_back({
+        .user = std::move(user),
+        .assistant = std::move(assistant),
+    });
+    if (history.size() > kMaxChatContextTurns) {
+        history.erase(history.begin(),
+                      history.begin() + static_cast<std::ptrdiff_t>(history.size() - kMaxChatContextTurns));
+    }
+}
+
+std::string RenderPendingRouteActionContext(const PendingRouteAction& pending) {
+    if (!pending.active) {
+        return {};
+    }
+    nlohmann::ordered_json payload;
+    payload["action"] = pending.action.action;
+    payload["target_kind"] = pending.action.target_kind;
+    payload["target"] = pending.action.target;
+    payload["brief"] = pending.action.brief;
+    payload["mode"] = pending.action.mode;
+    payload["error_code"] = pending.error_code;
+    payload["error_message"] = pending.error_message;
+    payload["arguments"] = pending.action.arguments;
+
+    std::ostringstream out;
+    out << "[PENDING AGENTOS ROUTE ACTION]\n"
+        << payload.dump(2) << "\n"
+        << "[END PENDING AGENTOS ROUTE ACTION]\n"
+        << "If the user is supplying missing information for this pending capability, "
+           "reuse the same registered target and emit a fresh agentos_route_action "
+           "with the completed arguments. Otherwise answer normally.";
+    return out.str();
 }
 
 // Tokenize a line by whitespace, respecting double-quoted spans.
@@ -190,7 +268,7 @@ std::string ReadTextFile(const std::filesystem::path& path) {
     return buffer.str();
 }
 
-std::string ShortenForConsole(const std::string& text, std::size_t max_chars = 120) {
+std::string ShortenForConsole(const std::string& text, std::size_t max_chars) {
     if (text.size() <= max_chars) {
         return text;
     }
@@ -304,188 +382,6 @@ bool LooksLikeBrowserConnectionError(const std::string& line) {
         R"((ERR_CONNECTION_REFUSED|connection\s+refused|refused\s+to\s+connect|site\s+can'?t\s+be\s+reached|127\.0\.0\.1.*refused|localhost.*refused|checking\s+the\s+connection|checking\s+the\s+proxy\s+and\s+the\s+firewall|代理|防火墙|无法访问|拒绝连接))",
         std::regex_constants::icase);
     return std::regex_search(line, error_re);
-}
-
-std::string StripPoliteTaskWords(std::string query) {
-    static const std::array<std::string, 10> words = {
-        "你帮我", "帮我", "请", "搜索", "查找", "找", "一下", "小红书", "我已经登录了", "已经登录了"
-    };
-    for (const auto& word : words) {
-        std::size_t pos = std::string::npos;
-        while ((pos = query.find(word)) != std::string::npos) {
-            query.erase(pos, word.size());
-        }
-    }
-    for (char& ch : query) {
-        if (ch == '，' || ch == '。' || ch == ',' || ch == '.' || ch == ':' || ch == ';') {
-            ch = ' ';
-        }
-    }
-    const auto start = query.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) {
-        return {};
-    }
-    const auto end = query.find_last_not_of(" \t\r\n");
-    return query.substr(start, end - start + 1);
-}
-
-std::string StripTrailingSentencePunctuation(std::string query) {
-    while (!query.empty()) {
-        const char ch = query.back();
-        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' ||
-            ch == '.' || ch == ',' || ch == ':' || ch == ';' ||
-            ch == '!' || ch == '?') {
-            query.pop_back();
-            continue;
-        }
-        break;
-    }
-    static const std::array<std::string, 6> suffixes = {"。", "，", "！", "？", "；", "："};
-    bool removed = true;
-    while (removed) {
-        removed = false;
-        for (const auto& suffix : suffixes) {
-            if (query.size() >= suffix.size() &&
-                query.compare(query.size() - suffix.size(), suffix.size(), suffix) == 0) {
-                query.erase(query.size() - suffix.size());
-                removed = true;
-                break;
-            }
-        }
-    }
-    return query;
-}
-
-std::optional<std::string> TextAfterLastSearchTrigger(const std::string& line) {
-    static const std::array<std::string, 7> triggers = {
-        "搜索", "查找", "帮我找", "帮我搜", "找", "搜", "search"
-    };
-    std::size_t best_pos = std::string::npos;
-    std::string best_trigger;
-    for (const auto& trigger : triggers) {
-        auto pos = line.find(trigger);
-        while (pos != std::string::npos) {
-            if (best_pos == std::string::npos || pos > best_pos) {
-                best_pos = pos;
-                best_trigger = trigger;
-            }
-            pos = line.find(trigger, pos + trigger.size());
-        }
-    }
-    if (best_pos == std::string::npos) {
-        return std::nullopt;
-    }
-    auto query = StripTrailingSentencePunctuation(line.substr(best_pos + best_trigger.size()));
-    query = StripPoliteTaskWords(query);
-    if (query.empty()) {
-        return std::nullopt;
-    }
-    return query;
-}
-
-std::optional<std::string> ExtractXiaohongshuSearchQuery(const std::string& line,
-                                                         const SkillRegistry& skill_registry) {
-    if (!skill_registry.find("xiaohongshu_search")) {
-        return std::nullopt;
-    }
-    static const std::regex xhs_re(
-        R"((小红书|xiaohongshu|rednote|xhs).*(搜索|查找|找|热门|热搜|top\s*\d+|趋势|话题|笔记)|(搜索|查找|找).*(小红书|xiaohongshu|rednote|xhs))",
-        std::regex_constants::icase);
-    if (!std::regex_search(line, xhs_re)) {
-        return std::nullopt;
-    }
-
-    std::smatch quoted;
-    static const std::regex quoted_re(R"(["'“”‘’]([^"'“”‘’]+)["'“”‘’])");
-    if (std::regex_search(line, quoted, quoted_re) && quoted.size() >= 2) {
-        return quoted[1].str();
-    }
-
-    auto query = TextAfterLastSearchTrigger(line).value_or("");
-    if (query.empty()) {
-        query = StripPoliteTaskWords(line);
-    }
-    query = StripTrailingSentencePunctuation(query);
-    if (query.empty()) {
-        query = "热门话题 top5";
-    }
-    if (query.find("热门") == std::string::npos &&
-        query.find("热搜") == std::string::npos &&
-        query.find("top") == std::string::npos &&
-        query.find("Top") == std::string::npos &&
-        query.find("话题") == std::string::npos) {
-        query += " 热门";
-    }
-    return query;
-}
-
-struct NewsSearchRequest {
-    std::string query;
-    int limit = 5;
-    int days = 7;
-};
-
-std::optional<NewsSearchRequest> ExtractNewsSearchRequest(const std::string& line,
-                                                          const SkillRegistry& skill_registry) {
-    if (!skill_registry.find("news_search")) {
-        return std::nullopt;
-    }
-    static const std::regex news_re(
-        R"((新闻|news|google\s+news|谷歌).*(搜索|查找|看|top\s*\d+|top|最近|一周|今天|今日)|(搜索|查找|看).*(新闻|news|google|谷歌))",
-        std::regex_constants::icase);
-    if (!std::regex_search(line, news_re)) {
-        return std::nullopt;
-    }
-
-    NewsSearchRequest request;
-    if (std::smatch match; std::regex_search(line, match, std::regex(R"(top\s*(\d+)|前\s*(\d+))", std::regex_constants::icase))) {
-        const auto value = match[1].matched ? match[1].str() : match[2].str();
-        try {
-            request.limit = std::clamp(std::stoi(value), 1, 10);
-        } catch (const std::exception&) {
-            request.limit = 5;
-        }
-    }
-    if (line.find("今天") != std::string::npos || line.find("今日") != std::string::npos ||
-        line.find("today") != std::string::npos || line.find("Today") != std::string::npos) {
-        request.days = 1;
-    } else if (line.find("一周") != std::string::npos || line.find("7天") != std::string::npos ||
-               line.find("七天") != std::string::npos || line.find("week") != std::string::npos ||
-               line.find("Week") != std::string::npos) {
-        request.days = 7;
-    }
-
-    auto query = TextAfterLastSearchTrigger(line).value_or("");
-    if (query.empty()) {
-        query = StripPoliteTaskWords(line);
-    }
-    query = StripTrailingSentencePunctuation(query);
-    query = std::regex_replace(query,
-                               std::regex(R"(top\s*\d+|前\s*\d+)", std::regex_constants::icase),
-                               "");
-    static const std::array<std::string, 13> remove_words = {
-        "新闻", "news", "News", "google news", "Google News", "搜索", "查找",
-        "看", "一周", "今天", "今日", "top", "Top"
-    };
-    for (const auto& word : remove_words) {
-        std::size_t pos = std::string::npos;
-        while ((pos = query.find(word)) != std::string::npos) {
-            query.erase(pos, word.size());
-        }
-    }
-    query = StripTrailingSentencePunctuation(query);
-    const auto start = query.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) {
-        query = "AI";
-    } else {
-        const auto end = query.find_last_not_of(" \t\r\n");
-        query = query.substr(start, end - start + 1);
-    }
-    if (query.empty()) {
-        query = "AI";
-    }
-    request.query = query;
-    return request;
 }
 
 std::vector<std::pair<std::string, SkillStats>> TopSkillsByCalls(
@@ -937,49 +833,6 @@ void PrintSkillUsageGuide(const SkillManifest& manifest) {
     std::cout << '\n';
 }
 
-TaskRunResult RunDirectSkillFromNaturalLanguage(const std::string& skill_name,
-                                                const StringMap& arguments,
-                                                const std::string& objective,
-                                                AgentLoop& loop,
-                                                const std::filesystem::path& workspace) {
-    TaskRequest task{
-        .task_id = MakeTaskId("interactive-skill"),
-        .task_type = skill_name,
-        .objective = objective,
-        .workspace_path = workspace,
-        .inputs = arguments,
-    };
-    task.allow_network = true;
-    task.timeout_ms = 120000;
-    return loop.run(task);
-}
-
-std::optional<std::filesystem::path> ExtractExistingWorkspacePath(const std::string& line) {
-    auto existing_directory = [](const std::string& text) -> std::optional<std::filesystem::path> {
-        std::filesystem::path candidate = text;
-        std::error_code ec;
-        if (std::filesystem::exists(candidate, ec) && std::filesystem::is_directory(candidate, ec)) {
-            return std::filesystem::weakly_canonical(candidate, ec);
-        }
-        return std::nullopt;
-    };
-
-    static const std::regex quoted_path_re(R"(["']((?:[A-Za-z]:[\\/]|/)[^"']+)["'])");
-    for (std::sregex_iterator it(line.begin(), line.end(), quoted_path_re), end; it != end; ++it) {
-        if (auto path = existing_directory((*it)[1].str()); path.has_value()) {
-            return path;
-        }
-    }
-
-    static const std::regex plain_path_re(R"((?:[A-Za-z]:[\\/]|/)[A-Za-z0-9_.@$~+%#(){}\[\]\-\\/]+)");
-    for (std::sregex_iterator it(line.begin(), line.end(), plain_path_re), end; it != end; ++it) {
-        if (auto path = existing_directory(it->str()); path.has_value()) {
-            return path;
-        }
-    }
-    return std::nullopt;
-}
-
 // ── Banner ──────────────────────────────────────────────────────────────────
 
 class ConsoleCodePageGuard {
@@ -1187,10 +1040,15 @@ std::string ResolveChatTarget(const AgentRegistry& agent_registry,
 }
 
 void RunChatPrompt(const std::string& prompt,
+                   SkillRegistry& skill_registry,
                    AgentRegistry& agent_registry,
                    AgentLoop& loop,
                    AuditLogger& audit_logger,
-                   const std::filesystem::path& workspace) {
+                   const std::filesystem::path& workspace,
+                   std::vector<ChatTranscriptTurn>* chat_history = nullptr,
+                   PendingRouteAction* pending_route_action = nullptr,
+                   bool allow_route_actions = true,
+                   std::optional<std::string> transcript_user_prompt = std::nullopt) {
     const auto target = ResolveChatTarget(agent_registry, workspace);
     if (target.empty()) {
         std::cerr
@@ -1221,6 +1079,17 @@ void RunChatPrompt(const std::string& prompt,
         .workspace_path = workspace,
     };
     task.preferred_target = target;
+    task.inputs["intent_hint"] =
+        "free_form_natural_language; answer directly unless a registered AgentOS capability is materially needed";
+    if (chat_history != nullptr) {
+        const auto context = RenderRecentChatContext(*chat_history);
+        if (!context.empty()) {
+            task.inputs["conversation_context"] = context;
+        }
+    }
+    if (pending_route_action != nullptr && pending_route_action->active && allow_route_actions) {
+        task.inputs["pending_route_action"] = RenderPendingRouteActionContext(*pending_route_action);
+    }
     // Chat hits an external LLM CLI/REST round-trip, which routinely takes
     // longer than the TaskRequest default of 5000ms. Keep the interactive
     // default aligned with main-agent's default_timeout_ms.
@@ -1243,6 +1112,36 @@ void RunChatPrompt(const std::string& prompt,
         long duration_ms = 0;
         for (const auto& step : result.steps) {
             duration_ms += step.duration_ms;
+        }
+        if (allow_route_actions) {
+            if (const auto action = ParseMainRouteAction(result.summary); action.has_value()) {
+                std::cout << "(main requested " << action->action
+                          << " target=" << action->target_kind << ":" << action->target << ")\n";
+                const auto action_result = ExecuteMainRouteAction(
+                    *action, skill_registry, agent_registry, workspace, loop, audit_logger);
+                if (pending_route_action != nullptr) {
+                    if (!action_result.success && action_result.error_code == "InvalidRouteSkillInput") {
+                        pending_route_action->active = true;
+                        pending_route_action->action = *action;
+                        pending_route_action->error_code = action_result.error_code;
+                        pending_route_action->error_message = action_result.error_message;
+                    } else {
+                        *pending_route_action = {};
+                    }
+                }
+                const auto synthesis_prompt = BuildRouteActionResultPrompt(prompt, *action, action_result);
+                RunChatPrompt(synthesis_prompt,
+                              skill_registry,
+                              agent_registry,
+                              loop,
+                              audit_logger,
+                              workspace,
+                              chat_history,
+                              pending_route_action,
+                              false,
+                              prompt);
+                return;
+            }
         }
         if (result.summary.empty()) {
             // Some adapters (notably codex_cli) finish successfully without
@@ -1273,6 +1172,12 @@ void RunChatPrompt(const std::string& prompt,
             std::cout << ", " << duration_ms << "ms";
         }
         std::cout << ")\n\n";
+        if (chat_history != nullptr) {
+            AppendChatTranscript(
+                *chat_history,
+                transcript_user_prompt.value_or(prompt),
+                result.summary);
+        }
     } else {
         std::cerr << "chat failed (" << target << "): "
                   << (result.error_code.empty() ? "<no error_code>" : result.error_code);
@@ -1283,74 +1188,44 @@ void RunChatPrompt(const std::string& prompt,
     }
 }
 
-TaskRequest BuildDevelopmentTaskRequest(const std::string& prompt,
-                                        const std::filesystem::path& default_workspace,
-                                        std::filesystem::path& task_workspace) {
-    const auto workspace_override = ExtractExistingWorkspacePath(prompt);
-    task_workspace = workspace_override.value_or(default_workspace);
-    const auto root_task_id = MakeTaskId("dev");
-
-    TaskRequest task{
-        .task_id = root_task_id,
-        .task_type = "development_request",
-        .objective = prompt,
-        .workspace_path = task_workspace,
-    };
-    task.preferred_target = "development_request";
-    task.idempotency_key = task.task_id;
-    task.inputs["objective"] = prompt;
-    task.inputs["interactive"] = "true";
-    task.inputs["root_task_id"] = root_task_id;
-    task.timeout_ms = 0;
-    return task;
-}
-
-TaskRunResult ExecuteDevelopmentTask(const TaskRequest& task,
+TaskRunResult ExecuteMainRouteAction(const MainRouteAction& action,
+                                     SkillRegistry& skill_registry,
+                                     AgentRegistry& agent_registry,
+                                     const std::filesystem::path& workspace,
                                      AgentLoop& loop,
                                      AuditLogger& audit_logger) {
-    auto task_cancel = InstallSignalCancellation();
-    const auto result = loop.run(task, std::move(task_cancel));
-    if (!result.success && result.error_code != "AcceptanceFailed" &&
-        result.error_code != "AcceptanceBlocked") {
-        PrintResult(result);
+    const auto validation = ValidateMainRouteAction(action, skill_registry, agent_registry);
+    if (!validation.valid) {
+        TaskRunResult result;
+        result.success = false;
+        result.route_target = action.target;
+        result.route_kind = action.target_kind == "agent" ? RouteTargetKind::agent : RouteTargetKind::skill;
+        result.error_code = validation.error_code;
+        result.error_message = validation.error_message;
+        result.summary = validation.error_message;
+        std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
+        return result;
     }
-    std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-    return result;
-}
 
-void RunDevelopmentPrompt(const std::string& prompt,
-                          AgentLoop& loop,
-                          AuditLogger& audit_logger,
-                          const std::filesystem::path& default_workspace) {
-    std::filesystem::path task_workspace;
-    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
-    if (task_workspace != default_workspace) {
-        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
-    }
-    (void)ExecuteDevelopmentTask(task, loop, audit_logger);
-}
-
-TaskRequest BuildResearchTaskRequest(const std::string& prompt,
-                                      const std::filesystem::path& workspace) {
+    const auto objective = action.brief.empty() ? action.target : action.brief;
     TaskRequest task{
-        .task_id = MakeTaskId("research"),
-        .task_type = "research_request",
-        .objective = prompt,
+        .task_id = MakeTaskId("main-route"),
+        .task_type = action.target_kind == "agent" ? std::string("delegate") : action.target,
+        .objective = objective,
         .workspace_path = workspace,
     };
-    task.preferred_target = "research_request";
+    task.preferred_target = action.target;
     task.idempotency_key = task.task_id;
-    task.inputs["objective"] = prompt;
-    task.inputs["interactive"] = "true";
-    task.inputs["root_task_id"] = task.task_id;
-    task.allow_network = true;
+    task.inputs = action.arguments;
+    if (!task.inputs.contains("objective")) {
+        task.inputs["objective"] = objective;
+    }
+    task.inputs["main_route_action"] = action.action;
+    task.inputs["main_route_target_kind"] = action.target_kind;
+    task.inputs["main_route_target"] = action.target;
     task.timeout_ms = 0;
-    return task;
-}
+    task.allow_network = true;
 
-TaskRunResult ExecuteResearchTask(const TaskRequest& task,
-                                  AgentLoop& loop,
-                                  AuditLogger& audit_logger) {
     auto task_cancel = InstallSignalCancellation();
     const auto result = loop.run(task, std::move(task_cancel));
     if (!result.success) {
@@ -1422,60 +1297,6 @@ void ListBackgroundJobs(std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
         }
     }
     std::cout << '\n';
-}
-
-void StartBackgroundTask(const std::string& kind,
-                         const std::string& prompt,
-                         const TaskRequest& task,
-                         const std::filesystem::path& task_workspace,
-                         AgentLoop& loop,
-                         AuditLogger& audit_logger,
-                         std::vector<std::shared_ptr<BackgroundJob>>& jobs,
-                         std::function<TaskRunResult(const TaskRequest&, AgentLoop&, AuditLogger&)> execute) {
-    auto job = std::make_shared<BackgroundJob>();
-    job->id = task.inputs.count("root_task_id") > 0 ? task.inputs.at("root_task_id") : task.task_id;
-    job->kind = kind;
-    job->objective = prompt;
-    job->workspace = task_workspace;
-    job->started_at = std::chrono::steady_clock::now();
-    job->worker = std::thread([job, task, &loop, &audit_logger, execute = std::move(execute)]() mutable {
-        const auto result = execute(task, loop, audit_logger);
-        {
-            std::lock_guard<std::mutex> lock(job->mutex);
-            job->success = result.success;
-            job->duration_ms = result.duration_ms;
-            job->error_code = result.error_code;
-            job->error_message = result.error_message;
-        }
-        job->finished.store(true);
-    });
-    jobs.push_back(job);
-
-    std::cout << "(background " << kind << " job started: " << job->id << ")\n"
-              << "Use `jobs` to inspect progress. Status files will appear under:\n"
-              << "  " << (task_workspace / "runtime" / "agents").string() << "\n\n";
-}
-
-void StartBackgroundDevelopmentPrompt(const std::string& prompt,
-                                      AgentLoop& loop,
-                                      AuditLogger& audit_logger,
-                                      const std::filesystem::path& default_workspace,
-                                      std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
-    std::filesystem::path task_workspace;
-    const auto task = BuildDevelopmentTaskRequest(prompt, default_workspace, task_workspace);
-    if (task_workspace != default_workspace) {
-        std::cout << "(using project workspace: " << task_workspace.string() << ")\n";
-    }
-    StartBackgroundTask("development", prompt, task, task_workspace, loop, audit_logger, jobs, ExecuteDevelopmentTask);
-}
-
-void StartBackgroundResearchPrompt(const std::string& prompt,
-                                   AgentLoop& loop,
-                                   AuditLogger& audit_logger,
-                                   const std::filesystem::path& workspace,
-                                   std::vector<std::shared_ptr<BackgroundJob>>& jobs) {
-    const auto task = BuildResearchTaskRequest(prompt, workspace);
-    StartBackgroundTask("research", prompt, task, workspace, loop, audit_logger, jobs, ExecuteResearchTask);
 }
 
 UsageSnapshot BuildInteractiveUsageSnapshot(const SkillRegistry& skill_registry,
@@ -1952,6 +1773,8 @@ int RunInteractiveCommand(
     std::vector<std::shared_ptr<BackgroundJob>> background_jobs;
     const auto history_path = workspace / "runtime" / "repl_history.txt";
     std::vector<std::string> line_history = LoadReplHistory(history_path);
+    std::vector<ChatTranscriptTurn> chat_history;
+    PendingRouteAction pending_route_action;
 
     std::string line;
     while (true) {
@@ -2210,7 +2033,15 @@ int RunInteractiveCommand(
             const std::string prompt = (prompt_start == std::string::npos)
                 ? std::string{}
                 : line.substr(prompt_start);
-            RunChatPrompt(prompt, agent_registry, loop, audit_logger, workspace);
+            RunChatPrompt(
+                prompt,
+                skill_registry,
+                agent_registry,
+                loop,
+                audit_logger,
+                workspace,
+                &chat_history,
+                &pending_route_action);
             continue;
         }
 
@@ -2242,63 +2073,13 @@ int RunInteractiveCommand(
             [&agent_registry, &workspace]() { return ResolveChatTarget(agent_registry, workspace); },
             [&skill_registry]() { return skill_registry.find("development_request") ? "development_request" : ""; },
             [&skill_registry]() { return skill_registry.find("research_request") ? "research_request" : ""; },
-            [&skill_registry](const std::string& text) {
-                return ExtractXiaohongshuSearchQuery(text, skill_registry).has_value() ||
-                    ExtractNewsSearchRequest(text, skill_registry).has_value();
-            },
-            [&skill_registry](const std::string& text) {
-                if (ExtractXiaohongshuSearchQuery(text, skill_registry).has_value()) {
-                    return std::string("xiaohongshu_search");
-                }
-                if (ExtractNewsSearchRequest(text, skill_registry).has_value()) {
-                    return std::string("news_search");
-                }
-                return std::string{};
-            });
+            [](const std::string&) { return false; },
+            [](const std::string&) { return std::string{}; });
         WriteRouteDecision(workspace, route_decision);
         PrintRouteDecision(route_decision, RuntimeLanguage::English);
 
         switch (route_decision.route) {
         case InteractiveRouteKind::direct_skill:
-            if (const auto news_request = ExtractNewsSearchRequest(line, skill_registry); news_request.has_value()) {
-                std::cout << "(运行 skill news_search query=\"" << news_request->query
-                          << "\" limit=" << news_request->limit
-                          << " days=" << news_request->days << ")\n";
-                const auto result = RunDirectSkillFromNaturalLanguage(
-                    "news_search",
-                    StringMap{
-                        {"query", news_request->query},
-                        {"limit", std::to_string(news_request->limit)},
-                        {"days", std::to_string(news_request->days)},
-                    },
-                    line,
-                    loop,
-                    workspace);
-                if (!result.output_json.empty()) {
-                    try {
-                        const auto output = nlohmann::json::parse(result.output_json);
-                        if (output.contains("summary") && output["summary"].is_string()) {
-                            std::cout << output["summary"].get<std::string>();
-                        }
-                    } catch (const std::exception&) {
-                    }
-                }
-                PrintResult(result);
-                std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-                continue;
-            }
-            if (const auto xhs_query = ExtractXiaohongshuSearchQuery(line, skill_registry); xhs_query.has_value()) {
-                std::cout << "(运行 skill xiaohongshu_search query=\"" << *xhs_query << "\")\n";
-                const auto result = RunDirectSkillFromNaturalLanguage(
-                    "xiaohongshu_search",
-                    StringMap{{"query", *xhs_query}},
-                    line,
-                    loop,
-                    workspace);
-                PrintResult(result);
-                std::cout << "audit_log: " << audit_logger.log_path().string() << '\n';
-                continue;
-            }
             break;
         case InteractiveRouteKind::local_intent:
             if (TryConfigureMainAgentFromNaturalLanguage(line, workspace)) {
@@ -2335,18 +2116,40 @@ int RunInteractiveCommand(
             }
             break;
         case InteractiveRouteKind::development_agent:
-            StartBackgroundDevelopmentPrompt(line, loop, audit_logger, workspace, background_jobs);
-            continue;
         case InteractiveRouteKind::research_agent:
-            StartBackgroundResearchPrompt(line, loop, audit_logger, workspace, background_jobs);
+            RunChatPrompt(
+                line,
+                skill_registry,
+                agent_registry,
+                loop,
+                audit_logger,
+                workspace,
+                &chat_history,
+                &pending_route_action);
             continue;
         case InteractiveRouteKind::chat_agent:
-            RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);
+            RunChatPrompt(
+                line,
+                skill_registry,
+                agent_registry,
+                loop,
+                audit_logger,
+                workspace,
+                &chat_history,
+                &pending_route_action);
             continue;
         case InteractiveRouteKind::unknown_command:
             break;
         }
-        RunChatPrompt(line, agent_registry, loop, audit_logger, workspace);
+        RunChatPrompt(
+            line,
+            skill_registry,
+            agent_registry,
+            loop,
+            audit_logger,
+            workspace,
+            &chat_history,
+            &pending_route_action);
     }
 
     for (const auto& job : background_jobs) {
